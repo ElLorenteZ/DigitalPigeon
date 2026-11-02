@@ -5,7 +5,7 @@ verdict: merge-with-fixes
 created: 2026-11-02
 updated: 2026-11-02
 reviewed: working tree against 66cc5b8 (origin/main merge-base), 4 phases, plan.md as revised after plan review
-delegated-to: nothing — general correctness is UNREVIEWED
+delegated-to: host /code-review (8-angle pass over main...HEAD, 2026-11-02; findings unverified by the tool, triaged below)
 ---
 
 # Review: Install the unit, integration and e2e test harness from the test strategy
@@ -22,8 +22,8 @@ This review covers **plan drift, project conventions, accepted lessons, and veri
 completeness**. It does **not** cover general code correctness — logic errors, edge cases,
 efficiency, idiom.
 
-General correctness has NOT been reviewed. Run the host code reviewer (`/code-review`) before
-merging.
+General correctness was reviewed separately by the host `/code-review` (findings and dispositions
+under Host code review).
 
 This review ran in the same session that planned and executed the change (lz-plan, lz-tdd,
 lz-build). The reviewer wrote the code under review; weigh the verdict accordingly.
@@ -97,6 +97,23 @@ note); the last section, which is authoritative, is `done` for both.
 - **Because:** both assert behaviour of `node:http` listen/close rather than capture logic, the
   ledger is explicit about it, and the capture behaviour the phase exists for (header order and
   case, body bytes) was shown red by two mutations.
+
+## Host code review
+
+Ten findings from `/code-review` over `main...HEAD` (both commits), triaged 2026-11-02.
+
+| # | Where | Finding | Verified? | Disposition |
+|---|---|---|---|---|
+| 4 | `e2e/smoke.spec.ts` | One-shot `window` predicate can miss a window that navigates after creation | plausible (4/4 runs passed) | **fixed** — polls `app.windows()`; ledger Phase 4 follow-up |
+| 5 | `test-support/capture-server.ts` | Aborted request never recorded; no `req` error handler | yes (red test) | **fixed** — recorded with `complete: false`; ledger Phase 3 follow-up |
+| 7 | `test-support/capture-server.ts` | Listen error never settles the promise | yes (mutation: 10 s hang + unhandled error) | **fixed** — rejects on `error` |
+| 1 | `docker-compose.yml:7` | Backup comment reads credentials from the host shell | yes (same class as plan review) | accept for this change — out of scope per plan; separate fix (author chose not to include it) |
+| 2 | `test-support/mongo-global-setup.ts` | Sweep drops a concurrent run's live `dp_test_*` databases | yes, by reading | accept — single developer; recorded in plan Risks |
+| 3 | `test-support/mongo-global-setup.ts` | Missing `.env` fatal even with variables exported | yes, by reading | accept — no CI; `.env` is the documented setup |
+| 6 | `test-support/capture-server.ts` | `close()` may hang on keep-alive clients | not reproduced; Node 22 `server.close()` closes idle sockets | dispute — revisit when `undici` is introduced |
+| 8 | `vitest.config.mts` | Plain `vitest run <unit file>` needs MongoDB | **false** — with Mongo stopped, `npx vitest run test-support/test-db-name.test.ts` passed 14/14 | dispute |
+| 9 | `test-support/mongo-global-setup.ts` | A database named exactly `dp_test_` aborts setup | yes, by reading | accept — nothing creates that name |
+| 10 | `package.json` | `test:e2e` packages the app only to get `.vite/` | yes | accept — author chose a full build over a stale one; a build-only command is unverified |
 
 ## Lessons candidates
 

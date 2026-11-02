@@ -1,6 +1,6 @@
 ---
 change_id: test-harness
-produced-by: lz-tdd
+produced-by: lz-build
 plan: plan.md
 updated: 2026-11-02
 ---
@@ -242,5 +242,86 @@ test:unit exit 0
 
 PASS — the capture server preserves method, path and query, header order and case, and exact body
 bytes, serves a configured response, and the header test detects both a case and an order loss.
+
+**Drift:** none
+
+## Phase 3 — A capture server records method, URL, raw header order and case, and body bytes of a request
+
+- **Executor:** lz-tdd (aborted request), lz-build (listen error)
+- **Status:** done
+- **Started:** 2026-11-02
+- **Finished:** 2026-11-02
+
+Follow-up to host code review findings #5 and #7 (`review.md`, Host code review). The earlier
+Phase 3 section stands; this section records the additions.
+
+**Changed**
+- `test-support/capture-server.ts` — `CapturedRequest.complete` added; a request whose connection
+  closes before `end` is recorded with the bytes received and `complete: false`; `req` errors are
+  handled; `bytesReceived()` added (total body bytes received), so a test can wait for bytes to
+  arrive before aborting; the listen promise rejects on a server `error`.
+- `test-support/capture-server.int.test.ts` — 2 tests: an aborted mid-body request is recorded,
+  incomplete, with exactly the bytes sent; a full request is marked complete.
+
+**Cycles**
+1. First run failed on `TypeError: server.received is not a function` (missing API, not the
+   behaviour). Stub added (`bytesReceived: () => 0`, `complete: true`). Re-run: `expected 0 to be
+   greater than or equal to 11` for the aborted test; the completeness test had failed in the first
+   run with `expected undefined to be true`. A hook timeout followed, because the failing test never
+   destroyed its request.
+2. Implementation: 9 passed. The aborted test ran 10 times in a row: 10 passed.
+3. Listen error (no test seam; host is fixed): host temporarily set to `256.0.0.1`. Before the fix:
+   `Error: Hook timed out in 10000ms` plus an unhandled `getaddrinfo ENOTFOUND 256.0.0.1`. After the
+   fix: the test fails in 208 ms with `Error: getaddrinfo ENOTFOUND 256.0.0.1` and no unhandled
+   error. Host restored to `127.0.0.1`.
+
+**Verification**
+
+```
+$ npm run test:integration
+      Tests  11 passed (11)
+$ npm run typecheck && npm run lint && npm run test:unit
+typecheck 0
+lint 0
+      Tests  14 passed (14)
+```
+
+PASS — aborted requests are recorded with what reached the wire, and a listen failure rejects
+instead of hanging.
+
+**Drift:** decision — `bytesReceived()` is new public surface on the helper, not in the plan; it is
+the only way a test can know bytes reached the server before aborting without a sleep.
+
+## Phase 4 — `npm run test:e2e` builds the app and drives its window through Playwright
+
+- **Executor:** lz-build
+- **Status:** done
+- **Started:** 2026-11-02
+- **Finished:** 2026-11-02
+
+Follow-up to host code review finding #4. The earlier Phase 4 section stands.
+
+**Changed**
+- `e2e/smoke.spec.ts` — `appWindow()` polls `app.windows()` (`expect.poll`, 30 s) for a window whose
+  URL ends with `main_window/index.html`, instead of a one-shot `waitForEvent('window')` predicate
+  that a window created at `about:blank` would fail.
+
+**Verification**
+
+```
+$ npm run test:e2e
+  ✓  1 e2e/smoke.spec.ts:39:5 › the app window renders the React root (458ms)
+  ✓  2 e2e/smoke.spec.ts:44:5 › the production build carries a Content-Security-Policy meta tag (5ms)
+  2 passed (1.7s)
+$ npx playwright test   (x5, same build)
+.....
+$ # predicate pointed at main_window/missing.html, then restored:
+$ npx playwright test
+  ✘  1 … renders the React root (29.9s)
+    Error: an Electron window showing main_window/index.html
+```
+
+PASS — the window is found by polling, and a missing window fails with a named message instead of
+hanging to the test timeout.
 
 **Drift:** none

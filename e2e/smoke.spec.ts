@@ -21,12 +21,19 @@ test.afterAll(async () => {
 });
 
 // DevTools opens when the app is not packaged (src/main.ts), so select the app window by URL.
+// Polled rather than matched on the 'window' event: a window can be created at about:blank and
+// only then navigate to index.html, which a one-shot predicate on creation would miss.
 async function appWindow(): Promise<Page> {
   const isAppWindow = (page: Page) =>
     page.url().endsWith('main_window/index.html');
-  const open = app.windows().find(isAppWindow);
-  if (open) return open;
-  return app.waitForEvent('window', { predicate: isAppWindow });
+  let found: Page | undefined;
+  await expect
+    .poll(() => (found = app.windows().find(isAppWindow)), {
+      message: 'an Electron window showing main_window/index.html',
+      timeout: 30_000,
+    })
+    .toBeDefined();
+  return found as Page;
 }
 
 test('the app window renders the React root', async () => {

@@ -1,5 +1,5 @@
 import { request } from 'node:http';
-import { afterEach, beforeEach, expect, test } from 'vitest';
+import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import { type CaptureServer, startCaptureServer } from './capture-server';
 
 interface ClientResponse {
@@ -119,4 +119,28 @@ test('stops accepting connections after close', async () => {
   );
 
   server = await startCaptureServer(); // for afterEach
+});
+
+test('records a request aborted mid-body, with the bytes received and marked incomplete', async () => {
+  const sent = Buffer.from('first-half-');
+  const req = request(`${server.url}/upload`, {
+    method: 'POST',
+    headers: { 'Content-Length': '100' },
+  });
+  req.on('error', () => {});
+  req.write(sent);
+  await vi.waitFor(() =>
+    expect(server.bytesReceived()).toBeGreaterThanOrEqual(sent.length),
+  );
+  req.destroy();
+
+  await vi.waitFor(() => expect(server.requests).toHaveLength(1));
+  expect(server.requests[0]?.complete).toBe(false);
+  expect(server.requests[0]?.body.equals(sent)).toBe(true);
+});
+
+test('marks a request that arrived in full as complete', async () => {
+  await send(`${server.url}/`, { method: 'GET', headers: [] });
+
+  expect(server.requests[0]?.complete).toBe(true);
 });

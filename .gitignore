@@ -144,3 +144,7 @@ vite.config.ts.timestamp-*
 
 # Electron-Forge
 out/
+
+# Playwright
+test-results/
+playwright-report/

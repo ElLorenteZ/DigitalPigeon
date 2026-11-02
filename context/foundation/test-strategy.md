@@ -2,6 +2,7 @@
 produced-by: lz-test-strategy
 updated: 2026-11-02
 tiers: 8/8/7
+revised: 2026-11-02 — test harness installed (change test-harness); gates verified; e2e target corrected to the production build output
 ---
 
 # Test strategy
@@ -24,7 +25,7 @@ response body executing as code in the renderer is the one security failure with
 | T1.5 | A response or upload body over 16 MB fails to save or is truncated. | integration | The 16 MB limit and the GridFS threshold exist only in a real MongoDB. | **gap** |
 | T1.6 | A send proceeds while the database is unreachable and the call is lost without the user being told. | integration | Requires a real failed connection (closed port or stopped container). The expected behaviour waits on the PRD open question on database-down behaviour; the test asserts whichever behaviour is decided, and in every case no send is silently unrecorded. | **gap** (behaviour undecided) |
 | T1.7 | Single delete, bulk delete or a retention rule removes records it should not (filter too broad, wrong date boundary, wrong environment). Deletion is irreversible. | integration | The failure is the query matching the wrong documents in the real store. Tested by seeding records on both sides of each boundary and counting what remains. | **gap** |
-| T1.8 | A response body runs script in the renderer (`<script>`, `<img onerror>`, SVG, HTML preview) because it was rendered as live HTML. | e2e | A render-only defect. Only a real Electron renderer with the production CSP shows whether script executes. Run against the packaged build, because the CSP is injected into production builds only. | **gap** |
+| T1.8 | A response body runs script in the renderer (`<script>`, `<img onerror>`, SVG, HTML preview) because it was rendered as live HTML. | e2e | A render-only defect. Only a real Electron renderer with the production CSP shows whether script executes. Run against the production build output (`npm run test:e2e` builds first), because the CSP is injected into production builds only. | **gap** |
 
 ### Tier 2 — automated where cheap
 | # | Risk | Layer | Why that layer | Covered? |
@@ -54,8 +55,8 @@ response body executing as code in the renderer is the one security failure with
 |---|---|---|---|
 | Types | `tsc` (strict, `noUncheckedIndexedAccess`) | Shapes inside the bundle, IPC contract at compile time | Anything at runtime: MongoDB documents, HTTP responses |
 | Unit | Vitest, Node environment | Pure functions: curl export, URL composition, formatting, `zod` schemas, retry logic | MongoDB, network, Electron APIs |
-| Integration | Vitest, Node environment; real MongoDB from `docker-compose.yml` with a throwaway database per run (dropped afterwards, never the history database); local HTTP server on `127.0.0.1`, ephemeral port | Main-process send, record, replay, store, GridFS, search, delete | Electron APIs, the renderer |
-| E2E | Playwright `_electron` (experimental API), against the packaged build | Journeys across renderer, preload and main; render-only defects | Stored document contents, logic reachable one layer down |
+| Integration | Vitest, Node environment; real MongoDB from `docker-compose.yml`, a throwaway `dp_test_*` database per test file from `openTestDb()` (dropped afterwards, never the history database); local HTTP server on `127.0.0.1`, ephemeral port | Main-process send, record, replay, store, GridFS, search, delete | Electron APIs, the renderer |
+| E2E | Playwright `_electron` (experimental API), launching Electron from `node_modules` on the production build output (`.vite/build`, `args: ['.']`). Not the packaged `.app`: its fuses disable the inspector Playwright attaches through. | Journeys across renderer, preload and main; render-only defects | Stored document contents, logic reachable one layer down |
 | Manual | — | Tier 3 | Anything in tier 1 |
 
 Design consequence: integration tests run in plain Node, so main-process modules for sending,
@@ -80,22 +81,27 @@ Gates run locally before commit. No hosted CI (author decision, 2026-11-02).
 | Types | `npm run typecheck` | 2026-11-02, exit 0 | every commit |
 | Lint + format | `npm run lint` | 2026-11-02, exit 0 | every commit |
 | Build | `npm run package` | 2026-11-02, exit 0 | every commit touching main, preload or Vite config |
-| Unit | `npm run test:unit` (proposed) | **not runnable** — no runner installed | tier 1 and 2 unit risks |
-| Integration | `npm run test:integration` (proposed; requires `docker compose up -d`) | **not runnable** | tier 1 |
-| E2E | `npm run test:e2e` (proposed; runs after `npm run package`) | **not runnable** | T1.8 |
+| Unit | `npm run test:unit` | 2026-11-02, exit 0 (14 tests) | tier 1 and 2 unit risks |
+| Integration | `npm run test:integration` (requires `docker compose up -d` and `.env`; fails, never skips, when MongoDB is unreachable) | 2026-11-02, exit 0 (9 tests) | tier 1 |
+| E2E | `npm run test:e2e` (runs `npm run package` first) | 2026-11-02, exit 0 (2 tests) | T1.8, T2.7 |
 
 ## Known gaps
-Every tier 1 and tier 2 risk is uncovered: no test runner is installed. Closing them needs one
-change that sets up the harness before the first feature change:
-- Vitest with separate unit and integration projects, and the `test:unit` / `test:integration`
-  scripts.
-- An integration helper that creates and drops a uniquely named test database on the Compose
-  MongoDB, using the credentials in `.env`.
-- A local HTTP server helper that captures raw requests, for T1.2–T1.4.
-- `@playwright/test` with `_electron` launching the packaged app, and the `test:e2e` script.
+The harness exists (change `test-harness`): Vitest unit and integration projects, a throwaway
+test database helper (`test-support/test-db.ts`), a raw-request capture server
+(`test-support/capture-server.ts`), and Playwright e2e. Each layer has a smoke test of its own
+helper only.
 
-T1.6 additionally needs the PRD open question on database-down behaviour decided before its test
-can assert anything.
+Every tier 1 and tier 2 risk is still uncovered, because the features they describe do not exist
+yet. Each feature change writes the tests for the risks it introduces, at the layer assigned
+above.
+
+Open preconditions:
+- **T1.6** needs the PRD open question on database-down behaviour decided before its test can
+  assert anything.
+- **T2.7 and any e2e test that sends or records** need the app to take its database name from the
+  environment, so e2e can point it at a `dp_test_*` database. Without this, an e2e run writes into
+  the real history database. The first feature change that adds database access carries this
+  constraint (`context/changes/test-harness/plan.md`, Out of scope).
 
 ## Not a target
 Coverage percentage is not tracked and is not a goal. Adequacy is judged per risk against this

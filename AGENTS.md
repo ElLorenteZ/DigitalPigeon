@@ -6,28 +6,42 @@ recorded as a call record in MongoDB, which runs in Docker on the same machine.
 ## Non-negotiable
 
 - **HTTP and storage live in the main process only.** `undici` and the `mongodb` driver are imported
-  only from main-process code (`src/main.ts` and modules it imports). The renderer has no Node
-  access. `src/preload.ts` exposes a narrow, named API through `contextBridge` — never raw
+  only from main-process code (`src/main.ts` and modules it imports) and from `test-support/`. The
+  renderer has no Node access. `src/preload.ts` exposes a narrow, named API through `contextBridge` — never raw
   `ipcRenderer` or a generic "invoke anything" channel.
 - **Renderer hardening is fixed.** Never relax `contextIsolation: true`, `sandbox: true`,
   `nodeIntegration: false` (`src/main.ts`) or the production CSP (`vite.renderer.config.mts`).
   Response bodies are untrusted input: never render them as live HTML (`dangerouslySetInnerHTML`,
   `innerHTML`, `<iframe srcdoc>`, `webview`). Display them as text or in the editor.
+- **Tests never touch the history database.** Integration tests get their database from
+  `openTestDb()` (`test-support/test-db.ts`), a throwaway `dp_test_*` database dropped afterwards.
+  No code drops a database except through `assertTestDbName` (`test-support/test-db-name.ts`).
+  Losing history is irreversible.
 
 ## Checks
 
 All verified on 2026-11-02 (macOS arm64).
 
-| What          | Command                | Notes                                                   |
-| ------------- | ---------------------- | ------------------------------------------------------- |
-| Types         | `npm run typecheck`    | `strict` + `noUncheckedIndexedAccess`                   |
-| Lint + format | `npm run lint`         | `npm run lint:fix` to apply fixes                       |
-| Build         | `npm run package`      | Output in `out/`                                        |
-| Run (dev)     | `npm start`            | First run downloads the Electron binary; needs network  |
-| Database      | `docker compose up -d` | Requires `.env` (copy `.env.example`, set the password) |
+| What          | Command                    | Notes                                                                |
+| ------------- | -------------------------- | -------------------------------------------------------------------- |
+| Types         | `npm run typecheck`        | `strict` + `noUncheckedIndexedAccess`                                |
+| Lint + format | `npm run lint`             | `npm run lint:fix` to apply fixes                                    |
+| Build         | `npm run package`          | Output in `out/`                                                     |
+| Run (dev)     | `npm start`                | First run downloads the Electron binary; needs network               |
+| Database      | `docker compose up -d`     | Requires `.env` (copy `.env.example`, set the password)              |
+| Unit tests    | `npm run test:unit`        | `*.test.ts`; no database, network or Electron                        |
+| Integration   | `npm run test:integration` | `*.int.test.ts`; needs `docker compose up -d` and `.env`             |
+| E2e           | `npm run test:e2e`         | Runs `npm run package` first (slow); Playwright drives `.vite/build` |
 
-**No test runner exists.** There is no `npm test`. Verify behaviour by running the app until
-`context/foundation/test-strategy.md` chooses one.
+There is no `npm test`; the three test commands are separate gates. One file or one test name:
+
+```
+npx vitest run --project integration test-support/capture-server.int.test.ts
+npx vitest run --project unit -t refuses
+```
+
+Which risk gets which test layer: `context/foundation/test-strategy.md`. Code that sends, records
+or stores calls must not import `electron`, so integration tests can run it in plain Node.
 
 ## Not obvious from the code
 
@@ -38,6 +52,12 @@ All verified on 2026-11-02 (macOS arm64).
   `context/`. `context/**` is excluded on purpose.
 - The Mongo container restarts `mongod` once after creating the root user on first start.
   Connections are refused for a few seconds, so database connection code must retry.
+- An integration run that fails in global setup prints its reason as a line starting
+  `[integration setup]`. Vitest 5.0.5 with Vite 8.3.5 replaces the thrown error itself with
+  `TypeError: code.charCodeAt is not a function`; that `TypeError` is not the cause.
+- The host shell does not load `.env`. Commands inside the container read the container's own
+  variables: `docker compose exec -T mongo sh -c 'mongosh -u "$MONGO_INITDB_ROOT_USERNAME" -p
+"$MONGO_INITDB_ROOT_PASSWORD" …'`. `-u "$MONGO_ROOT_USER"` on the host fails authentication.
 - All history lives in the named volume `digital-pigeon-mongo`. `docker compose down -v` deletes it.
 - npm 12 blocks install scripts for `fsevents` and `electron-winstaller`. macOS builds do not need
   them. A Windows `make` may need `npm install-scripts approve electron-winstaller`.

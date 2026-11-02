@@ -1,11 +1,11 @@
 ---
 change_id: test-harness
 title: Install the unit, integration and e2e test harness from the test strategy
-status: new
+status: closed
 ticket: null
 created: 2026-11-02
 updated: 2026-11-02
-closed: null
+closed: 2026-11-02
 produced-by: lz-change
 ---
 
@@ -52,3 +52,9 @@ produced-by: lz-change
   gaps.
 - The CSP is injected into production builds only, so e2e runs against `npm run package` output
   (`context/scaffold-verification.md`).
+- Status corrected at close: recorded `new`, artifacts showed `reviewing`.
+- Outcome (2026-11-02): closed. All 4 plan phases done and verified in `progress.md`; review verdict
+  `merge-with-fixes` with both fix-now findings resolved (F1: work split into commits `bb4abe8` and
+  `f8e94d9`; F2: `AGENTS.md` and `test-strategy.md` updated) and host code-review findings #4, #5,
+  #7 fixed (`c7d19e5`, `bcf7f10`). Gates `test:unit`, `test:integration`, `test:e2e` verified.
+  Branch `test-harness`, not yet merged or pushed.

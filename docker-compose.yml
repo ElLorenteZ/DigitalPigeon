@@ -1,0 +1,22 @@
+# MongoDB for DigitalPigeon call history (context/foundation/infrastructure.md).
+# - Port bound to 127.0.0.1 only: history stores auth tokens as sent, so the
+#   database must not be reachable from the network.
+# - Root credentials come from .env (untracked); copy .env.example to .env.
+# - Data lives in the named volume `digital-pigeon-mongo`. `docker compose down -v`
+#   deletes ALL history. Back up with:
+#     docker compose exec mongo mongodump --archive -u "$MONGO_ROOT_USER" -p "$MONGO_ROOT_PASSWORD" > backup.archive
+services:
+  mongo:
+    image: mongo:8.0.34
+    restart: unless-stopped
+    ports:
+      - '127.0.0.1:27017:27017'
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_ROOT_USER:?set MONGO_ROOT_USER in .env}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD:?set MONGO_ROOT_PASSWORD in .env}
+    volumes:
+      - digital-pigeon-mongo:/data/db
+
+volumes:
+  digital-pigeon-mongo:
+    name: digital-pigeon-mongo

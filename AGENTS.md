@@ -6,7 +6,7 @@ recorded as a call record in MongoDB, which runs in Docker on the same machine.
 ## Non-negotiable
 
 - **HTTP and storage live in the main process only.** `undici` and the `mongodb` driver are imported
-  only from main-process code (`src/main.ts` and modules it imports) and from `test-support/`. The
+  only from main-process code (`src/main.ts`, `src/main/`, `src/core/`) and from `test-support/`. The
   renderer has no Node access. `src/preload.ts` exposes a narrow, named API through `contextBridge` — never raw
   `ipcRenderer` or a generic "invoke anything" channel.
 - **Renderer hardening is fixed.** Never relax `contextIsolation: true`, `sandbox: true`,
@@ -15,12 +15,14 @@ recorded as a call record in MongoDB, which runs in Docker on the same machine.
   `innerHTML`, `<iframe srcdoc>`, `webview`). Display them as text or in the editor.
 - **Tests never touch the history database.** Integration tests get their database from
   `openTestDb()` (`test-support/test-db.ts`), a throwaway `dp_test_*` database dropped afterwards.
-  No code drops a database except through `assertTestDbName` (`test-support/test-db-name.ts`).
-  Losing history is irreversible.
+  e2e launches the app only through `launchWithTestDatabase()` (`e2e/support.ts`), which sets
+  `DP_MONGO_DB` to a `dp_test_*` database. No code drops a database except through
+  `assertTestDbName` (`test-support/test-db-name.ts`). Losing history is irreversible.
 
 ## Checks
 
-All verified on 2026-11-02 (macOS arm64).
+Verified on 2026-11-03 (macOS arm64), except `npm start`: last run 2026-11-02, before the app
+connected to a database.
 
 | What          | Command                    | Notes                                                                |
 | ------------- | -------------------------- | -------------------------------------------------------------------- |
@@ -41,7 +43,8 @@ npx vitest run --project unit -t refuses
 ```
 
 Which risk gets which test layer: `context/foundation/test-strategy.md`. Code that sends, records
-or stores calls must not import `electron`, so integration tests can run it in plain Node.
+or stores calls lives in `src/core/` and must not import `electron`, so integration tests can run it
+in plain Node.
 
 ## Not obvious from the code
 
@@ -50,6 +53,14 @@ or stores calls must not import `electron`, so integration tests can run it in p
   not `npm start`.
 - oxfmt checks Markdown too: run `npm run lint:fix` after editing any `.md` file outside
   `context/`. `context/**` is excluded on purpose.
+- The app reads Mongo credentials from `MONGO_ROOT_USER` / `MONGO_ROOT_PASSWORD` in its environment,
+  otherwise from `~/Library/Application Support/DigitalPigeon/config.json`
+  (`{ "user", "password", "database"? }`). `DP_MONGO_DB` overrides the database (default
+  `digital_pigeon`). With neither, the status line says "not configured" and Send stays disabled.
+- `undici` is pinned exactly. `src/core/wire.ts` encodes the headers it writes (lowercase `host`,
+  added `connection`, `connection: close` on `HEAD`, `content-length: 0` on bodiless
+  `POST`/`PUT`/`PATCH`). After an upgrade, run `npm run test:integration`: the T1.3 cases in
+  `src/core/send.int.test.ts` fail on any change.
 - The Mongo container restarts `mongod` once after creating the root user on first start.
   Connections are refused for a few seconds, so database connection code must retry.
 - An integration run that fails in global setup prints its reason as a line starting

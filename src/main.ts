@@ -1,6 +1,15 @@
-import { app, BrowserWindow } from 'electron';
+import { app, BrowserWindow, ipcMain } from 'electron';
+import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import started from 'electron-squirrel-startup';
+import { MongoClient } from 'mongodb';
+import {
+  mongoClientOptions,
+  mongoUri,
+  resolveDbConfig,
+} from './core/db-config';
+import { createDbConnection } from './core/db-connection';
+import { registerIpc } from './main/ipc';
 
 // Handle creating/removing shortcuts on Windows when installing/uninstalling.
 if (started) {
@@ -10,8 +19,8 @@ if (started) {
 const createWindow = () => {
   // Create the browser window.
   const mainWindow = new BrowserWindow({
-    width: 800,
-    height: 600,
+    width: 1100,
+    height: 800,
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
       // Explicit, not left to defaults: response bodies are untrusted input
@@ -41,6 +50,49 @@ const createWindow = () => {
 // initialization and is ready to create browser windows.
 // Some APIs can only be used after this event occurs.
 app.whenReady().then(() => {
+  // Credentials: environment first, then config.json in userData (plan.md, Approach).
+  const configPath = path.join(app.getPath('userData'), 'config.json');
+  const resolved = resolveDbConfig({
+    env: process.env,
+    configPath,
+    readFile: (p) => readFileSync(p, 'utf8'),
+  });
+  const connection = createDbConnection({
+    connect:
+      resolved.kind === 'configured'
+        ? () =>
+            new MongoClient(
+              mongoUri(resolved.config),
+              mongoClientOptions,
+            ).connect()
+        : undefined,
+  });
+  void connection.start();
+  app.on('before-quit', () => {
+    connection.stop();
+    void connection.client()?.close();
+  });
+
+  registerIpc({
+    ipcMain,
+    db: () =>
+      resolved.kind === 'configured'
+        ? connection.client()?.db(resolved.config.database)
+        : undefined,
+    dbStatus: () => ({
+      status: connection.status(),
+      configPath,
+      ...(resolved.kind === 'configured'
+        ? { database: resolved.config.database }
+        : {
+            detail:
+              resolved.reason === 'missing'
+                ? `Create ${configPath}`
+                : resolved.detail,
+          }),
+    }),
+  });
+
   createWindow();
 
   // On OS X it's common to re-create a window in the app when the

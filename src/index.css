@@ -3,6 +3,35 @@ body {
     -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial,
     sans-serif;
   margin: auto;
-  max-width: 38rem;
+  max-width: 60rem;
   padding: 2rem;
+}
+
+main {
+  max-width: none;
+}
+.row {
+  display: flex;
+  gap: 0.5rem;
+  margin: 0.25rem 0;
+}
+.url {
+  flex: 1;
+}
+fieldset {
+  margin: 0.5rem 0;
+}
+pre {
+  white-space: pre-wrap;
+  word-break: break-all;
+  background: #f4f4f4;
+  padding: 0.5rem;
+}
+.status-up {
+  color: #1a7f37;
+}
+.status-down,
+.status-not-configured,
+.error {
+  color: #b42318;
 }

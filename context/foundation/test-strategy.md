@@ -1,8 +1,9 @@
 ---
 produced-by: lz-test-strategy
-updated: 2026-11-02
+updated: 2026-11-03
 tiers: 8/8/7
 revised: 2026-11-02 — test harness installed (change test-harness); gates verified; e2e target corrected to the production build output
+revised: 2026-11-03 — change send-and-record covers T1.1, T1.2, T1.3, T1.6, T2.1, T2.2, T2.8 and part of T2.7; gates re-verified
 ---
 
 # Test strategy
@@ -18,26 +19,26 @@ response body executing as code in the renderer is the one security failure with
 ### Tier 1 — automated, gates block
 | # | Risk | Layer | Why that layer | Covered? |
 |---|---|---|---|---|
-| T1.1 | A call record is overwritten or changed after it is written: a second send of the same unchanged request replaces the first (for example an upsert keyed by saved request), or edit-and-send modifies the original record. | integration | Immutability is a property of what MongoDB holds after the operation. Only a re-read from the real store observes it. | **gap** |
-| T1.2 | A send completes but no call record is written, or the record is missing part of what the PRD requires: request as sent, status, response headers, full body, timing, timestamps, environment, source saved request. | integration | The send path crosses two real boundaries (HTTP and MongoDB). Tested against a local HTTP server on `127.0.0.1` and the test database. | **gap** |
-| T1.3 | The recorded request, or an exact replay, differs from the bytes on the wire: `undici` adds or reorders headers, changes `content-length` or encoding, or the record is built from the editor model instead of the dispatched request. | integration | Defaults added by the HTTP client are visible only at the wire. A local server captures the raw request and the test compares it with the record and with the replay. | **gap** |
+| T1.1 | A call record is overwritten or changed after it is written: a second send of the same unchanged request replaces the first (for example an upsert keyed by saved request), or edit-and-send modifies the original record. | integration | Immutability is a property of what MongoDB holds after the operation. Only a re-read from the real store observes it. | yes — `src/core/call-store.int.test.ts` (two identical sends list as two calls; upsert mutation caught), `src/core/send.int.test.ts` (same input sent twice) |
+| T1.2 | A send completes but no call record is written, or the record is missing part of what the PRD requires: request as sent, status, response headers, full body, timing, timestamps, environment, source saved request. | integration | The send path crosses two real boundaries (HTTP and MongoDB). Tested against a local HTTP server on `127.0.0.1` and the test database. | yes, for bodiless requests — `src/core/send.int.test.ts` (status, headers, body bytes, timing; failed send insert → zero dispatches; failed completion insert → not-recorded error). Bodies arrive in slice 3 |
+| T1.3 | The recorded request, or an exact replay, differs from the bytes on the wire: `undici` adds or reorders headers, changes `content-length` or encoding, or the record is built from the editor model instead of the dispatched request. | integration | Defaults added by the HTTP client are visible only at the wire. A local server captures the raw request and the test compares it with the record and with the replay. | yes, for bodiless requests — `src/core/send.int.test.ts` (all 7 methods; send document equals what the capture server received) and `src/core/wire.test.ts`. Bodies, multipart and replay arrive in slices 2–4 |
 | T1.4 | A recorded multipart call cannot be replayed after the uploaded file is deleted from disk, because no copy was stored. | integration | Needs a real file, its deletion, GridFS and a captured replay. | **gap** |
 | T1.5 | A response or upload body over 16 MB fails to save or is truncated. | integration | The 16 MB limit and the GridFS threshold exist only in a real MongoDB. | **gap** |
-| T1.6 | A send proceeds while the database is unreachable and the call is lost without the user being told. | integration | Requires a real failed connection (closed port or stopped container). The expected behaviour waits on the PRD open question on database-down behaviour; the test asserts whichever behaviour is decided, and in every case no send is silently unrecorded. | **gap** (behaviour undecided) |
+| T1.6 | A send proceeds while the database is unreachable and the call is lost without the user being told. | integration | Requires a real failed connection (closed port or stopped container). The expected behaviour waits on the PRD open question on database-down behaviour; the test asserts whichever behaviour is decided, and in every case no send is silently unrecorded. | yes — behaviour decided: sending is blocked. `src/core/db-down.int.test.ts` (refused in under 5 s, never dispatched) |
 | T1.7 | Single delete, bulk delete or a retention rule removes records it should not (filter too broad, wrong date boundary, wrong environment). Deletion is irreversible. | integration | The failure is the query matching the wrong documents in the real store. Tested by seeding records on both sides of each boundary and counting what remains. | **gap** |
 | T1.8 | A response body runs script in the renderer (`<script>`, `<img onerror>`, SVG, HTML preview) because it was rendered as live HTML. | e2e | A render-only defect. Only a real Electron renderer with the production CSP shows whether script executes. Run against the production build output (`npm run test:e2e` builds first), because the CSP is injected into production builds only. | **gap** |
 
 ### Tier 2 — automated where cheap
 | # | Risk | Layer | Why that layer | Covered? |
 |---|---|---|---|---|
-| T2.1 | Renderer and main disagree on an IPC message shape. | types | Both sides compile from one shared contract module in one bundle, so a mismatch is a compile error. `zod` validation in main handles malformed input at runtime and needs no separate test of its own. | **gap** (contract module not written) |
-| T2.2 | A stored document of an older shape crashes the UI or is silently misread. | unit | `zod` schemas parse fixture documents of each `schemaVersion`. Pure; no database needed. | **gap** |
+| T2.1 | Renderer and main disagree on an IPC message shape. | types | Both sides compile from one shared contract module in one bundle, so a mismatch is a compile error. `zod` validation in main handles malformed input at runtime and needs no separate test of its own. | yes — `src/shared/ipc-contract.ts`, checked by `tsc`; main validates every message with its schemas |
+| T2.2 | A stored document of an older shape crashes the UI or is silently misread. | unit | `zod` schemas parse fixture documents of each `schemaVersion`. Pure; no database needed. | yes, for `schemaVersion: 1` — `src/core/call-schema.test.ts`; a failing stored document lists as an `unreadable` row (`call-store.int.test.ts`) |
 | T2.3 | A history filter (environment, saved request, date range) or search (substring of URL or body, for example `/orders/12`) returns the wrong set of calls. | integration | Text-index tokenisation and the `$regex` fallback behave only in a real MongoDB. | **gap** |
 | T2.4 | A curl export, run in a terminal, sends a different method, URL, headers or body (quoting, escaping, binary and multipart bodies). | unit | A pure transformation from a request to a string, with cases. | **gap** |
 | T2.5 | Switching environment does not change the URL a saved request is sent to, or URL composition breaks (`baseUrl` + path slashes, query encoding). | unit | Pure function of environment and request. | **gap** |
 | T2.6 | Pretty-printing JSON or XML changes the content, for example integers above 2^53 lose precision through `JSON.parse`. | unit | Pure transformation with known inputs. | **gap** |
-| T2.7 | The journey send → appears in history → replay → new record appears is broken by the wiring between renderer, preload and main. | e2e | Each piece is tested below; only the assembled app shows that they connect. Two or three journeys, no assertions on stored document contents (those belong to integration). | **gap** |
-| T2.8 | The app fails at startup instead of retrying while `mongod` restarts after first initialisation. | unit | Retry logic tested with a fake connector that refuses N times. The real restart is timing-dependent and flaky to reproduce. | **gap** |
+| T2.7 | The journey send → appears in history → replay → new record appears is broken by the wiring between renderer, preload and main. | e2e | Each piece is tested below; only the assembled app shows that they connect. Two or three journeys, no assertions on stored document contents (those belong to integration). | partly — send → history: `e2e/send-and-record.spec.ts`. Replay arrives in slice 2 |
+| T2.8 | The app fails at startup instead of retrying while `mongod` restarts after first initialisation. | unit | Retry logic tested with a fake connector that refuses N times. The real restart is timing-dependent and flaky to reproduce. | yes — `src/core/db-connection.test.ts` (retry within the bound, down after it with continued retries, heartbeat up/down) |
 
 ### Tier 3 — manual or deliberately unverified
 | # | Risk | Treatment | Why acceptable |
@@ -78,30 +79,35 @@ Gates run locally before commit. No hosted CI (author decision, 2026-11-02).
 
 | Gate | Command | Verified | Blocks |
 |---|---|---|---|
-| Types | `npm run typecheck` | 2026-11-02, exit 0 | every commit |
-| Lint + format | `npm run lint` | 2026-11-02, exit 0 | every commit |
-| Build | `npm run package` | 2026-11-02, exit 0 | every commit touching main, preload or Vite config |
-| Unit | `npm run test:unit` | 2026-11-02, exit 0 (14 tests) | tier 1 and 2 unit risks |
-| Integration | `npm run test:integration` (requires `docker compose up -d` and `.env`; fails, never skips, when MongoDB is unreachable) | 2026-11-02, exit 0 (9 tests) | tier 1 |
-| E2E | `npm run test:e2e` (runs `npm run package` first) | 2026-11-02, exit 0 (2 tests) | T1.8, T2.7 |
+| Types | `npm run typecheck` | 2026-11-03, exit 0 | every commit |
+| Lint + format | `npm run lint` | 2026-11-03, exit 0 | every commit |
+| Build | `npm run package` | 2026-11-03, exit 0 (run by `test:e2e`) | every commit touching main, preload or Vite config |
+| Unit | `npm run test:unit` | 2026-11-03, exit 0 (58 tests) | tier 1 and 2 unit risks |
+| Integration | `npm run test:integration` (requires `docker compose up -d` and `.env`; fails, never skips, when MongoDB is unreachable) | 2026-11-03, exit 0 (35 tests) | tier 1 |
+| E2E | `npm run test:e2e` (runs `npm run package` first) | 2026-11-03, exit 0 (3 tests) | T1.8, T2.7 |
 
 ## Known gaps
-The harness exists (change `test-harness`): Vitest unit and integration projects, a throwaway
-test database helper (`test-support/test-db.ts`), a raw-request capture server
-(`test-support/capture-server.ts`), and Playwright e2e. Each layer has a smoke test of its own
-helper only.
+Harness: change `test-harness` (`context/archive/test-harness/record.md`). Covered so far:
+change `send-and-record`, see the Covered column. e2e runs always use a `dp_test_*` database through
+`test-support/e2e-database.ts`, so no run touches real history.
 
-Every tier 1 and tier 2 risk is still uncovered, because the features they describe do not exist
-yet. Each feature change writes the tests for the risks it introduces, at the layer assigned
-above.
+Uncovered, and where each is expected to be closed (`roadmap.md`):
+- **T1.4** multipart replay after file deletion — slice 4.
+- **T1.5** body over 16 MB — slice 3.
+- **T1.7** delete and retention removing the wrong records — slice 7.
+- **T1.8** response body executing as script — the first slice that renders a body in an editor
+  or preview beyond plain text (slice 3). Today bodies are decoded into `<pre>` as text.
+- **T2.3** history filters and search — slice 6.
+- **T2.4** curl export — slice 2.
+- **T2.5** environment and `baseUrl` — slice 5.
+- **T2.6** pretty-printing — slice 3.
+- **T2.7** the replay half — slice 2.
+- **T1.2, T1.3** for request bodies — slices 3–4.
 
-Open preconditions:
-- **T1.6** needs the PRD open question on database-down behaviour decided before its test can
-  assert anything.
-- **T2.7 and any e2e test that sends or records** need the app to take its database name from the
-  environment, so e2e can point it at a `dp_test_*` database. Without this, an e2e run writes into
-  the real history database. The first feature change that adds database access carries this
-  constraint (`context/changes/test-harness/plan.md`, Out of scope).
+Known limit inside a covered risk: T1.3's wire contract encodes undici 8.12.3's header
+normalisation (lowercase `host`, `connection` added, `connection: close` forced on `HEAD`,
+`content-length: 0` on bodiless `POST`/`PUT`/`PATCH`). An undici upgrade can change it; the T1.3
+cases for all seven methods fail if it does.
 
 ## Not a target
 Coverage percentage is not tracked and is not a goal. Adequacy is judged per risk against this

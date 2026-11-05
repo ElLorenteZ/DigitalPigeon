@@ -1,3 +1,14 @@
-// oxlint-disable eslint-plugin-unicorn/no-empty-file
-// See the Electron documentation for details on how to use preload scripts:
-// https://www.electronjs.org/docs/latest/tutorial/process-model#preload-scripts
+// Preload: exposes exactly four named functions on `window.pigeon`. No raw ipcRenderer, no generic
+// invoke channel (AGENTS.md). Main validates every message.
+import { contextBridge, ipcRenderer } from 'electron';
+import { type PigeonApi, channels } from './shared/ipc-contract';
+
+const api: PigeonApi = {
+  send: (input) => ipcRenderer.invoke(channels.send, input),
+  cancel: (clientRequestId) =>
+    ipcRenderer.invoke(channels.cancel, clientRequestId),
+  listCalls: () => ipcRenderer.invoke(channels.listCalls),
+  dbStatus: () => ipcRenderer.invoke(channels.dbStatus),
+};
+
+contextBridge.exposeInMainWorld('pigeon', api);

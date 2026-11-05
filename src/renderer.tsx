@@ -6,13 +6,8 @@
  */
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
+import { App } from './renderer/app';
 import './index.css';
-
-const App = () => (
-  <main>
-    <h1>DigitalPigeon</h1>
-  </main>
-);
 
 const root = document.getElementById('root');
 if (!root) throw new Error('Missing #root element in index.html');

@@ -27,7 +27,7 @@ Appetite: about 2 weeks, sized to replace Postman/Insomnia for REST work (`shape
 
 | # | Slice | Observable outcome | Status | Change |
 |---|---|---|---|---|
-| 1 | Send and record | Type a method, URL, query params and headers (including a pasted auth header), send, see status, headers, body and timing; the call appears in a history list; sending twice shows two entries | next | — |
+| 1 | Send and record | Type a method, URL, query params and headers (including a pasted auth header), send, see status, headers, body and timing; the call appears in a history list; sending twice shows two entries | in flight | `send-and-record` |
 | 2 | Preview, replay, export | Open a past call and see the request as sent and the response; replay it exactly or edit and send, and a new entry appears while the original is unchanged; copy either as curl and run it | later | — |
 | 3 | Bodies and formatting | Send JSON, XML, plain-text and form-urlencoded bodies; JSON and XML shown pretty-printed in the editor; a response over 16 MB is stored and shown in full | later | — |
 | 4 | Multipart with file copies | Send a multipart request with a file; delete the file from disk; replay the call and the server receives the same bytes | later | — |

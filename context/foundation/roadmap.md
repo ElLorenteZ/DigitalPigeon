@@ -1,7 +1,7 @@
 ---
 produced-by: lz-roadmap
 current-milestone: M1
-updated: 2026-11-05
+updated: 2026-11-06
 ---
 
 # Roadmap
@@ -12,24 +12,24 @@ Appetite: about 2 weeks, sized to replace Postman/Insomnia for REST work (`shape
 
 **Exit criteria** — from `prd.md` Success criteria:
 - [x] Sending the same unchanged request twice produces two call records, each with its own timestamp. *(slice 1: `call-store.int.test.ts`, `send.int.test.ts` T1.1, e2e journey shows two rows)*
-- [ ] A call record's content does not change after it is written; edit-and-send creates a new record and the original is unchanged when viewed again. *(storage half done in slice 1: insert-only store, no update or delete; edit-and-send and viewing a call are slice 2)*
-- [ ] An exact replay sends the same method, URL, headers and body as the recorded request, and creates a new record.
+- [x] A call record's content does not change after it is written; edit-and-send creates a new record and the original is unchanged when viewed again. *(slice 1: insert-only store, no update or delete; slice 2: `replay.int.test.ts` T1.1, `e2e/edit-and-export.spec.ts`)*
+- [ ] An exact replay sends the same method, URL, headers and body as the recorded request, and creates a new record. *(slice 2: holds for bodiless requests, `replay.int.test.ts` T1.3; bodies are slices 3–4)*
 - [ ] A call record disappears only after the user deletes it, one at a time or in bulk.
-- [ ] A call record shows the request as sent, response status, response headers, full response body and timing.
+- [ ] A call record shows the request as sent, response status, response headers, full response body and timing. *(slice 2: the panel shows all of these; a response over 16 MB is slice 3, T1.5)*
 - [ ] JSON and XML request and response bodies are shown pretty-printed.
 - [ ] JSON, XML, plain-text, form-urlencoded and multipart requests can each be sent and are recorded.
 - [ ] A recorded multipart call can be replayed after the uploaded file is deleted from its original location.
 - [ ] History can be narrowed by environment, by saved request, by date range, and by a search term in URL or body.
 - [ ] Switching the active environment changes the `baseUrl` a saved request is sent to.
-- [ ] A request exported as curl, run in a terminal, sends the same method, URL, headers and body.
+- [ ] A request exported as curl, run in a terminal, sends the same method, URL, headers and body. *(slice 2: holds for bodiless requests, `curl.int.test.ts` T2.4; bodies are slices 3–4)*
 - [x] The app runs as a local install on the personal machine with no account. *(slice 1: the author ran the packaged app from `npm run package` and sent a request with only `config.json`; no installer from `make` yet)*
 - [ ] *(Author's judgement)* Postman/Insomnia goes unopened for REST work for two weeks, and finding and replaying a past call is faster than in Postman.
 
 | # | Slice | Observable outcome | Status | Change |
 |---|---|---|---|---|
 | 1 | Send and record | Type a method, URL, query params and headers (including a pasted auth header), send, see status, headers, body and timing; the call appears in a history list; sending twice shows two entries | done | `send-and-record` |
-| 2 | Preview, replay, export | Open a past call and see the request as sent and the response; replay it exactly or edit and send, and a new entry appears while the original is unchanged; copy either as curl and run it | in flight | `preview-replay-export` |
-| 3 | Bodies and formatting | Send JSON, XML, plain-text and form-urlencoded bodies; JSON and XML shown pretty-printed in the editor; a response over 16 MB is stored and shown in full | later | — |
+| 2 | Preview, replay, export | Open a past call and see the request as sent and the response; replay it exactly or edit and send, and a new entry appears while the original is unchanged; copy either as curl and run it | done | `preview-replay-export` |
+| 3 | Bodies and formatting | Send JSON, XML, plain-text and form-urlencoded bodies; JSON and XML shown pretty-printed in the editor; a response over 16 MB is stored and shown in full | next | — |
 | 4 | Multipart with file copies | Send a multipart request with a file; delete the file from disk; replay the call and the server receives the same bytes | later | — |
 | 5 | Saved requests and environments | Save a request and edit it later; define environments (name + `baseUrl`), switch the active one, and the same saved request goes to the other `baseUrl`; calls link back to their saved request | later | — |
 | 6 | Find calls | Narrow history by environment, by saved request, by date range, and by a substring of URL or body (for example `/orders/12`) | later | — |
@@ -63,9 +63,25 @@ Appetite: about 2 weeks, sized to replace Postman/Insomnia for REST work (`shape
   - a defect drift (`HEAD`)
   - a host code review with 9 fixes, one of them a tier-1 record mismatch
 
-  Feature-only slices (2–7) should be smaller. Check that against slice 2's actual cost.
-- **M1 appetite:** about 2 weeks for 7 slices. After 2 days, 1 of 7 slices and 2 of 13 exit
-  criteria are done.
+  Feature-only slices (2–7) should be smaller. Slice 2 did not confirm this.
+- **Slice 2, `preview-replay-export`** (2026-11-05 → 2026-11-06): two days, the same as slice 1, with no
+  groundwork to carry. The time went on:
+  - two spikes; the non-ASCII one disproved its prediction and added a phase that changed slice 1's send
+    path
+  - a plan review that found curl's globbing and empty-value behaviour
+  - a defect found through the author's packaged-app check (the panel opened off-screen)
+  - a host code review with 8 fixes, two of them records that did not match the wire
+
+  Most of the cost came from what undici and curl do, not from the feature. Slice 3 meets the same
+  boundary with bodies, `content-length` and the 16 MB limit, so expect at least the same. Slices 5–7 touch
+  undici less, and are the next check on whether feature slices cost less.
+- **Host code review:** found record-versus-wire mismatches in both slices after every other check passed.
+  Plan for it in each slice.
+- **M1 appetite:** about 2 weeks for 7 slices. After 4 days, 2 of 7 slices and 3 of 13 exit criteria are
+  done, and 3 more criteria hold for bodiless requests or below 16 MB. At two days a slice, the remaining 5
+  take 10 days, which uses the appetite with no margin.
+- **Not merged:** slices 1 and 2 are local branches, `send-and-record` and `preview-replay-export`, stacked
+  and not pushed. "Done" here means closed and archived.
 
 ## Later milestones
 

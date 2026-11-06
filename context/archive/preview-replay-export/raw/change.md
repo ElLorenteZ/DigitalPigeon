@@ -1,11 +1,11 @@
 ---
 change_id: preview-replay-export
 title: Open a past call, replay it exactly or edit and resend it, and export a request as curl
-status: new
+status: closed
 ticket: null
 created: 2026-11-05
 updated: 2026-11-06
-closed: null
+closed: 2026-11-06
 produced-by: lz-change
 ---
 
@@ -73,3 +73,4 @@ produced-by: lz-change
   relying on what it writes for a new request shape. Replaying a recorded header list is such a
   shape.
 - Branch: `send-and-record` is not merged; the roadmap update from 2026-11-05 is uncommitted on it.
+- Outcome (2026-11-06): all six phases verified and every finding fixed or accepted (`review.md`), committed as `1846ce8` on branch `preview-replay-export`. Not pushed: the slice 1 pull request (F4) and a second `/code-review` of the fixes have not happened.

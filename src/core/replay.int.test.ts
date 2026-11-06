@@ -18,6 +18,7 @@ import type { SendDoc } from './call-schema';
 import { createCallStore } from './call-store';
 import { formFromCall } from './form-from-call';
 import { CallNotReplayableError, replayCall, sendAndRecord } from './send';
+import type { BodyInput } from './wire';
 
 let testDb: TestDb;
 let capture: CaptureServer;
@@ -83,6 +84,54 @@ describe('T1.3 — a replay sends what the original sent', () => {
       expect(replay.send.request).toEqual(original.send.request);
     },
   );
+});
+
+describe('T1.3 — a replay of a call with a body sends the same bytes', () => {
+  const bodies: [string, BodyInput][] = [
+    ['json', { type: 'json', text: '{"a":"zażółć"}' }],
+    ['xml', { type: 'xml', text: '<a>ż</a>' }],
+    ['text', { type: 'text', text: 'line 1\r\nline 2\n' }],
+    ['form', { type: 'form', rows: [['a b', 'ż&=']] }],
+  ];
+  const cases = ['GET', 'DELETE', 'OPTIONS', 'POST', 'PUT', 'PATCH'].flatMap(
+    (method) => bodies.map(([label, body]) => [method, label, body] as const),
+  );
+
+  test.each(cases)('%s, %s', async (method, _label, body) => {
+    const store = createCallStore(testDb.db);
+    const original = await sendAndRecord(store, { ...input(method), body });
+    const replay = await replayCall(store, original.send._id);
+
+    expect(capture.requests).toHaveLength(2);
+    const [first, second] = capture.requests;
+    expect(first?.body.length).toBeGreaterThan(0);
+    expect(second?.method).toBe(first?.method);
+    expect(second?.url).toBe(first?.url);
+    expect(second?.rawHeaders).toEqual(first?.rawHeaders);
+    expect(second?.body.equals(first?.body ?? Buffer.alloc(1))).toBe(true);
+    expect(replay.send.request.headers).toEqual(original.send.request.headers);
+    expect(Buffer.from(replay.send.request.body ?? [])).toEqual(first?.body);
+  });
+});
+
+test('T1.1 — a replay and an edit of a call with a body leave the original unchanged', async () => {
+  const store = createCallStore(testDb.db);
+  const original = await sendAndRecord(store, {
+    ...input('POST'),
+    body: { type: 'json', text: '{"a":1}' },
+  });
+  const before = await store.getCall(original.send._id, new Set());
+
+  const replay = await replayCall(store, original.send._id);
+  const edited = await sendAndRecord(store, {
+    ...formFromCall(original.send.request),
+    body: { type: 'json', text: '{"a":2}' },
+  });
+
+  expect(await store.getCall(original.send._id, new Set())).toEqual(before);
+  expect(replay.send._id).not.toBe(original.send._id);
+  expect(capture.requests.at(-1)?.body.toString()).toBe('{"a":2}');
+  expect(edited.send.request.headers.at(-1)).toEqual(['content-length', '7']);
 });
 
 test('T1.1 — a replay is a new call and leaves the original unchanged', async () => {

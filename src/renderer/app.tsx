@@ -1,11 +1,23 @@
 // Renderer: request form, response view, history list, database status.
-// Response bodies are untrusted input: rendered as text only, never as HTML (AGENTS.md).
-import { useCallback, useEffect, useRef, useState } from 'react';
-import type { CompletionDoc } from '../core/call-schema';
+// Request and response bodies are untrusted input: rendered as text only, never as HTML (AGENTS.md).
+import {
+  Fragment,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
+import type {
+  CompletionDoc,
+  StoredBody,
+  StoredFile,
+} from '../core/call-schema';
 import { toCurl } from '../core/curl';
 import { formFromCall } from '../core/form-from-call';
-import { type WireRequest, buildWireRequest } from '../core/wire';
+import { type BodyInput, buildWireRequest } from '../core/wire';
 import {
+  BODY_PAGE_BYTES,
   type CallDetail,
   type CallView,
   type DbStatusView,
@@ -34,11 +46,22 @@ const EMPTY_FORM: Form = {
   headerRows: [],
 };
 const nonEmpty = (rows: Row[]) => rows.filter(([name]) => name.trim() !== '');
+// Nameless rows are ignored, as the form has always done for query and header rows.
+const requestOf = (form: Form) => ({
+  ...form,
+  queryRows: nonEmpty(form.queryRows),
+  headerRows: nonEmpty(form.headerRows),
+  ...(form.body?.type === 'form'
+    ? { body: { type: 'form' as const, rows: nonEmpty(form.body.rows) } }
+    : {}),
+});
 const errorText = (error: unknown) =>
   String((error as Error)?.message ?? error);
 
 // Builds the command and tries the clipboard; the command stays selectable if the clipboard fails.
-async function exportCurl(request: () => WireRequest): Promise<CurlOutcome> {
+async function exportCurl(
+  request: () => Parameters<typeof toCurl>[0],
+): Promise<CurlOutcome> {
   let command: string;
   try {
     command = toCurl(request());
@@ -55,7 +78,8 @@ async function exportCurl(request: () => WireRequest): Promise<CurlOutcome> {
 
 const STATUS_POLL_MS = 2000;
 const HISTORY_POLL_MS = 500;
-const decoder = new TextDecoder('utf-8', { fatal: false });
+// ignoreBOM keeps a byte order mark on screen: dropping one would hide bytes the record holds.
+const textDecoder = () => new TextDecoder('utf-8', { ignoreBOM: true });
 
 export function App() {
   const [status, setStatus] = useState<DbStatusView | null>(null);
@@ -68,6 +92,7 @@ export function App() {
   const [opened, setOpened] = useState<Opened | null>(null);
   const [openError, setOpenError] = useState<string | null>(null);
   const [openedCurl, setOpenedCurl] = useState<CurlOutcome | null>(null);
+  const [editError, setEditError] = useState<string | null>(null);
 
   // Never rejects: a failure is shown above the list (review #3).
   const refreshHistory = useCallback(async () => {
@@ -136,6 +161,7 @@ export function App() {
   const openCall = async (sendId: string) => {
     const thisOpen = ++latestOpen.current;
     setOpenedCurl(null);
+    setEditError(null);
     setOpenError(null);
     try {
       const got = await window.pigeon.getCall(sendId);
@@ -189,24 +215,13 @@ export function App() {
           inFlight={inFlight}
           onSend={() =>
             run((clientRequestId) =>
-              window.pigeon.send({
-                clientRequestId,
-                ...form,
-                queryRows: nonEmpty(form.queryRows),
-                headerRows: nonEmpty(form.headerRows),
-              }),
+              window.pigeon.send({ clientRequestId, ...requestOf(form) }),
             )
           }
           onCancel={() => inFlightId && window.pigeon.cancel(inFlightId)}
           onCopyCurl={async () =>
             setFormCurl(
-              await exportCurl(() =>
-                buildWireRequest({
-                  ...form,
-                  queryRows: nonEmpty(form.queryRows),
-                  headerRows: nonEmpty(form.headerRows),
-                }),
-              ),
+              await exportCurl(() => buildWireRequest(requestOf(form))),
             )
           }
         />
@@ -231,6 +246,7 @@ export function App() {
             call={opened}
             canReplay={canSend && !inFlight}
             curl={openedCurl}
+            editError={editError}
             onReplay={() => {
               showRequest();
               void run((clientRequestId) =>
@@ -241,7 +257,14 @@ export function App() {
               );
             }}
             onEdit={() => {
-              const loaded = formFromCall(opened.send.request);
+              let loaded: ReturnType<typeof formFromCall>;
+              try {
+                loaded = formFromCall(opened.send.request);
+              } catch (error) {
+                setEditError(errorText(error));
+                return;
+              }
+              setEditError(null);
               setForm({ ...loaded, method: loaded.method as Method });
               setFormCurl(null);
               showRequest();
@@ -320,6 +343,65 @@ function RowsEditor({
   );
 }
 
+const BODY_TYPES = [
+  ['none', 'None'],
+  ['json', 'JSON'],
+  ['xml', 'XML'],
+  ['text', 'Text'],
+  ['form', 'Form'],
+] as const;
+
+// JSON, XML and Text share one text box, so changing between them keeps what was typed.
+function bodyOfType(type: BodyInput['type'], current: BodyInput): BodyInput {
+  if (type === 'none') return { type };
+  if (type === 'form') {
+    return current.type === 'form' ? current : { type, rows: [] };
+  }
+  return { type, text: 'text' in current ? current.text : '' };
+}
+
+function BodyEditor({
+  body,
+  onChange,
+}: {
+  body: BodyInput;
+  onChange: (body: BodyInput) => void;
+}) {
+  return (
+    <fieldset>
+      <legend>Body</legend>
+      <select
+        aria-label="Body type"
+        value={body.type}
+        onChange={(e) =>
+          onChange(bodyOfType(e.target.value as BodyInput['type'], body))
+        }
+      >
+        {BODY_TYPES.map(([type, label]) => (
+          <option key={type} value={type}>
+            {label}
+          </option>
+        ))}
+      </select>
+      {'text' in body ? (
+        <textarea
+          aria-label="Body text"
+          rows={8}
+          value={body.text}
+          onChange={(e) => onChange({ ...body, text: e.target.value })}
+        />
+      ) : null}
+      {body.type === 'form' ? (
+        <RowsEditor
+          label="Form field"
+          rows={body.rows}
+          onChange={(rows) => onChange({ type: 'form', rows })}
+        />
+      ) : null}
+    </fieldset>
+  );
+}
+
 function RequestForm({
   form,
   onChange,
@@ -386,6 +468,10 @@ function RequestForm({
         rows={form.headerRows}
         onChange={(headerRows) => onChange({ ...form, headerRows })}
       />
+      <BodyEditor
+        body={form.body ?? { type: 'none' }}
+        onChange={(body) => onChange({ ...form, body })}
+      />
     </form>
   );
 }
@@ -418,6 +504,7 @@ function CallPanel({
   call,
   canReplay,
   curl,
+  editError,
   onReplay,
   onEdit,
   onCopyCurl,
@@ -425,11 +512,12 @@ function CallPanel({
   call: Opened;
   canReplay: boolean;
   curl: CurlOutcome | null;
+  editError: string | null;
   onReplay: () => void;
   onEdit: () => void;
   onCopyCurl: () => void;
 }) {
-  const { method, url, headers } = call.send.request;
+  const { method, url, headers, body } = call.send.request;
   return (
     <section data-testid="call-panel" data-state={call.state}>
       <h2>Call</h2>
@@ -444,6 +532,11 @@ function CallPanel({
           Copy call as curl
         </button>
       </div>
+      {editError ? (
+        <p data-testid="call-edit-error" className="error">
+          Cannot edit this call: {editError}
+        </p>
+      ) : null}
       <CurlView testId="call-curl" outcome={curl} />
       <p data-testid="call-state">{stateText(call.state)}</p>
       <h3>Request as sent</h3>
@@ -453,6 +546,7 @@ function CallPanel({
       <pre data-testid="call-request-headers">
         {headers.map(([n, v]) => `${n}: ${v}`).join('\n')}
       </pre>
+      {body ? <BodyText testId="call-request-body" body={body} /> : null}
       {call.completion ? (
         <>
           <h3>Response</h3>
@@ -514,7 +608,117 @@ function CompletionView({ completion }: { completion: CompletionDoc }) {
       <pre data-testid="response-headers">
         {headers.map(([n, v]) => `${n}: ${v}`).join('\n')}
       </pre>
-      <pre data-testid="response-body">{decoder.decode(body)}</pre>
+      <BodyText testId="response-body" body={body} />
+    </div>
+  );
+}
+
+// A body in its document is shown whole; one in a file is shown a page at a time.
+function BodyText({ testId, body }: { testId: string; body: StoredBody }) {
+  return 'fileId' in body ? (
+    // One instance per file: an answer for a body no longer shown reaches an unmounted instance.
+    <PagedBodyText key={body.fileId} testId={testId} file={body} />
+  ) : (
+    <InlineBodyText testId={testId} bytes={body} />
+  );
+}
+
+// Memoized: the status poll re-renders the app every 2 s, and this can hold 1 MiB.
+function InlineBodyText({
+  testId,
+  bytes,
+}: {
+  testId: string;
+  bytes: Uint8Array;
+}) {
+  const text = useMemo(() => textDecoder().decode(bytes), [bytes]);
+  return <pre data-testid={testId}>{text}</pre>;
+}
+
+function PagedBodyText({ testId, file }: { testId: string; file: StoredFile }) {
+  // One text node per page: one string would meet V8's limit of 536,870,888 characters (plan.md).
+  const [pages, setPages] = useState<string[]>([]);
+  const [error, setError] = useState<string | null>(null);
+  const [reading, setReading] = useState(false);
+  const [loaded, setLoaded] = useState(0);
+  // Refs, not state: a double click happens before the next render.
+  const busy = useRef(false);
+  const shown = useRef(true);
+  const offset = useRef(0);
+  // Streaming, so a character split across two pages decodes correctly.
+  const decoder = useRef(textDecoder());
+
+  const readNext = useCallback(async () => {
+    if (busy.current || offset.current >= file.length) return;
+    busy.current = true;
+    setReading(true);
+    setError(null);
+    let failure: string | null = null;
+    try {
+      const got = await window.pigeon.readBody({
+        fileId: file.fileId,
+        offset: offset.current,
+        length: BODY_PAGE_BYTES,
+      });
+      if (!shown.current) return;
+      if (!got.ok) {
+        failure = got.message;
+      } else if (got.bytes.length === 0) {
+        failure = 'The stored body ended before its recorded length';
+      } else {
+        offset.current += got.bytes.length;
+        const text = decoder.current.decode(got.bytes, {
+          stream: offset.current < file.length,
+        });
+        setPages((current) => [...current, text]);
+        setLoaded(offset.current);
+      }
+    } catch (caught) {
+      failure = errorText(caught);
+    } finally {
+      busy.current = false;
+    }
+    if (!shown.current) return;
+    setReading(false);
+    setError(failure);
+  }, [file.fileId, file.length]);
+
+  useEffect(() => {
+    shown.current = true;
+    void readNext();
+    return () => {
+      shown.current = false;
+    };
+  }, [readNext]);
+
+  const remaining = file.length - loaded;
+  return (
+    <div>
+      <pre data-testid={testId}>
+        {pages.map((page, index) => (
+          <Fragment key={index}>{page}</Fragment>
+        ))}
+      </pre>
+      {error ? (
+        <p data-testid={`${testId}-error`} className="error">
+          Could not read the body: {error}
+        </p>
+      ) : null}
+      {remaining > 0 ? (
+        <p>
+          <span data-testid={`${testId}-remaining`} data-remaining={remaining}>
+            {remaining.toLocaleString()} of {file.length.toLocaleString()} bytes
+            not loaded
+          </span>{' '}
+          <button
+            type="button"
+            disabled={reading}
+            onClick={() => void readNext()}
+          >
+            Load more
+          </button>
+        </p>
+      ) : null}
     </div>
   );
 }

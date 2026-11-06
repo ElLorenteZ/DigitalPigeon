@@ -89,6 +89,43 @@ test('a completion attaches to its own send, with the body bytes read back as Ui
   expect(b2?.completion).toBeNull();
 });
 
+test('history rows carry no request body, and an opened call does', async () => {
+  const store = createCallStore(testDb.db);
+  const bytes = new Uint8Array([1, 2, 3]);
+  await store.insertSend({
+    ...send('rb-1', '2027-05-01T00:00:00Z'),
+    request: { ...request, body: bytes },
+  });
+
+  const row = readable(await store.listCalls(10, new Set())).find(
+    (c) => c.send._id === 'rb-1',
+  );
+  expect(row).toBeDefined();
+  expect('body' in (row?.send.request ?? {})).toBe(false);
+
+  const opened = await store.getCall('rb-1', new Set());
+  expect(opened?.state).not.toBe('unreadable');
+  expect(
+    opened && opened.state !== 'unreadable'
+      ? Array.from(opened.send.request.body as Uint8Array)
+      : null,
+  ).toEqual([1, 2, 3]);
+});
+
+test('a document written before bodies existed still lists and opens', async () => {
+  const store = createCallStore(testDb.db);
+  await store.insertSend(send('old-null', '2027-05-02T00:00:00Z'));
+
+  const row = readable(await store.listCalls(10, new Set())).find(
+    (c) => c.send._id === 'old-null',
+  );
+  expect(row?.state).toBe('interrupted');
+  const opened = await store.getCall('old-null', new Set());
+  expect(
+    opened && opened.state !== 'unreadable' ? opened.send.request.body : 'x',
+  ).toBeNull();
+});
+
 test('by default history rows carry the response status but no body', async () => {
   const store = createCallStore(testDb.db);
   await store.insertSend(send('k-1', '2027-04-01T00:00:00Z'));
@@ -243,6 +280,7 @@ test('the store offers no way to update or delete a call', () => {
   const store = createCallStore(testDb.db);
 
   expect(Object.keys(store).sort()).toEqual([
+    'bodies',
     'getCall',
     'insertCompletion',
     'insertSend',

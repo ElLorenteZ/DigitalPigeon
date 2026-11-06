@@ -8,8 +8,13 @@ import {
   type CaptureServer,
   startCaptureServer,
 } from '../../test-support/capture-server';
-import { toCurl } from './curl';
-import { InvalidHeaderError, type WireInput, buildWireRequest } from './wire';
+import { CurlRefusedError, MAX_COMMAND_BYTES, toCurl } from './curl';
+import {
+  type BodyInput,
+  InvalidHeaderError,
+  type WireInput,
+  buildWireRequest,
+} from './wire';
 
 const run = promisify(execFile);
 
@@ -48,6 +53,23 @@ const wire = (over: Partial<WireInput> = {}) =>
     ],
     ...over,
   });
+
+const expectSameRequest2 = (request: ReturnType<typeof wire>) => {
+  expect(capture.requests).toHaveLength(1);
+  const got = capture.requests[0];
+  expect(got?.method).toBe(request.method);
+  expect(`${capture.url}${got?.url}`).toBe(request.url);
+  expect(sorted(received())).toEqual(sorted(request.headers));
+};
+
+// The command with the limit out of the way, to measure where the limit falls.
+const toCurlUnchecked = (request: ReturnType<typeof wire>) => {
+  try {
+    return toCurl(request);
+  } catch {
+    return 'x'.repeat(MAX_COMMAND_BYTES + 1);
+  }
+};
 
 const expectSameRequest = (request: ReturnType<typeof wire>) => {
   expect(capture.requests).toHaveLength(1);
@@ -148,6 +170,125 @@ describe('the export sends the recorded method, URL and headers', () => {
   });
 });
 
+describe('T2.4 — the export sends the recorded body', () => {
+  const bodies: [string, BodyInput][] = [
+    ['json', { type: 'json', text: '{"a":"zażółć"}' }],
+    ['xml', { type: 'xml', text: '<a>ż</a>' }],
+    ['text', { type: 'text', text: 'plain text' }],
+    ['form', { type: 'form', rows: [['a b', 'ż&=']] }],
+  ];
+  const cases = ['GET', 'DELETE', 'OPTIONS', 'POST', 'PUT', 'PATCH'].flatMap(
+    (method) => bodies.map(([label, body]) => [method, label, body] as const),
+  );
+
+  const expectBody = (request: ReturnType<typeof wire>) => {
+    expectSameRequest2(request);
+    expect(capture.requests[0]?.body).toEqual(
+      Buffer.from(request.body as Uint8Array),
+    );
+  };
+
+  test.each(cases)('%s, %s', async (method, _label, body) => {
+    const request = wire({ method, body });
+    await inShell(toCurl(request));
+    expectBody(request);
+  });
+
+  test.each<[string, string]>([
+    ['newlines and CRLF', 'line 1\nline 2\r\nline 3\n'],
+    ['single quotes', `it's 'quoted'`],
+    ['double quotes', 'a "b" c'],
+    ['shell syntax', '$HOME $(echo x) `echo y`'],
+    ['backslashes', 'a\\b\\\\c'],
+    ['a percent sign', '%41 %'],
+    ['a byte order mark', '\uFEFFabc'],
+    ['non-ASCII', 'zażółć 🐦'],
+  ])('a body with %s arrives unchanged', async (_label, text) => {
+    const request = wire({ method: 'POST', body: { type: 'text', text } });
+    await inShell(toCurl(request));
+    expectBody(request);
+  });
+
+  // --data-binary would send the contents of /etc/hosts (spike-curl-bodies.md).
+  test('a body starting with @ arrives as text, and no file is read', async () => {
+    const request = wire({
+      method: 'POST',
+      body: { type: 'text', text: '@/etc/hosts' },
+    });
+    await inShell(toCurl(request));
+    expect(capture.requests[0]?.body.toString()).toBe('@/etc/hosts');
+    expectBody(request);
+  });
+
+  test('a recorded list with no Content-Type gets none from curl', async () => {
+    const body = new TextEncoder().encode('abc');
+    const request = {
+      method: 'POST',
+      url: `${capture.url}/x`,
+      headers: [
+        ['host', new URL(capture.url).host],
+        ['connection', 'keep-alive'],
+        ['content-length', '3'],
+      ] as [string, string][],
+      body,
+    };
+    await inShell(toCurl(request));
+    expect(sorted(received())).toEqual(sorted(request.headers));
+    expect(capture.requests[0]?.body.toString()).toBe('abc');
+  });
+});
+
+describe('T2.4 — a command too long for a shell is refused', () => {
+  const sized = (text: string) =>
+    wire({ method: 'POST', headerRows: [], body: { type: 'text', text } });
+  const byteLength = (command: string) => Buffer.byteLength(command);
+
+  // The digits of content-length grow with the body, so step down from just over the budget.
+  const longestFitting = () => {
+    let length = MAX_COMMAND_BYTES - byteLength(toCurl(sized('a'))) + 1;
+    while (
+      byteLength(toCurlUnchecked(sized('a'.repeat(length)))) > MAX_COMMAND_BYTES
+    ) {
+      length -= 1;
+    }
+    return length;
+  };
+
+  test('a command at the limit sends', async () => {
+    const request = sized('a'.repeat(longestFitting()));
+    const command = toCurl(request);
+    expect(byteLength(command)).toBeLessThanOrEqual(MAX_COMMAND_BYTES);
+    await inShell(command);
+    expect(capture.requests[0]?.body).toEqual(
+      Buffer.from(request.body as Uint8Array),
+    );
+  });
+
+  test('one byte over is refused, with the reason', () => {
+    expect(() => toCurl(sized('a'.repeat(longestFitting() + 1)))).toThrow(
+      CurlRefusedError,
+    );
+    expect(() => toCurl(sized('a'.repeat(longestFitting() + 1)))).toThrow(
+      /too long/,
+    );
+  });
+
+  // Each ' becomes '\'' in the command, four bytes for one.
+  test('quoting counts: a small body of quotes can be over the limit', () => {
+    const text = "'".repeat(Math.ceil(MAX_COMMAND_BYTES / 3));
+    expect(Buffer.byteLength(text)).toBeLessThan(MAX_COMMAND_BYTES);
+    expect(() => toCurl(sized(text))).toThrow(CurlRefusedError);
+  });
+
+  test.each<[string, number[]]>([
+    ['a NUL byte', [0x61, 0x00, 0x62]],
+    ['invalid UTF-8', [0x61, 0xff, 0x62]],
+  ])('a body with %s is refused: a shell cannot hold it', (_label, bytes) => {
+    const request = { ...sized('abc'), body: new Uint8Array(bytes) };
+    expect(() => toCurl(request)).toThrow(CurlRefusedError);
+  });
+});
+
 describe('records an older version could have written', () => {
   const recorded = (value: string) => ({
     method: 'GET',
@@ -172,4 +313,16 @@ describe('records an older version could have written', () => {
     const pairs = received();
     expect(pairs).toContainEqual(['X-Token', '']);
   });
+});
+
+test('T2.4 — a body stored in a file is refused, with the reason', () => {
+  const request = {
+    method: 'POST',
+    url: 'http://x/',
+    headers: [] as [string, string][],
+    body: { fileId: 'f', length: 2 * 1024 * 1024 },
+  };
+
+  expect(() => toCurl(request)).toThrow(CurlRefusedError);
+  expect(() => toCurl(request)).toThrow(/2\.0 MiB/);
 });

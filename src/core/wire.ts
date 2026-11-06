@@ -2,19 +2,35 @@
 // header list. undici writes `host` and `connection` itself in lowercase, adds `content-length: 0`
 // to a bodiless POST/PUT/PATCH, forces `connection: close` for HEAD, and writes only `close` or
 // `keep-alive` whatever Connection value it is given, so the list is built in that form and the send
-// document records it before dispatch. T1.3 checks it against the wire.
+// document records it before dispatch. With a body, undici writes `content-length` with the byte count
+// last and leaves `connection` alone (spike-undici-bodies.md). T1.3 checks it against the wire.
 export interface WireInput {
   method: string;
   url: string;
   queryRows: [string, string][];
   headerRows: [string, string][];
+  body?: BodyInput;
 }
+
+/** What the form holds. The record holds only the bytes this becomes. */
+export type BodyInput =
+  | { type: 'none' }
+  | { type: 'json' | 'xml' | 'text'; text: string }
+  | { type: 'form'; rows: [string, string][] };
 
 export interface WireRequest {
   method: string;
   url: string;
   headers: [string, string][];
+  body: Uint8Array<ArrayBuffer> | null;
 }
+
+export const GENERATED_CONTENT_TYPE = {
+  json: 'application/json',
+  xml: 'application/xml',
+  text: 'text/plain',
+  form: 'application/x-www-form-urlencoded',
+} as const;
 
 /** A header undici would refuse; raised before anything is recorded (plan.md, phase 1). */
 export class InvalidHeaderError extends Error {
@@ -76,6 +92,25 @@ function checkedRows(rows: [string, string][]): [string, string][] {
   return rows.map(([name, value]) => [name, checkedHeaderValue(name, value)]);
 }
 
+/** A request that cannot carry its body; raised before anything is recorded (plan.md, phase 1). */
+export class InvalidBodyError extends Error {
+  constructor() {
+    super('HEAD cannot carry a body: curl cannot export it reliably');
+  }
+}
+
+// An empty text box and no form rows are no body: identical on the wire (spike-undici-bodies.md).
+function encodedBody(
+  body: BodyInput | undefined,
+): Uint8Array<ArrayBuffer> | null {
+  if (!body || body.type === 'none') return null;
+  const text =
+    body.type === 'form'
+      ? new URLSearchParams(body.rows).toString()
+      : body.text;
+  return text === '' ? null : new TextEncoder().encode(text);
+}
+
 export const METHODS_WITH_LENGTH = new Set(['POST', 'PUT', 'PATCH']);
 const MANAGED = new Set(['host', 'connection', 'content-length']);
 
@@ -84,7 +119,10 @@ export function buildWireRequest({
   url,
   queryRows,
   headerRows,
+  body,
 }: WireInput): WireRequest {
+  const bytes = encodedBody(body);
+  if (bytes && method === 'HEAD') throw new InvalidBodyError();
   const rows = checkedRows(headerRows);
   const typed = (name: string) =>
     rows.find(([n]) => n.toLowerCase() === name)?.[1];
@@ -102,9 +140,16 @@ export function buildWireRequest({
     ],
     ...rows.filter(([name]) => !MANAGED.has(name.toLowerCase())),
   ];
-  if (METHODS_WITH_LENGTH.has(method)) headers.push(['content-length', '0']);
+  if (bytes && body && body.type !== 'none') {
+    if (typed('content-type') === undefined) {
+      headers.push(['content-type', GENERATED_CONTENT_TYPE[body.type]]);
+    }
+    headers.push(['content-length', String(bytes.length)]);
+  } else if (METHODS_WITH_LENGTH.has(method)) {
+    headers.push(['content-length', '0']);
+  }
 
-  return { method, url: withQuery(url, queryRows), headers };
+  return { method, url: withQuery(url, queryRows), headers, body: bytes };
 }
 
 // The URL as it goes on the wire: query rows appended to the real query string, the fragment

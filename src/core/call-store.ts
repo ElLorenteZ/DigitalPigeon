@@ -2,6 +2,7 @@
 // a call record does not change after it is written (PRD; test-strategy.md T1.1).
 import type { Db } from 'mongodb';
 import { z } from 'zod';
+import { createBodyStore } from './body-store';
 import {
   type CompletionDoc,
   CompletionDocSchema,
@@ -9,12 +10,15 @@ import {
   CompletionSummarySchema,
   type SendDoc,
   SendDocSchema,
+  type SendSummary,
+  SendSummarySchema,
 } from './call-schema';
 
-export type Call =
+export type Call<Send extends SendDoc | SendSummary = SendDoc | SendSummary> =
   | {
       state: 'completed' | 'in-flight' | 'interrupted';
-      send: SendDoc;
+      /** Without the request body unless listed with `includeBodies`. */
+      send: Send;
       /** Without the response body unless listed with `includeBodies`. */
       completion: CompletionDoc | CompletionSummary | null;
     }
@@ -36,6 +40,9 @@ export function createCallStore(db: Db) {
     }));
 
   return {
+    /** Files for bodies over the inline limit. Holds no call document. */
+    bodies: createBodyStore(db),
+
     insertSend: async (doc: SendDoc): Promise<void> => {
       await ensureIndexes();
       await sends.insertOne(SendDocSchema.parse(doc));
@@ -50,7 +57,7 @@ export function createCallStore(db: Db) {
     getCall: async (
       sendId: string,
       inFlight: ReadonlySet<string>,
-    ): Promise<Call | null> => {
+    ): Promise<Call<SendDoc> | null> => {
       const rawSend = await sends.findOne(
         { _id: sendId },
         { promoteBuffers: true },
@@ -60,7 +67,13 @@ export function createCallStore(db: Db) {
         { sendId },
         { promoteBuffers: true },
       );
-      return toCall(rawSend, rawCompletion, inFlight, CompletionDocSchema);
+      return toCall(
+        rawSend,
+        rawCompletion,
+        inFlight,
+        SendDocSchema,
+        CompletionDocSchema,
+      );
     },
 
     /** Newest first. Sends whose ids are in `inFlight` are still running in this process. */
@@ -70,7 +83,13 @@ export function createCallStore(db: Db) {
       { includeBodies = false }: { includeBodies?: boolean } = {},
     ): Promise<Call[]> => {
       const rawSends = await sends
-        .find({}, { promoteBuffers: true })
+        .find(
+          {},
+          {
+            promoteBuffers: true,
+            ...(includeBodies ? {} : { projection: { 'request.body': 0 } }),
+          },
+        )
         .sort({ sentAt: -1 })
         .limit(limit)
         .toArray();
@@ -93,6 +112,7 @@ export function createCallStore(db: Db) {
           rawSend,
           completionBySend.get(String(rawSend._id)),
           inFlight,
+          includeBodies ? SendDocSchema : SendSummarySchema,
           includeBodies ? CompletionDocSchema : CompletionSummarySchema,
         ),
       );
@@ -100,14 +120,15 @@ export function createCallStore(db: Db) {
   };
 }
 
-function toCall(
+function toCall<Send extends SendDoc | SendSummary>(
   rawSend: unknown,
   rawCompletion: unknown,
   inFlight: ReadonlySet<string>,
+  sendSchema: z.ZodType<Send>,
   completionSchema: typeof CompletionDocSchema | typeof CompletionSummarySchema,
-): Call {
+): Call<Send> {
   const id = String((rawSend as { _id: unknown })._id);
-  const sendResult = SendDocSchema.safeParse(rawSend);
+  const sendResult = sendSchema.safeParse(rawSend);
   if (!sendResult.success) {
     return {
       state: 'unreadable',

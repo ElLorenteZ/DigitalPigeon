@@ -11,7 +11,11 @@ import {
 import { type TestApp, launchWithTestDatabase } from './support';
 
 type Reply =
-  | { call: string; hold?: boolean }
+  | {
+      call: string;
+      hold?: boolean;
+      requestBody?: { fileId: string; length: number };
+    }
   | { failed: string }
   | { rejected: string };
 
@@ -66,7 +70,7 @@ const stubGetCall = (replies: Reply[]) =>
                 method: 'GET',
                 url: reply.call,
                 headers: [],
-                body: null,
+                body: reply.requestBody ?? null,
               },
             },
           },
@@ -125,4 +129,60 @@ test('when two opens overlap, the last click wins whichever answer arrives last'
   });
 
   await expect(requestLine()).toContainText('http://second-click.test/');
+});
+
+// T2.10: a page requested for one body must not appear under the next call. The answers are arranged in
+// main, because their order cannot be arranged from outside.
+test('a page read for a body no longer shown is ignored', async () => {
+  const stored = (fileId: string) => ({ fileId, length: 3 * 1024 * 1024 });
+  await stubGetCall([
+    { call: 'http://a.test/', requestBody: stored('file-a') },
+    { call: 'http://b.test/', requestBody: stored('file-b') },
+  ]);
+  await testApp.app.evaluate(({ ipcMain }, channel) => {
+    const scope = globalThis as unknown as { releaseHeld?: () => void };
+    ipcMain.removeHandler(channel);
+    ipcMain.handle(
+      channel,
+      async (_event, input: { fileId: string; offset: number }) => {
+        if (input.fileId === 'file-a' && input.offset > 0) {
+          await new Promise<void>((resolve) => {
+            scope.releaseHeld = resolve;
+          });
+        }
+        return {
+          ok: true,
+          bytes: new TextEncoder().encode(`[${input.fileId}@${input.offset}]`),
+        };
+      },
+    );
+  }, channels.readBody);
+  const body = testApp.window.getByTestId('call-request-body');
+  const loadMore = testApp.window.getByRole('button', { name: 'Load more' });
+
+  await row(0).click();
+  await expect(body).toHaveText('[file-a@0]');
+  await loadMore.click();
+  await expect(loadMore).toBeDisabled();
+
+  await row(1).click();
+  await expect(body).toHaveText('[file-b@0]');
+
+  await testApp.app.evaluate(() => {
+    (globalThis as unknown as { releaseHeld: () => void }).releaseHeld();
+  });
+  // A later round trip to main returns after the held answer, then a frame lets React commit it.
+  await testApp.window.evaluate(async () => {
+    const { pigeon } = window as unknown as {
+      pigeon: { dbStatus: () => Promise<unknown> };
+    };
+    await pigeon.dbStatus();
+    await new Promise(requestAnimationFrame);
+  });
+  await expect(body).toHaveText('[file-b@0]');
+
+  // The new body's own Load more is not blocked by the old read, and continues from its own offset.
+  await expect(loadMore).toBeEnabled();
+  await loadMore.click();
+  await expect(body).toHaveText('[file-b@0][file-b@10]');
 });

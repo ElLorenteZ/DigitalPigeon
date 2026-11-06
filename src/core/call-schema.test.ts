@@ -3,6 +3,7 @@ import {
   CompletionDocSchema,
   CompletionSummarySchema,
   SendDocSchema,
+  SendSummarySchema,
 } from './call-schema';
 
 const sendFixture = {
@@ -46,6 +47,30 @@ const errorCompletion = {
 describe('SendDocSchema', () => {
   test('parses a version 1 send document', () => {
     expect(SendDocSchema.parse(sendFixture)).toEqual(sendFixture);
+  });
+
+  test('parses a send document holding body bytes', () => {
+    const withBody = {
+      ...sendFixture,
+      request: { ...sendFixture.request, body: new Uint8Array([1, 2]) },
+    };
+    expect(SendDocSchema.parse(withBody)).toEqual(withBody);
+  });
+
+  test('rejects text as a body: the record holds the bytes sent', () => {
+    expect(() =>
+      SendDocSchema.parse({
+        ...sendFixture,
+        request: { ...sendFixture.request, body: 'abc' },
+      }),
+    ).toThrow();
+  });
+
+  test('a history row is a send document without its body', () => {
+    const { body: _omit, ...request } = sendFixture.request;
+    const row = { ...sendFixture, request };
+    expect(SendSummarySchema.parse(row)).toEqual(row);
+    expect(() => SendDocSchema.parse(row)).toThrow();
   });
 
   test('rejects an unknown schemaVersion', () => {
@@ -116,5 +141,52 @@ describe('CompletionDocSchema', () => {
     expect(() =>
       CompletionDocSchema.parse({ ...responseCompletion, schemaVersion: 2 }),
     ).toThrow();
+  });
+});
+
+describe('a body stored in a file', () => {
+  const ref = { fileId: 'f-1', length: 2_000_000 };
+  const send = (body: unknown) => ({
+    _id: 's',
+    schemaVersion: 1,
+    sentAt: new Date(),
+    request: { method: 'POST', url: 'http://x/', headers: [], body },
+  });
+  const completion = (body: unknown) => ({
+    _id: 'c',
+    schemaVersion: 1,
+    sendId: 's',
+    completedAt: new Date(),
+    durationMs: 1,
+    response: { status: 200, headers: [], body },
+  });
+
+  test('parses on a send and a completion', () => {
+    expect(SendDocSchema.parse(send(ref)).request.body).toEqual(ref);
+    expect(CompletionDocSchema.parse(completion(ref))).toMatchObject({
+      response: { body: ref },
+    });
+  });
+
+  test.each([
+    ['no length', { fileId: 'f' }],
+    ['no file id', { length: 5 }],
+    ['an empty file id', { fileId: '', length: 5 }],
+    ['a negative length', { fileId: 'f', length: -1 }],
+    ['a fractional length', { fileId: 'f', length: 1.5 }],
+    ['an extra key', { ...ref, extra: 1 }],
+  ])('%s does not parse', (_name, body) => {
+    expect(SendDocSchema.safeParse(send(body)).success).toBe(false);
+    expect(CompletionDocSchema.safeParse(completion(body)).success).toBe(false);
+  });
+
+  test('the error code storage parses', () => {
+    const { response: _unused, ...base } = completion(ref);
+    expect(
+      CompletionDocSchema.safeParse({
+        ...base,
+        error: { code: 'storage', message: 'x' },
+      }).success,
+    ).toBe(true);
   });
 });

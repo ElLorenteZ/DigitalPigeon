@@ -4,18 +4,19 @@
 import type { IpcMain } from 'electron';
 import type { Db } from 'mongodb';
 import { z } from 'zod';
-import type { CompletionDoc } from '../core/call-schema';
+import type { CompletionDoc, SendDoc, StoredBody } from '../core/call-schema';
 import { type Call, createCallStore } from '../core/call-store';
 import {
   CallNotReplayableError,
   DatabaseUnavailableError,
   type RecordedCall,
   ResponseNotRecordedError,
+  SendCancelledError,
   type SendOptions,
   replayCall,
   sendAndRecord,
 } from '../core/send';
-import { InvalidHeaderError } from '../core/wire';
+import { InvalidBodyError, InvalidHeaderError } from '../core/wire';
 import {
   type CallView,
   CancelInputSchema,
@@ -26,6 +27,9 @@ import {
   GetCallResultSchema,
   type ListCallsResult,
   ListCallsResultSchema,
+  ReadBodyInputSchema,
+  type ReadBodyResult,
+  ReadBodyResultSchema,
   ReplayInputSchema,
   SendInputSchema,
   type SendResult,
@@ -48,16 +52,27 @@ const message = (error: unknown) => String((error as Error)?.message ?? error);
 
 // Structured clone would turn a Buffer into a Uint8Array anyway; copy explicitly so the contract
 // holds in main as well as in the renderer.
+const plainBody = (body: StoredBody): StoredBody =>
+  'fileId' in body ? body : new Uint8Array(body);
+
 const plainBytes = (completion: CompletionDoc): CompletionDoc =>
   'response' in completion
     ? {
         ...completion,
         response: {
           ...completion.response,
-          body: new Uint8Array(completion.response.body),
+          body: plainBody(completion.response.body),
         },
       }
     : completion;
+
+const plainSend = (send: SendDoc): SendDoc => ({
+  ...send,
+  request: {
+    ...send.request,
+    body: send.request.body && plainBody(send.request.body),
+  },
+});
 
 // History rows never carry bodies: listCalls projects them out (review #9).
 const toView = (call: Call): CallView =>
@@ -79,11 +94,16 @@ const toView = (call: Call): CallView =>
             : call.completion,
       };
 
-// An opened call keeps its body. getCall always reads with bodies; plainBytes keeps the contract.
+// An opened call keeps its bodies. getCall always reads with them; the plain copies keep the contract.
 const toDetail = (call: Call): unknown =>
-  call.state === 'unreadable' || !call.completion
+  call.state === 'unreadable'
     ? call
-    : { ...call, completion: plainBytes(call.completion as CompletionDoc) };
+    : {
+        ...call,
+        send: plainSend(call.send as SendDoc),
+        completion:
+          call.completion && plainBytes(call.completion as CompletionDoc),
+      };
 
 export function registerIpc({ ipcMain, db, dbStatus }: IpcDeps): void {
   const controllers = new Map<string, AbortController>();
@@ -129,7 +149,7 @@ export function registerIpc({ ipcMain, db, dbStatus }: IpcDeps): void {
       });
       return SendResultSchema.parse({
         ok: true,
-        send: call.send,
+        send: plainSend(call.send),
         completion: plainBytes(call.completion),
       });
     } catch (error) {
@@ -145,11 +165,18 @@ export function registerIpc({ ipcMain, db, dbStatus }: IpcDeps): void {
       }
       if (
         error instanceof InvalidHeaderError ||
+        error instanceof InvalidBodyError ||
         error instanceof CallNotReplayableError
       ) {
         return {
           ok: false,
           error: { kind: 'invalid-input', message: error.message },
+        };
+      }
+      if (error instanceof SendCancelledError) {
+        return {
+          ok: false,
+          error: { kind: 'cancelled', message: error.message },
         };
       }
       if (error instanceof DatabaseUnavailableError) {
@@ -217,6 +244,27 @@ export function registerIpc({ ipcMain, db, dbStatus }: IpcDeps): void {
           ok: true,
           call: call && toDetail(call),
         });
+      } catch (error) {
+        return { ok: false, message: message(error) };
+      }
+    },
+  );
+
+  // Only the `bodies` bucket, and at most one page per read: the schema holds the limit.
+  ipcMain.handle(
+    channels.readBody,
+    async (_event, raw: unknown): Promise<ReadBodyResult> => {
+      const range = ReadBodyInputSchema.safeParse(raw);
+      if (!range.success) {
+        return { ok: false, message: z.prettifyError(range.error) };
+      }
+      const database = db();
+      if (!database || dbStatus().status !== 'up') {
+        return { ok: false, message: 'Database not running' };
+      }
+      try {
+        const bytes = await storeFor(database).bodies.readRange(range.data);
+        return ReadBodyResultSchema.parse({ ok: true, bytes });
       } catch (error) {
         return { ok: false, message: message(error) };
       }

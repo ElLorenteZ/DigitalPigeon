@@ -21,7 +21,7 @@ import {
 import { request } from 'undici';
 import { type TestDb, openTestDb } from '../../test-support/test-db';
 import { createCallStore } from './call-store';
-import { InvalidHeaderError } from './wire';
+import { type BodyInput, InvalidBodyError, InvalidHeaderError } from './wire';
 import { z } from 'zod';
 import {
   DatabaseUnavailableError,
@@ -125,6 +125,87 @@ test('T1.3 — a user and password in the URL add no header', async () => {
   expect(pairs(capture.requests.at(-1)?.rawHeaders ?? [])).toEqual(
     call.send.request.headers,
   );
+});
+
+describe('T1.3 — a request with a body is recorded as it reached the wire', () => {
+  const bodies: [string, BodyInput, string][] = [
+    ['json', { type: 'json', text: '{"a":"zażółć"}' }, '{"a":"zażółć"}'],
+    ['xml', { type: 'xml', text: '<a>ż</a>' }, '<a>ż</a>'],
+    [
+      'text',
+      { type: 'text', text: 'line 1\nline 2\r\n' },
+      'line 1\nline 2\r\n',
+    ],
+    ['form', { type: 'form', rows: [['a b', 'ż&=']] }, 'a+b=%C5%BC%26%3D'],
+  ];
+  const cases = ['GET', 'DELETE', 'OPTIONS', 'POST', 'PUT', 'PATCH'].flatMap(
+    (method) =>
+      bodies.map(([label, body, sent]) => [method, label, body, sent] as const),
+  );
+
+  test.each(cases)('%s, %s', async (method, _label, body, sent) => {
+    const store = createCallStore(testDb.db);
+    const call = await sendAndRecord(store, { ...input(method), body });
+
+    const received = capture.requests.at(-1);
+    const recorded = call.send.request;
+    expect(received?.method).toBe(recorded.method);
+    expect(`${capture.url}${received?.url}`).toBe(recorded.url);
+    expect(pairs(received?.rawHeaders ?? [])).toEqual(recorded.headers);
+    expect(received?.body).toEqual(Buffer.from(recorded.body as Uint8Array));
+    expect(received?.body.toString()).toBe(sent);
+  });
+
+  test('a body survives being stored and read back', async () => {
+    const store = createCallStore(testDb.db);
+    const call = await sendAndRecord(store, {
+      ...input('POST'),
+      body: { type: 'text', text: 'żółć' },
+    });
+
+    const read = await store.getCall(call.send._id, new Set());
+
+    expect(read?.state).toBe('completed');
+    expect(
+      read && read.state !== 'unreadable' && read.send.request.body,
+    ).toEqual(Buffer.from('żółć'));
+  });
+
+  test('an empty text box sends nothing and generates no Content-Type', async () => {
+    const store = createCallStore(testDb.db);
+    const call = await sendAndRecord(store, {
+      ...input('POST'),
+      headerRows: [],
+      body: { type: 'json', text: '' },
+    });
+
+    expect(call.send.request.body).toBeNull();
+    expect(pairs(capture.requests.at(-1)?.rawHeaders ?? [])).toEqual(
+      call.send.request.headers,
+    );
+    expect(call.send.request.headers.some(([n]) => n === 'content-type')).toBe(
+      false,
+    );
+  });
+
+  test('T1.2 — HEAD with a body is refused: no send document, nothing sent', async () => {
+    const store = createCallStore(testDb.db);
+    const url = `${capture.url}/refused-${randomUUID()}`;
+
+    await expect(
+      sendAndRecord(store, {
+        ...input('HEAD'),
+        url,
+        body: { type: 'text', text: 'abc' },
+      }),
+    ).rejects.toThrow(InvalidBodyError);
+
+    const urls = (await store.listCalls(200, new Set())).flatMap((c) =>
+      c.state === 'unreadable' ? [] : [c.send.request.url],
+    );
+    expect(urls.filter((u) => u.startsWith(url))).toEqual([]);
+    expect(capture.requests).toHaveLength(0);
+  });
 });
 
 // Guards the pinned version: wire.ts keeps its own copy of these rules.

@@ -6,6 +6,7 @@ import {
   CompletionDocSchema,
   CompletionSummarySchema,
   SendDocSchema,
+  SendSummarySchema,
 } from '../core/call-schema';
 
 export const channels = {
@@ -15,6 +16,7 @@ export const channels = {
   dbStatus: 'pigeon:db-status',
   getCall: 'pigeon:get-call',
   replay: 'pigeon:replay',
+  readBody: 'pigeon:read-body',
 } as const;
 
 export const METHODS = [
@@ -29,12 +31,22 @@ export const METHODS = [
 
 const RowsSchema = z.array(z.tuple([z.string(), z.string()]));
 
+const BodyInputSchema = z.discriminatedUnion('type', [
+  z.strictObject({ type: z.literal('none') }),
+  z.strictObject({
+    type: z.enum(['json', 'xml', 'text']),
+    text: z.string(),
+  }),
+  z.strictObject({ type: z.literal('form'), rows: RowsSchema }),
+]);
+
 export const SendInputSchema = z.strictObject({
   clientRequestId: z.string().min(1),
   method: z.enum(METHODS),
   url: z.url({ protocol: /^https?$/ }),
   queryRows: RowsSchema,
   headerRows: RowsSchema,
+  body: BodyInputSchema.optional(),
 });
 export type SendInput = z.infer<typeof SendInputSchema>;
 
@@ -50,11 +62,27 @@ export type ReplayInput = z.infer<typeof ReplayInputSchema>;
 
 export const GetCallInputSchema = z.string().min(1);
 
-/** A history row. Completions are summaries: no response body (review #9). */
+/** The most one readBody call returns: the display page, equal to the inline limit (plan.md). */
+export const BODY_PAGE_BYTES = 1024 * 1024;
+
+export const ReadBodyInputSchema = z.strictObject({
+  fileId: z.string().min(1),
+  offset: z.number().int().nonnegative(),
+  length: z.number().int().positive().max(BODY_PAGE_BYTES),
+});
+export type ReadBodyInput = z.infer<typeof ReadBodyInputSchema>;
+
+export const ReadBodyResultSchema = z.discriminatedUnion('ok', [
+  z.strictObject({ ok: z.literal(true), bytes: z.instanceof(Uint8Array) }),
+  z.strictObject({ ok: z.literal(false), message: z.string() }),
+]);
+export type ReadBodyResult = z.infer<typeof ReadBodyResultSchema>;
+
+/** A history row. Sends and completions are summaries: no body (review #9). */
 export const CallViewSchema = z.discriminatedUnion('state', [
   z.strictObject({
     state: z.enum(['completed', 'in-flight', 'interrupted']),
-    send: SendDocSchema,
+    send: SendSummarySchema,
     completion: CompletionSummarySchema.nullable(),
   }),
   z.strictObject({
@@ -106,6 +134,7 @@ export const SendResultSchema = z.discriminatedUnion('ok', [
         'database-unavailable',
         'not-recorded',
         'invalid-input',
+        'cancelled',
         'unexpected',
       ]),
       message: z.string(),
@@ -132,4 +161,5 @@ export interface PigeonApi {
   dbStatus: () => Promise<DbStatusView>;
   getCall: (sendId: string) => Promise<GetCallResult>;
   replay: (input: ReplayInput) => Promise<SendResult>;
+  readBody: (input: ReadBodyInput) => Promise<ReadBodyResult>;
 }

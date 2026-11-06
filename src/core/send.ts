@@ -4,13 +4,24 @@
 import { randomUUID } from 'node:crypto';
 import { MongoError } from 'mongodb';
 import { request } from 'undici';
-import type { CompletionDoc, SendDoc } from './call-schema';
+import {
+  BodyFileMissingError,
+  type BodyUpload,
+  INLINE_BODY_LIMIT,
+  concatBytes,
+} from './body-store';
+import type {
+  CompletionDoc,
+  CompletionError,
+  SendDoc,
+  StoredBody,
+} from './call-schema';
 import type { createCallStore } from './call-store';
 import { type WireInput, type WireRequest, buildWireRequest } from './wire';
 
 type CallStore = Pick<
   ReturnType<typeof createCallStore>,
-  'insertSend' | 'insertCompletion'
+  'insertSend' | 'insertCompletion' | 'bodies'
 >;
 
 export class ResponseNotRecordedError extends Error {
@@ -30,6 +41,28 @@ export class DatabaseUnavailableError extends Error {
     );
   }
 }
+
+/** A response body could not be written. Recorded as the error code `storage`. */
+class BodyStorageError extends Error {
+  constructor(readonly cause: unknown) {
+    super(
+      `The response body could not be stored: ${cause instanceof Error ? cause.message : String(cause)}`,
+    );
+  }
+}
+
+/** Cancelled while a large body was being stored or read: nothing was sent and no call exists. */
+export class SendCancelledError extends Error {
+  constructor() {
+    super('Cancelled before anything was sent');
+  }
+}
+
+const MIB = 1024 * 1024;
+// About 8 Mbit/s. A slower link still records `timeout`, which is what happened.
+const UPLOAD_MS_PER_MIB = 1000;
+
+const isAbort = (cause: unknown) => (cause as Error)?.name === 'AbortError';
 
 export interface SendOptions {
   signal?: AbortSignal;
@@ -64,15 +97,22 @@ async function sendWireAndRecord(
     bodyTimeoutMs = 30_000,
   }: SendOptions,
 ): Promise<RecordedCall> {
-  const send: SendDoc = {
-    _id: randomUUID(),
-    schemaVersion: 1,
-    sentAt: new Date(),
-    request: { ...wire, body: null },
-  };
+  let send: SendDoc;
   try {
+    // The file first: no document refers to bytes that are not stored.
+    const body =
+      wire.body && wire.body.length > INLINE_BODY_LIMIT
+        ? await store.bodies.writeBytes(wire.body, signal)
+        : wire.body;
+    send = {
+      _id: randomUUID(),
+      schemaVersion: 1,
+      sentAt: new Date(),
+      request: { ...wire, body },
+    };
     await store.insertSend(send);
   } catch (cause) {
+    if (isAbort(cause)) throw new SendCancelledError();
     // Only a driver error means the database is unavailable; anything else (a schema error, a bug)
     // surfaces as itself.
     if (cause instanceof MongoError) throw new DatabaseUnavailableError(cause);
@@ -91,11 +131,15 @@ async function sendWireAndRecord(
     const res = await request(wire.url, {
       method: wire.method as never,
       headers: wire.headers.flat(),
+      body: wire.body ?? undefined,
       signal,
-      headersTimeout: headersTimeoutMs,
+      // undici's headers timer runs during the upload, so a large body gets longer to reach the server.
+      headersTimeout:
+        headersTimeoutMs +
+        Math.floor((wire.body?.length ?? 0) / MIB) * UPLOAD_MS_PER_MIB,
       bodyTimeout: bodyTimeoutMs,
     });
-    const body = new Uint8Array(await res.body.arrayBuffer());
+    const body = await storedResponseBody(res.body, store.bodies);
     completion = {
       ...base,
       completedAt: new Date(),
@@ -126,6 +170,46 @@ async function sendWireAndRecord(
   return { send, completion };
 }
 
+// Holds a response in memory up to the limit, then moves it to a file, so main's memory stays bounded at
+// any size. One loop: leaving a `for await` destroys undici's body, which a storage failure wants, since
+// the transfer stops. pipeline leaves the chunks on a failure, so every failure aborts explicitly
+// (spike-gridfs-streaming.md).
+async function storedResponseBody(
+  source: AsyncIterable<Uint8Array>,
+  bodies: CallStore['bodies'],
+): Promise<StoredBody> {
+  const storing = <T>(step: () => Promise<T>) =>
+    step().catch((cause: unknown) => {
+      throw new BodyStorageError(cause);
+    });
+
+  let held: Uint8Array[] = [];
+  let heldBytes = 0;
+  let upload: BodyUpload | undefined;
+  try {
+    for await (const chunk of source) {
+      if (!upload && heldBytes + chunk.length <= INLINE_BODY_LIMIT) {
+        held.push(chunk);
+        heldBytes += chunk.length;
+        continue;
+      }
+      if (!upload) {
+        const opened = bodies.openUpload();
+        upload = opened;
+        for (const part of held) await storing(() => opened.write(part));
+        held = [];
+      }
+      const current = upload;
+      await storing(() => current.write(chunk));
+    }
+    const current = upload;
+    return current ? await storing(() => current.finish()) : concatBytes(held);
+  } catch (error) {
+    await upload?.abort();
+    throw error;
+  }
+}
+
 /** The call is unknown or its documents fail their schema, so there is nothing to send. */
 export class CallNotReplayableError extends Error {
   constructor(readonly sendId: string) {
@@ -152,8 +236,28 @@ export async function replayCall(
   if (!call || call.state === 'unreadable') {
     throw new CallNotReplayableError(sendId);
   }
-  const { method, url, headers } = call.send.request;
-  return sendWireAndRecord(store, { method, url, headers }, options);
+  const { body } = call.send.request;
+  let bytes: Uint8Array<ArrayBuffer> | null;
+  try {
+    // A replay owns its bytes: a stored body is written again as a new file, so slice 7 can delete a
+    // call without counting references.
+    bytes =
+      body && 'fileId' in body
+        ? await store.bodies.readAll(body, options.signal)
+        : ((body ?? null) as Uint8Array<ArrayBuffer> | null);
+  } catch (cause) {
+    if (isAbort(cause)) throw new SendCancelledError();
+    if (cause instanceof BodyFileMissingError) {
+      throw new CallNotReplayableError(sendId);
+    }
+    if (cause instanceof MongoError) throw new DatabaseUnavailableError(cause);
+    throw cause;
+  }
+  return sendWireAndRecord(
+    store,
+    { ...call.send.request, body: bytes },
+    options,
+  );
 }
 
 function headerPairs(
@@ -171,8 +275,9 @@ function headerPairs(
 export function classifySendError(
   error: unknown,
   signal: AbortSignal | undefined,
-): 'timeout' | 'cancelled' | 'network' | 'invalid-request' {
+): CompletionError['code'] {
   if (signal?.aborted) return 'cancelled';
+  if (error instanceof BodyStorageError) return 'storage';
   const code = (error as { code?: string })?.code;
   if (
     code === 'UND_ERR_HEADERS_TIMEOUT' ||
@@ -181,7 +286,11 @@ export function classifySendError(
   )
     return 'timeout';
   // undici refused the request before writing it; nothing reached the wire.
-  if (code === 'UND_ERR_INVALID_ARG' || code === 'UND_ERR_NOT_SUPPORTED')
+  if (
+    code === 'UND_ERR_INVALID_ARG' ||
+    code === 'UND_ERR_NOT_SUPPORTED' ||
+    code === 'UND_ERR_REQ_CONTENT_LENGTH_MISMATCH'
+  )
     return 'invalid-request';
   return 'network';
 }

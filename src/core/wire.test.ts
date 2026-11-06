@@ -1,5 +1,10 @@
 import { describe, expect, test } from 'vitest';
-import { InvalidHeaderError, buildWireRequest } from './wire';
+import {
+  type BodyInput,
+  InvalidBodyError,
+  InvalidHeaderError,
+  buildWireRequest,
+} from './wire';
 
 const base = {
   method: 'GET',
@@ -293,5 +298,156 @@ describe('buildWireRequest — accepted values', () => {
       headerRows: [['Host', ' other.test ']],
     });
     expect(headers[0]).toEqual(['host', 'other.test']);
+  });
+});
+
+describe('buildWireRequest — a body', () => {
+  const post = { ...base, method: 'POST' };
+  const text = (bytes: Uint8Array | null | undefined) =>
+    new TextDecoder().decode(bytes ?? new Uint8Array());
+
+  test('no body input records null and changes nothing', () => {
+    const wire = buildWireRequest(base);
+    expect(wire.body).toBeNull();
+    expect(wire.headers).toEqual([
+      ['host', 'api.test:8080'],
+      ['connection', 'keep-alive'],
+    ]);
+  });
+
+  test.each<[BodyInput['type'], string]>([
+    ['json', 'application/json'],
+    ['xml', 'application/xml'],
+    ['text', 'text/plain'],
+  ])(
+    '%s generates its Content-Type after the typed headers, then content-length last',
+    (type, contentType) => {
+      const wire = buildWireRequest({
+        ...post,
+        headerRows: [['X-A', '1']],
+        body: { type, text: 'abc' } as BodyInput,
+      });
+      expect(wire.headers).toEqual([
+        ['host', 'api.test:8080'],
+        ['connection', 'keep-alive'],
+        ['X-A', '1'],
+        ['content-type', contentType],
+        ['content-length', '3'],
+      ]);
+      expect(text(wire.body)).toBe('abc');
+    },
+  );
+
+  test('form rows are encoded, and generate their Content-Type', () => {
+    const wire = buildWireRequest({
+      ...post,
+      body: {
+        type: 'form',
+        rows: [
+          ['a b', '1&2=3+4'],
+          ['ż', ''],
+        ],
+      },
+    });
+    expect(text(wire.body)).toBe('a+b=1%262%3D3%2B4&%C5%BC=');
+    expect(wire.headers.at(-2)).toEqual([
+      'content-type',
+      'application/x-www-form-urlencoded',
+    ]);
+  });
+
+  test('content-length counts UTF-8 bytes, not characters', () => {
+    const wire = buildWireRequest({
+      ...post,
+      body: { type: 'json', text: '"żółć"' },
+    });
+    expect(wire.headers.at(-1)).toEqual(['content-length', '10']);
+    expect(wire.body?.length).toBe(10);
+  });
+
+  test('a typed Content-Type, in any case, is kept in place and not generated', () => {
+    const wire = buildWireRequest({
+      ...post,
+      headerRows: [
+        ['cOnTeNt-TyPe', 'application/vnd.x+json'],
+        ['X-A', '1'],
+      ],
+      body: { type: 'json', text: '{}' },
+    });
+    expect(wire.headers).toEqual([
+      ['host', 'api.test:8080'],
+      ['connection', 'keep-alive'],
+      ['cOnTeNt-TyPe', 'application/vnd.x+json'],
+      ['X-A', '1'],
+      ['content-length', '2'],
+    ]);
+  });
+
+  test('a typed Content-Length is replaced by the byte count', () => {
+    const wire = buildWireRequest({
+      ...post,
+      headerRows: [['Content-Length', '999']],
+      body: { type: 'text', text: 'abc' },
+    });
+    expect(
+      wire.headers.filter(([name]) => name.toLowerCase() === 'content-length'),
+    ).toEqual([['content-length', '3']]);
+  });
+
+  test.each(['GET', 'DELETE', 'OPTIONS'])(
+    '%s with a body lists content-length and stays keep-alive',
+    (method) => {
+      const wire = buildWireRequest({
+        ...base,
+        method,
+        body: { type: 'text', text: 'abc' },
+      });
+      expect(wire.headers).toEqual([
+        ['host', 'api.test:8080'],
+        ['connection', 'keep-alive'],
+        ['content-type', 'text/plain'],
+        ['content-length', '3'],
+      ]);
+    },
+  );
+
+  test.each<[string, BodyInput]>([
+    ['an empty text box', { type: 'json', text: '' }],
+    ['no form rows', { type: 'form', rows: [] }],
+    ['the None type', { type: 'none' }],
+  ])('%s is no body, and generates no Content-Type', (_label, body) => {
+    const onPost = buildWireRequest({ ...post, body });
+    expect(onPost.body).toBeNull();
+    expect(onPost.headers).toEqual([
+      ['host', 'api.test:8080'],
+      ['connection', 'keep-alive'],
+      ['content-length', '0'],
+    ]);
+    const onGet = buildWireRequest({ ...base, body });
+    expect(onGet.body).toBeNull();
+    expect(onGet.headers).toEqual([
+      ['host', 'api.test:8080'],
+      ['connection', 'keep-alive'],
+    ]);
+  });
+
+  test('HEAD with a body is refused', () => {
+    expect(() =>
+      buildWireRequest({
+        ...base,
+        method: 'HEAD',
+        body: { type: 'text', text: 'abc' },
+      }),
+    ).toThrow(InvalidBodyError);
+  });
+
+  test('HEAD with an empty body is not refused', () => {
+    expect(
+      buildWireRequest({
+        ...base,
+        method: 'HEAD',
+        body: { type: 'text', text: '' },
+      }).body,
+    ).toBeNull();
   });
 });

@@ -1,11 +1,11 @@
 ---
 change_id: request-bodies-and-storage
 title: Send, replay and export request bodies, and store bodies over 16 MB in full
-status: new
+status: closed
 ticket: null
 created: 2026-11-06
-updated: 2026-11-06
-closed: null
+updated: 2026-11-07
+closed: 2026-11-07
 produced-by: lz-change
 ---
 
@@ -62,3 +62,4 @@ the editor and formatting in a second one. The id `request-bodies-and-storage` r
   (`context/archive/preview-replay-export/record.md`).
 - Branch: `preview-replay-export` holds slice 2 at `1846ce8`. The slice 2 archive, `lessons.md` and the
   roadmap update are uncommitted, and slices 1 and 2 are neither pushed nor merged.
+- Outcome (2026-11-07): shipped to `main` at `15c97c9`, merged directly with no pull request at the author's request. All 6 phases verified; review verdict merge-with-fixes, with no fix outstanding. Multipart remains for slice 4, and the editor and formatting for the next change.

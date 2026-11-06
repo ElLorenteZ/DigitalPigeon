@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest';
-import { buildWireRequest } from './wire';
+import { InvalidHeaderError, buildWireRequest } from './wire';
 
 const base = {
   method: 'GET',
@@ -47,6 +47,24 @@ describe('buildWireRequest — headers', () => {
       ['connection', 'close'],
     ]);
   });
+
+  test.each([
+    ['Upgrade', 'keep-alive'],
+    ['Keep-Alive', 'keep-alive'],
+    ['foo, bar', 'keep-alive'],
+    ['close', 'close'],
+    ['Close', 'close'],
+    ['foo, close', 'close'],
+  ])(
+    'a typed Connection: %s records what undici writes, %s',
+    (value, written) => {
+      const { headers } = buildWireRequest({
+        ...base,
+        headerRows: [['Connection', value]],
+      });
+      expect(headers[1]).toEqual(['connection', written]);
+    },
+  );
 
   test('uses connection: close for HEAD, which undici always writes for HEAD', () => {
     expect(buildWireRequest({ ...base, method: 'HEAD' }).headers[1]).toEqual([
@@ -169,5 +187,111 @@ describe('buildWireRequest — URL', () => {
 
   test('keeps the method as given', () => {
     expect(buildWireRequest({ ...base, method: 'PATCH' }).method).toBe('PATCH');
+  });
+});
+
+describe('buildWireRequest — refused before anything is recorded', () => {
+  test.each([
+    ['above U+00FF', 'X-V', 'Bearer zażółć'],
+    ['emoji', 'X-V', 'Bearer 🐦'],
+    ['latin1 range', 'X-V', 'Bearer café'],
+    ['line feed', 'X-V', 'a\nb'],
+    ['CRLF injection', 'X-V', 'a\r\nX-Evil: 1'],
+    ['trailing line feed', 'X-V', 'a\n'],
+    ['leading carriage return', 'X-V', '\ra'],
+    ['no-break space', 'X-V', '\u00a0a'],
+    ['NUL', 'X-V', 'a\u0000b'],
+    ['DEL', 'X-V', 'a\u007fb'],
+    ['name with a space', 'X V', '1'],
+    ['name with a colon', 'X:V', '1'],
+    ['non-ASCII name', 'Xż', '1'],
+    ['typed Host value', 'Host', 'żółć.test'],
+    ['typed Connection value', 'Connection', 'żółć'],
+    ['Transfer-Encoding', 'Transfer-Encoding', 'chunked'],
+    ['Keep-Alive', 'Keep-Alive', 'timeout=5'],
+    ['Upgrade', 'Upgrade', 'h2c'],
+    ['Expect', 'Expect', '100-continue'],
+    ['any case of a refused name', 'tRaNsFeR-eNcOdInG', 'chunked'],
+    ['empty Connection', 'Connection', ''],
+    ['Connection with an empty token', 'Connection', 'close,'],
+    ['Connection with a space inside a token', 'Connection', 'a b'],
+  ])('%s', (_label, name, value) => {
+    expect(() =>
+      buildWireRequest({ ...base, headerRows: [[name, value]] }),
+    ).toThrow(InvalidHeaderError);
+  });
+
+  test('an empty name is refused', () => {
+    expect(() =>
+      buildWireRequest({ ...base, headerRows: [['', '1']] }),
+    ).toThrow(InvalidHeaderError);
+  });
+
+  test('a typed Connection is checked on HEAD too, where its value is not used', () => {
+    expect(() =>
+      buildWireRequest({
+        ...base,
+        method: 'HEAD',
+        headerRows: [['Connection', '']],
+      }),
+    ).toThrow(InvalidHeaderError);
+  });
+
+  test('a refused name is explained as the name, not as bad characters', () => {
+    expect(() =>
+      buildWireRequest({ ...base, headerRows: [['Expect', '100-continue']] }),
+    ).toThrow(/"Expect": the HTTP client cannot send this header/);
+  });
+
+  test('the error names the header', () => {
+    expect(() =>
+      buildWireRequest({ ...base, headerRows: [['X-Token', 'ż']] }),
+    ).toThrow(/X-Token/);
+  });
+});
+
+describe('buildWireRequest — accepted values', () => {
+  test('printable ASCII, a tab inside a value, an empty value and duplicate names', () => {
+    const { headers } = buildWireRequest({
+      ...base,
+      headerRows: [
+        ['X-A', `a "b" 'c' $d \\e ~`],
+        ['X-T', 'a\tb'],
+        ['X-E', ''],
+        ['X-D', '1'],
+        ['X-D', '2'],
+      ],
+    });
+    expect(headers.slice(2)).toEqual([
+      ['X-A', `a "b" 'c' $d \\e ~`],
+      ['X-T', 'a\tb'],
+      ['X-E', ''],
+      ['X-D', '1'],
+      ['X-D', '2'],
+    ]);
+  });
+
+  test('surrounding whitespace is trimmed from a value', () => {
+    const { headers } = buildWireRequest({
+      ...base,
+      headerRows: [['X-P', '  a b\t ']],
+    });
+    expect(headers[2]).toEqual(['X-P', 'a b']);
+  });
+
+  test('a whitespace-only value becomes empty', () => {
+    const { headers } = buildWireRequest({
+      ...base,
+      headerRows: [['X-W', '   ']],
+    });
+    expect(headers[2]).toEqual(['X-W', '']);
+  });
+
+  test('a typed Host value is trimmed', () => {
+    const { headers } = buildWireRequest({
+      ...base,
+      headerRows: [['Host', ' other.test ']],
+    });
+    expect(headers[0]).toEqual(['host', 'other.test']);
   });
 });

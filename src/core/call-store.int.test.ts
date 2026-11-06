@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, expect, test } from 'vitest';
+import { afterAll, beforeAll, describe, expect, test } from 'vitest';
 import { type TestDb, openTestDb } from '../../test-support/test-db';
 import type { CompletionDoc, SendDoc } from './call-schema';
 import type { Call } from './call-store';
@@ -185,10 +185,65 @@ test('inserting creates indexes on sends.sentAt and completions.sendId', async (
   expect(completionKeys).toContainEqual({ sendId: 1 });
 });
 
+describe('getCall', () => {
+  test('returns one call with its full response body', async () => {
+    const store = createCallStore(testDb.db);
+    await store.insertSend(send('m-1', '2027-05-01T00:00:00Z'));
+    await store.insertCompletion(completion('m-c', 'm-1', [0x00, 0xff, 0x7b]));
+
+    const call = await store.getCall('m-1', new Set());
+
+    expect(call).toMatchObject({ state: 'completed' });
+    const body =
+      call &&
+      call.state !== 'unreadable' &&
+      call.completion &&
+      'response' in call.completion &&
+      'body' in call.completion.response
+        ? call.completion.response.body
+        : null;
+    expect(Array.from(body ?? [])).toEqual([0x00, 0xff, 0x7b]);
+  });
+
+  test('is in-flight when its id is in the set, interrupted otherwise', async () => {
+    const store = createCallStore(testDb.db);
+    await store.insertSend(send('m-2', '2027-05-02T00:00:00Z'));
+
+    expect(await store.getCall('m-2', new Set(['m-2']))).toMatchObject({
+      state: 'in-flight',
+      completion: null,
+    });
+    expect(await store.getCall('m-2', new Set())).toMatchObject({
+      state: 'interrupted',
+      completion: null,
+    });
+  });
+
+  test('is unreadable when the send document fails its schema', async () => {
+    const store = createCallStore(testDb.db);
+    await testDb.db.collection('sends').insertOne({
+      _id: 'm-bad' as never,
+      schemaVersion: 99,
+      sentAt: new Date('2020-01-01T00:00:00Z'),
+    });
+
+    const call = await store.getCall('m-bad', new Set());
+
+    expect(call).toMatchObject({ state: 'unreadable', id: 'm-bad' });
+    await testDb.db.collection('sends').deleteOne({ _id: 'm-bad' as never });
+  });
+
+  test('is null for an unknown id', async () => {
+    const store = createCallStore(testDb.db);
+    expect(await store.getCall('no-such-call', new Set())).toBeNull();
+  });
+});
+
 test('the store offers no way to update or delete a call', () => {
   const store = createCallStore(testDb.db);
 
   expect(Object.keys(store).sort()).toEqual([
+    'getCall',
     'insertCompletion',
     'insertSend',
     'listCalls',

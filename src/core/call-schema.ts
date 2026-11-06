@@ -39,7 +39,7 @@ export const CompletionDocSchema = z.union([
   z.strictObject({
     ...completionBase,
     error: z.strictObject({
-      code: z.enum(['timeout', 'cancelled', 'network']),
+      code: z.enum(['timeout', 'cancelled', 'network', 'invalid-request']),
       message: z.string(),
     }),
   }),
@@ -60,7 +60,7 @@ export const CompletionSummarySchema = z.union([
   z.strictObject({
     ...completionBase,
     error: z.strictObject({
-      code: z.enum(['timeout', 'cancelled', 'network']),
+      code: z.enum(['timeout', 'cancelled', 'network', 'invalid-request']),
       message: z.string(),
     }),
   }),

@@ -13,6 +13,8 @@ export const channels = {
   cancel: 'pigeon:cancel',
   listCalls: 'pigeon:list-calls',
   dbStatus: 'pigeon:db-status',
+  getCall: 'pigeon:get-call',
+  replay: 'pigeon:replay',
 } as const;
 
 export const METHODS = [
@@ -40,6 +42,14 @@ export const CancelInputSchema = z.strictObject({
   clientRequestId: z.string().min(1),
 });
 
+export const ReplayInputSchema = z.strictObject({
+  clientRequestId: z.string().min(1),
+  sendId: z.string().min(1),
+});
+export type ReplayInput = z.infer<typeof ReplayInputSchema>;
+
+export const GetCallInputSchema = z.string().min(1);
+
 /** A history row. Completions are summaries: no response body (review #9). */
 export const CallViewSchema = z.discriminatedUnion('state', [
   z.strictObject({
@@ -60,6 +70,27 @@ export const ListCallsResultSchema = z.discriminatedUnion('ok', [
   z.strictObject({ ok: z.literal(false), message: z.string() }),
 ]);
 export type ListCallsResult = z.infer<typeof ListCallsResultSchema>;
+
+/** One opened call, with the full completion including the response body. */
+export const CallDetailSchema = z.discriminatedUnion('state', [
+  z.strictObject({
+    state: z.enum(['completed', 'in-flight', 'interrupted']),
+    send: SendDocSchema,
+    completion: CompletionDocSchema.nullable(),
+  }),
+  z.strictObject({
+    state: z.literal('unreadable'),
+    id: z.string(),
+    error: z.string(),
+  }),
+]);
+export type CallDetail = z.infer<typeof CallDetailSchema>;
+
+export const GetCallResultSchema = z.discriminatedUnion('ok', [
+  z.strictObject({ ok: z.literal(true), call: CallDetailSchema.nullable() }),
+  z.strictObject({ ok: z.literal(false), message: z.string() }),
+]);
+export type GetCallResult = z.infer<typeof GetCallResultSchema>;
 
 /** The outcome of one send, with the full completion (including the body) for display. */
 export const SendResultSchema = z.discriminatedUnion('ok', [
@@ -99,4 +130,6 @@ export interface PigeonApi {
   cancel: (clientRequestId: string) => Promise<void>;
   listCalls: () => Promise<ListCallsResult>;
   dbStatus: () => Promise<DbStatusView>;
+  getCall: (sendId: string) => Promise<GetCallResult>;
+  replay: (input: ReplayInput) => Promise<SendResult>;
 }

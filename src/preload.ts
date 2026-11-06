@@ -1,4 +1,4 @@
-// Preload: exposes exactly four named functions on `window.pigeon`. No raw ipcRenderer, no generic
+// Preload: exposes exactly six named functions on `window.pigeon`. No raw ipcRenderer, no generic
 // invoke channel (AGENTS.md). Main validates every message.
 import { contextBridge, ipcRenderer } from 'electron';
 import { type PigeonApi, channels } from './shared/ipc-contract';
@@ -9,6 +9,8 @@ const api: PigeonApi = {
     ipcRenderer.invoke(channels.cancel, clientRequestId),
   listCalls: () => ipcRenderer.invoke(channels.listCalls),
   dbStatus: () => ipcRenderer.invoke(channels.dbStatus),
+  getCall: (sendId) => ipcRenderer.invoke(channels.getCall, sendId),
+  replay: (input) => ipcRenderer.invoke(channels.replay, input),
 };
 
 contextBridge.exposeInMainWorld('pigeon', api);

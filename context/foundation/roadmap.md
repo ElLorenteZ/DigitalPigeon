@@ -1,7 +1,7 @@
 ---
 produced-by: lz-roadmap
 current-milestone: M1
-updated: 2026-11-03
+updated: 2026-11-05
 ---
 
 # Roadmap
@@ -11,8 +11,8 @@ updated: 2026-11-03
 Appetite: about 2 weeks, sized to replace Postman/Insomnia for REST work (`shape-notes.md`).
 
 **Exit criteria** — from `prd.md` Success criteria:
-- [ ] Sending the same unchanged request twice produces two call records, each with its own timestamp.
-- [ ] A call record's content does not change after it is written; edit-and-send creates a new record and the original is unchanged when viewed again.
+- [x] Sending the same unchanged request twice produces two call records, each with its own timestamp. *(slice 1: `call-store.int.test.ts`, `send.int.test.ts` T1.1, e2e journey shows two rows)*
+- [ ] A call record's content does not change after it is written; edit-and-send creates a new record and the original is unchanged when viewed again. *(storage half done in slice 1: insert-only store, no update or delete; edit-and-send and viewing a call are slice 2)*
 - [ ] An exact replay sends the same method, URL, headers and body as the recorded request, and creates a new record.
 - [ ] A call record disappears only after the user deletes it, one at a time or in bulk.
 - [ ] A call record shows the request as sent, response status, response headers, full response body and timing.
@@ -22,13 +22,13 @@ Appetite: about 2 weeks, sized to replace Postman/Insomnia for REST work (`shape
 - [ ] History can be narrowed by environment, by saved request, by date range, and by a search term in URL or body.
 - [ ] Switching the active environment changes the `baseUrl` a saved request is sent to.
 - [ ] A request exported as curl, run in a terminal, sends the same method, URL, headers and body.
-- [ ] The app runs as a local install on the personal machine with no account.
+- [x] The app runs as a local install on the personal machine with no account. *(slice 1: the author ran the packaged app from `npm run package` and sent a request with only `config.json`; no installer from `make` yet)*
 - [ ] *(Author's judgement)* Postman/Insomnia goes unopened for REST work for two weeks, and finding and replaying a past call is faster than in Postman.
 
 | # | Slice | Observable outcome | Status | Change |
 |---|---|---|---|---|
-| 1 | Send and record | Type a method, URL, query params and headers (including a pasted auth header), send, see status, headers, body and timing; the call appears in a history list; sending twice shows two entries | in flight | `send-and-record` |
-| 2 | Preview, replay, export | Open a past call and see the request as sent and the response; replay it exactly or edit and send, and a new entry appears while the original is unchanged; copy either as curl and run it | later | — |
+| 1 | Send and record | Type a method, URL, query params and headers (including a pasted auth header), send, see status, headers, body and timing; the call appears in a history list; sending twice shows two entries | done | `send-and-record` |
+| 2 | Preview, replay, export | Open a past call and see the request as sent and the response; replay it exactly or edit and send, and a new entry appears while the original is unchanged; copy either as curl and run it | in flight | `preview-replay-export` |
 | 3 | Bodies and formatting | Send JSON, XML, plain-text and form-urlencoded bodies; JSON and XML shown pretty-printed in the editor; a response over 16 MB is stored and shown in full | later | — |
 | 4 | Multipart with file copies | Send a multipart request with a file; delete the file from disk; replay the call and the server receives the same bytes | later | — |
 | 5 | Saved requests and environments | Save a request and edit it later; define environments (name + `baseUrl`), switch the active one, and the same saved request goes to the other `baseUrl`; calls link back to their saved request | later | — |
@@ -50,10 +50,22 @@ Appetite: about 2 weeks, sized to replace Postman/Insomnia for REST work (`shape
 - Monaco editor arrives in slice 3, where formatting first needs it; slices 1–2 show bodies as plain text.
 
 **Decisions needed before a slice can be planned** (PRD Open questions):
-- Before slice 1: what happens when MongoDB is not running — block sending, send and warn, or start the container from the app. "Every send is recorded" points to blocking.
+- ~~Before slice 1: database-down behaviour~~ — decided 2026-11-03: sending is blocked (`archive/send-and-record`).
 - Before slice 5: how saved requests are organised — directories, a flat list, or tags.
 
-**Calibration:** the only completed change, `test-harness` (`context/archive/test-harness/record.md`), took one day including plan review, code review and two fix rounds. It was configuration-heavy and is a weak guide to feature slices. Record each slice's actual cost here as it closes.
+**Calibration:**
+- **`test-harness`** (2026-11-02): one day. Configuration-heavy; a weak guide to feature slices.
+- **Slice 1, `send-and-record`** (2026-11-03 → 2026-11-04): two days. Expected to be the largest
+  slice, because it carried the groundwork: IPC contract, call-record schema, database connection,
+  and database-down behaviour. The time went on:
+  - a spike (A1, the driver bundled into the packaged app)
+  - two plan reviews; one found that undici rewrites headers
+  - a defect drift (`HEAD`)
+  - a host code review with 9 fixes, one of them a tier-1 record mismatch
+
+  Feature-only slices (2–7) should be smaller. Check that against slice 2's actual cost.
+- **M1 appetite:** about 2 weeks for 7 slices. After 2 days, 1 of 7 slices and 2 of 13 exit
+  criteria are done.
 
 ## Later milestones
 

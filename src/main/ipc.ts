@@ -7,17 +7,26 @@ import { z } from 'zod';
 import type { CompletionDoc } from '../core/call-schema';
 import { type Call, createCallStore } from '../core/call-store';
 import {
+  CallNotReplayableError,
   DatabaseUnavailableError,
+  type RecordedCall,
   ResponseNotRecordedError,
+  type SendOptions,
+  replayCall,
   sendAndRecord,
 } from '../core/send';
+import { InvalidHeaderError } from '../core/wire';
 import {
   type CallView,
   CancelInputSchema,
   type DbStatusView,
   DbStatusViewSchema,
+  type GetCallResult,
+  GetCallInputSchema,
+  GetCallResultSchema,
   type ListCallsResult,
   ListCallsResultSchema,
+  ReplayInputSchema,
   SendInputSchema,
   type SendResult,
   SendResultSchema,
@@ -70,6 +79,12 @@ const toView = (call: Call): CallView =>
             : call.completion,
       };
 
+// An opened call keeps its body. getCall always reads with bodies; plainBytes keeps the contract.
+const toDetail = (call: Call): unknown =>
+  call.state === 'unreadable' || !call.completion
+    ? call
+    : { ...call, completion: plainBytes(call.completion as CompletionDoc) };
+
 export function registerIpc({ ipcMain, db, dbStatus }: IpcDeps): void {
   const controllers = new Map<string, AbortController>();
   const inFlightSendIds = new Set<string>();
@@ -84,71 +99,126 @@ export function registerIpc({ ipcMain, db, dbStatus }: IpcDeps): void {
     return store;
   };
 
+  // Send and replay share everything after their first step: cancel, in-flight tracking and the
+  // mapping of failures to results.
+  const recorded = async (
+    clientRequestId: string,
+    run: (database: Db, options: SendOptions) => Promise<RecordedCall>,
+  ): Promise<SendResult> => {
+    const database = db();
+    if (!database || dbStatus().status !== 'up') {
+      return {
+        ok: false,
+        error: {
+          kind: 'database-unavailable',
+          message: 'Database not running',
+        },
+      };
+    }
+
+    const controller = new AbortController();
+    controllers.set(clientRequestId, controller);
+    let sendId: string | undefined;
+    try {
+      const call = await run(database, {
+        signal: controller.signal,
+        onSent: (send) => {
+          sendId = send._id;
+          inFlightSendIds.add(send._id);
+        },
+      });
+      return SendResultSchema.parse({
+        ok: true,
+        send: call.send,
+        completion: plainBytes(call.completion),
+      });
+    } catch (error) {
+      if (error instanceof ResponseNotRecordedError) {
+        return SendResultSchema.parse({
+          ok: false,
+          error: {
+            kind: 'not-recorded',
+            message: 'Response received but not recorded',
+          },
+          completion: plainBytes(error.completion),
+        });
+      }
+      if (
+        error instanceof InvalidHeaderError ||
+        error instanceof CallNotReplayableError
+      ) {
+        return {
+          ok: false,
+          error: { kind: 'invalid-input', message: error.message },
+        };
+      }
+      if (error instanceof DatabaseUnavailableError) {
+        return {
+          ok: false,
+          error: { kind: 'database-unavailable', message: error.message },
+        };
+      }
+      return {
+        ok: false,
+        error: { kind: 'unexpected', message: message(error) },
+      };
+    } finally {
+      controllers.delete(clientRequestId);
+      if (sendId) inFlightSendIds.delete(sendId);
+    }
+  };
+
+  const invalidInput = (error: z.ZodError): SendResult => ({
+    ok: false,
+    error: { kind: 'invalid-input', message: z.prettifyError(error) },
+  });
+
   ipcMain.handle(
     channels.send,
     async (_event, raw: unknown): Promise<SendResult> => {
       const parsed = SendInputSchema.safeParse(raw);
-      if (!parsed.success) {
-        return {
-          ok: false,
-          error: {
-            kind: 'invalid-input',
-            message: z.prettifyError(parsed.error),
-          },
-        };
+      if (!parsed.success) return invalidInput(parsed.error);
+      const { clientRequestId, ...input } = parsed.data;
+      return recorded(clientRequestId, (database, options) =>
+        sendAndRecord(storeFor(database), input, options),
+      );
+    },
+  );
+
+  ipcMain.handle(
+    channels.replay,
+    async (_event, raw: unknown): Promise<SendResult> => {
+      const parsed = ReplayInputSchema.safeParse(raw);
+      if (!parsed.success) return invalidInput(parsed.error);
+      const { clientRequestId, sendId } = parsed.data;
+      return recorded(clientRequestId, (database, options) =>
+        replayCall(storeFor(database), sendId, options),
+      );
+    },
+  );
+
+  ipcMain.handle(
+    channels.getCall,
+    async (_event, raw: unknown): Promise<GetCallResult> => {
+      const sendId = GetCallInputSchema.safeParse(raw);
+      if (!sendId.success) {
+        return { ok: false, message: z.prettifyError(sendId.error) };
       }
       const database = db();
       if (!database || dbStatus().status !== 'up') {
-        return {
-          ok: false,
-          error: {
-            kind: 'database-unavailable',
-            message: 'Database not running',
-          },
-        };
+        return { ok: false, message: 'Database not running' };
       }
-
-      const { clientRequestId, ...input } = parsed.data;
-      const controller = new AbortController();
-      controllers.set(clientRequestId, controller);
-      let sendId: string | undefined;
       try {
-        const call = await sendAndRecord(storeFor(database), input, {
-          signal: controller.signal,
-          onSent: (send) => {
-            sendId = send._id;
-            inFlightSendIds.add(send._id);
-          },
-        });
-        return SendResultSchema.parse({
+        const call = await storeFor(database).getCall(
+          sendId.data,
+          inFlightSendIds,
+        );
+        return GetCallResultSchema.parse({
           ok: true,
-          send: call.send,
-          completion: plainBytes(call.completion),
+          call: call && toDetail(call),
         });
       } catch (error) {
-        if (error instanceof ResponseNotRecordedError) {
-          return SendResultSchema.parse({
-            ok: false,
-            error: {
-              kind: 'not-recorded',
-              message: 'Response received but not recorded',
-            },
-            completion: plainBytes(error.completion),
-          });
-        }
-        if (error instanceof DatabaseUnavailableError) {
-          return {
-            ok: false,
-            error: { kind: 'database-unavailable', message: error.message },
-          };
-        }
-        return {
-          ok: false,
-          error: { kind: 'unexpected', message: message(error) },
-        };
-      } finally {
-        controllers.delete(clientRequestId);
-        if (sendId) inFlightSendIds.delete(sendId);
+        return { ok: false, message: message(error) };
       }
     },
   );

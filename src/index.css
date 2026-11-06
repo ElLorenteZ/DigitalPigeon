@@ -35,3 +35,14 @@ pre {
 .error {
   color: #b42318;
 }
+.history-row {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font: inherit;
+  padding: 0;
+  text-align: left;
+}
+.history-row:hover {
+  text-decoration: underline;
+}

@@ -46,6 +46,23 @@ export function createCallStore(db: Db) {
       await completions.insertOne(CompletionDocSchema.parse(doc));
     },
 
+    /** One call with its full response body; `null` for an unknown id. */
+    getCall: async (
+      sendId: string,
+      inFlight: ReadonlySet<string>,
+    ): Promise<Call | null> => {
+      const rawSend = await sends.findOne(
+        { _id: sendId },
+        { promoteBuffers: true },
+      );
+      if (!rawSend) return null;
+      const rawCompletion = await completions.findOne(
+        { sendId },
+        { promoteBuffers: true },
+      );
+      return toCall(rawSend, rawCompletion, inFlight, CompletionDocSchema);
+    },
+
     /** Newest first. Sends whose ids are in `inFlight` are still running in this process. */
     listCalls: async (
       limit: number,
@@ -71,40 +88,51 @@ export function createCallStore(db: Db) {
         rawCompletions.map((c) => [String(c.sendId), c]),
       );
 
-      return rawSends.map((rawSend): Call => {
-        const id = String(rawSend._id);
-        const sendResult = SendDocSchema.safeParse(rawSend);
-        if (!sendResult.success) {
-          return {
-            state: 'unreadable',
-            id,
-            error: z.prettifyError(sendResult.error),
-          };
-        }
-        const rawCompletion = completionBySend.get(id);
-        if (!rawCompletion) {
-          return {
-            state: inFlight.has(id) ? 'in-flight' : 'interrupted',
-            send: sendResult.data,
-            completion: null,
-          };
-        }
-        const completionResult = (
-          includeBodies ? CompletionDocSchema : CompletionSummarySchema
-        ).safeParse(rawCompletion);
-        if (!completionResult.success) {
-          return {
-            state: 'unreadable',
-            id,
-            error: z.prettifyError(completionResult.error),
-          };
-        }
-        return {
-          state: 'completed',
-          send: sendResult.data,
-          completion: completionResult.data,
-        };
-      });
+      return rawSends.map((rawSend) =>
+        toCall(
+          rawSend,
+          completionBySend.get(String(rawSend._id)),
+          inFlight,
+          includeBodies ? CompletionDocSchema : CompletionSummarySchema,
+        ),
+      );
     },
+  };
+}
+
+function toCall(
+  rawSend: unknown,
+  rawCompletion: unknown,
+  inFlight: ReadonlySet<string>,
+  completionSchema: typeof CompletionDocSchema | typeof CompletionSummarySchema,
+): Call {
+  const id = String((rawSend as { _id: unknown })._id);
+  const sendResult = SendDocSchema.safeParse(rawSend);
+  if (!sendResult.success) {
+    return {
+      state: 'unreadable',
+      id,
+      error: z.prettifyError(sendResult.error),
+    };
+  }
+  if (!rawCompletion) {
+    return {
+      state: inFlight.has(id) ? 'in-flight' : 'interrupted',
+      send: sendResult.data,
+      completion: null,
+    };
+  }
+  const completionResult = completionSchema.safeParse(rawCompletion);
+  if (!completionResult.success) {
+    return {
+      state: 'unreadable',
+      id,
+      error: z.prettifyError(completionResult.error),
+    };
+  }
+  return {
+    state: 'completed',
+    send: sendResult.data,
+    completion: completionResult.data,
   };
 }

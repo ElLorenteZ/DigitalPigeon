@@ -6,7 +6,7 @@ import { MongoError } from 'mongodb';
 import { request } from 'undici';
 import type { CompletionDoc, SendDoc } from './call-schema';
 import type { createCallStore } from './call-store';
-import { type WireInput, buildWireRequest } from './wire';
+import { type WireInput, type WireRequest, buildWireRequest } from './wire';
 
 type CallStore = Pick<
   ReturnType<typeof createCallStore>,
@@ -47,14 +47,23 @@ export interface RecordedCall {
 export async function sendAndRecord(
   store: CallStore,
   input: WireInput,
+  options: SendOptions = {},
+): Promise<RecordedCall> {
+  return sendWireAndRecord(store, buildWireRequest(input), options);
+}
+
+// Records then dispatches a request already in wire form. Used for a typed request and for a replay,
+// which passes the recorded list unchanged.
+async function sendWireAndRecord(
+  store: CallStore,
+  wire: WireRequest,
   {
     signal,
     onSent,
     headersTimeoutMs = 30_000,
     bodyTimeoutMs = 30_000,
-  }: SendOptions = {},
+  }: SendOptions,
 ): Promise<RecordedCall> {
-  const wire = buildWireRequest(input);
   const send: SendDoc = {
     _id: randomUUID(),
     schemaVersion: 1,
@@ -117,6 +126,36 @@ export async function sendAndRecord(
   return { send, completion };
 }
 
+/** The call is unknown or its documents fail their schema, so there is nothing to send. */
+export class CallNotReplayableError extends Error {
+  constructor(readonly sendId: string) {
+    super(`Call ${sendId} cannot be replayed`);
+  }
+}
+
+/**
+ * Sends a past call again as a new call. The recorded list is passed on unchanged rather than rebuilt
+ * through wire.ts, so a replay still sends what was recorded after wire.ts changes.
+ */
+export async function replayCall(
+  store: CallStore & Pick<ReturnType<typeof createCallStore>, 'getCall'>,
+  sendId: string,
+  options: SendOptions = {},
+): Promise<RecordedCall> {
+  let call: Awaited<ReturnType<typeof store.getCall>>;
+  try {
+    call = await store.getCall(sendId, new Set());
+  } catch (cause) {
+    if (cause instanceof MongoError) throw new DatabaseUnavailableError(cause);
+    throw cause;
+  }
+  if (!call || call.state === 'unreadable') {
+    throw new CallNotReplayableError(sendId);
+  }
+  const { method, url, headers } = call.send.request;
+  return sendWireAndRecord(store, { method, url, headers }, options);
+}
+
 function headerPairs(
   headers: Record<string, string | string[] | undefined>,
 ): [string, string][] {
@@ -132,7 +171,7 @@ function headerPairs(
 export function classifySendError(
   error: unknown,
   signal: AbortSignal | undefined,
-): 'timeout' | 'cancelled' | 'network' {
+): 'timeout' | 'cancelled' | 'network' | 'invalid-request' {
   if (signal?.aborted) return 'cancelled';
   const code = (error as { code?: string })?.code;
   if (
@@ -141,5 +180,8 @@ export function classifySendError(
     code === 'UND_ERR_CONNECT_TIMEOUT'
   )
     return 'timeout';
+  // undici refused the request before writing it; nothing reached the wire.
+  if (code === 'UND_ERR_INVALID_ARG' || code === 'UND_ERR_NOT_SUPPORTED')
+    return 'invalid-request';
   return 'network';
 }

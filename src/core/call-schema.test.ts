@@ -1,5 +1,9 @@
 import { describe, expect, test } from 'vitest';
-import { CompletionDocSchema, SendDocSchema } from './call-schema';
+import {
+  CompletionDocSchema,
+  CompletionSummarySchema,
+  SendDocSchema,
+} from './call-schema';
 
 const sendFixture = {
   _id: 'send-1',
@@ -74,6 +78,15 @@ describe('CompletionDocSchema', () => {
 
   test('parses a completion with an error', () => {
     expect(CompletionDocSchema.parse(errorCompletion)).toEqual(errorCompletion);
+  });
+
+  test('parses a completion with an invalid-request error', () => {
+    const completion = {
+      ...errorCompletion,
+      error: { code: 'invalid-request', message: 'invalid X-V header' },
+    };
+    expect(CompletionDocSchema.parse(completion)).toEqual(completion);
+    expect(CompletionSummarySchema.parse(completion)).toEqual(completion);
   });
 
   test('rejects an error code outside timeout, cancelled, network', () => {

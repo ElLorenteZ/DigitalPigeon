@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { createServer as createHttpServer } from 'node:http';
 import {
   type Server,
@@ -17,8 +18,10 @@ import {
   type CaptureServer,
   startCaptureServer,
 } from '../../test-support/capture-server';
+import { request } from 'undici';
 import { type TestDb, openTestDb } from '../../test-support/test-db';
 import { createCallStore } from './call-store';
+import { InvalidHeaderError } from './wire';
 import { z } from 'zod';
 import {
   DatabaseUnavailableError,
@@ -87,6 +90,61 @@ describe('T1.3 — the send document is what reached the wire', () => {
   );
 });
 
+describe('T1.3 — a typed Connection records what undici writes', () => {
+  test.each([
+    'Upgrade',
+    'Keep-Alive',
+    'foo, bar',
+    'close',
+    'Close',
+    'foo, close',
+  ])('%s', async (value) => {
+    const store = createCallStore(testDb.db);
+    const call = await sendAndRecord(
+      store,
+      input('GET', { headerRows: [['Connection', value]] }),
+    );
+
+    expect(pairs(capture.requests.at(-1)?.rawHeaders ?? [])).toEqual(
+      call.send.request.headers,
+    );
+  });
+});
+
+test('T1.3 — a user and password in the URL add no header', async () => {
+  const store = createCallStore(testDb.db);
+  const url = new URL(capture.url);
+  url.username = 'u';
+  url.password = 'pw';
+  const call = await sendAndRecord(store, {
+    ...input('GET'),
+    url: url.toString(),
+    headerRows: [],
+  });
+
+  expect(pairs(capture.requests.at(-1)?.rawHeaders ?? [])).toEqual(
+    call.send.request.headers,
+  );
+});
+
+// Guards the pinned version: wire.ts keeps its own copy of these rules.
+describe('undici itself refuses what wire.ts refuses', () => {
+  test.each<[string, string, string]>([
+    ['Transfer-Encoding', 'chunked', 'UND_ERR_INVALID_ARG'],
+    ['Keep-Alive', 'timeout=5', 'UND_ERR_INVALID_ARG'],
+    ['Upgrade', 'h2c', 'UND_ERR_INVALID_ARG'],
+    ['Connection', '', 'UND_ERR_INVALID_ARG'],
+    ['Connection', 'close,', 'UND_ERR_INVALID_ARG'],
+    ['Connection', 'a b', 'UND_ERR_INVALID_ARG'],
+    ['Expect', '100-continue', 'UND_ERR_NOT_SUPPORTED'],
+  ])('%s: "%s"', async (name, value, code) => {
+    await expect(
+      request(capture.url, { method: 'GET', headers: [name, value] }),
+    ).rejects.toMatchObject({ code });
+    expect(capture.requests).toHaveLength(0);
+  });
+});
+
 test('T1.3 — a URL with a fragment records only what was sent', async () => {
   const store = createCallStore(testDb.db);
   const call = await sendAndRecord(store, {
@@ -98,6 +156,28 @@ test('T1.3 — a URL with a fragment records only what was sent', async () => {
   const received = capture.requests.at(-1);
   expect(received?.url).toBe('/orders?page=2');
   expect(call.send.request.url).toBe(`${capture.url}${received?.url}`);
+});
+
+describe('T1.3 — unusual but valid header values reach the wire as recorded', () => {
+  test.each<[string, [string, string][]]>([
+    ['an empty value', [['X-E', '']]],
+    ['a tab inside a value', [['X-T', 'a\tb']]],
+    [
+      'duplicate names',
+      [
+        ['X-D', '1'],
+        ['X-D', '2'],
+      ],
+    ],
+    ['a padded value', [['X-P', '  a  ']]],
+  ])('%s', async (_label, headerRows) => {
+    const store = createCallStore(testDb.db);
+    const call = await sendAndRecord(store, { ...input('GET'), headerRows });
+
+    expect(pairs(capture.requests.at(-1)?.rawHeaders ?? [])).toEqual(
+      call.send.request.headers,
+    );
+  });
 });
 
 test('T1.1 — the same input sent twice is recorded as two calls', async () => {
@@ -249,6 +329,33 @@ describe('recording comes first', () => {
     expect(error).not.toBeInstanceOf(DatabaseUnavailableError);
     expect(capture.requests).toHaveLength(0);
   });
+
+  test.each<[string, [string, string]]>([
+    ['a non-ASCII value', ['X-V', 'Bearer zażółć']],
+    ['a line feed in a value', ['X-V', 'a\nb']],
+    ['an invalid name', ['X V', '1']],
+    ['Transfer-Encoding', ['Transfer-Encoding', 'chunked']],
+    ['Keep-Alive', ['Keep-Alive', 'timeout=5']],
+    ['Upgrade', ['Upgrade', 'h2c']],
+    ['Expect', ['Expect', '100-continue']],
+    ['an empty Connection', ['Connection', '']],
+  ])(
+    'T1.2 — %s is refused: no send document, nothing sent',
+    async (_label, row) => {
+      const store = createCallStore(testDb.db);
+      const url = `${capture.url}/refused-${randomUUID()}`;
+
+      await expect(
+        sendAndRecord(store, { ...input('GET'), url, headerRows: [row] }),
+      ).rejects.toThrow(InvalidHeaderError);
+
+      const urls = (await store.listCalls(200, new Set())).flatMap((c) =>
+        c.state === 'unreadable' ? [] : [c.send.request.url],
+      );
+      expect(urls.filter((u) => u.startsWith(url))).toEqual([]);
+      expect(capture.requests).toHaveLength(0);
+    },
+  );
 
   test('a response whose completion cannot be inserted rejects as not recorded, carrying the response', async () => {
     capture.respondWith({ status: 200, body: Buffer.from('ok') });

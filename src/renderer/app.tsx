@@ -1,8 +1,12 @@
 // Renderer: request form, response view, history list, database status.
 // Response bodies are untrusted input: rendered as text only, never as HTML (AGENTS.md).
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { CompletionDoc } from '../core/call-schema';
+import { toCurl } from '../core/curl';
+import { formFromCall } from '../core/form-from-call';
+import { type WireRequest, buildWireRequest } from '../core/wire';
 import {
+  type CallDetail,
   type CallView,
   type DbStatusView,
   METHODS,
@@ -19,6 +23,35 @@ declare global {
 
 type Row = [string, string];
 type Method = SendInput['method'];
+type Form = Omit<SendInput, 'clientRequestId' | 'method'> & { method: Method };
+type Opened = Exclude<CallDetail, { state: 'unreadable' }>;
+type CurlOutcome = { command: string; copied: boolean } | { error: string };
+
+const EMPTY_FORM: Form = {
+  method: 'GET',
+  url: '',
+  queryRows: [],
+  headerRows: [],
+};
+const nonEmpty = (rows: Row[]) => rows.filter(([name]) => name.trim() !== '');
+const errorText = (error: unknown) =>
+  String((error as Error)?.message ?? error);
+
+// Builds the command and tries the clipboard; the command stays selectable if the clipboard fails.
+async function exportCurl(request: () => WireRequest): Promise<CurlOutcome> {
+  let command: string;
+  try {
+    command = toCurl(request());
+  } catch (error) {
+    return { error: errorText(error) };
+  }
+  try {
+    await navigator.clipboard.writeText(command);
+    return { command, copied: true };
+  } catch {
+    return { command, copied: false };
+  }
+}
 
 const STATUS_POLL_MS = 2000;
 const HISTORY_POLL_MS = 500;
@@ -30,6 +63,11 @@ export function App() {
   const [result, setResult] = useState<SendResult | null>(null);
   const [inFlightId, setInFlightId] = useState<string | null>(null);
   const [historyError, setHistoryError] = useState<string | null>(null);
+  const [form, setForm] = useState<Form>(EMPTY_FORM);
+  const [formCurl, setFormCurl] = useState<CurlOutcome | null>(null);
+  const [opened, setOpened] = useState<Opened | null>(null);
+  const [openError, setOpenError] = useState<string | null>(null);
+  const [openedCurl, setOpenedCurl] = useState<CurlOutcome | null>(null);
 
   // Never rejects: a failure is shown above the list (review #3).
   const refreshHistory = useCallback(async () => {
@@ -72,20 +110,20 @@ export function App() {
     return () => clearInterval(timer);
   }, [inFlightId, refreshHistory]);
 
-  const send = async (input: Omit<SendInput, 'clientRequestId'>) => {
+  // Send and Replay differ only in what they ask main to do.
+  const run = async (
+    invoke: (clientRequestId: string) => Promise<SendResult>,
+  ) => {
     const clientRequestId = crypto.randomUUID();
     setInFlightId(clientRequestId);
     setResult(null);
     try {
-      setResult(await window.pigeon.send({ clientRequestId, ...input }));
+      setResult(await invoke(clientRequestId));
     } catch (error) {
       // A rejected invoke is shown, not swallowed (review #2).
       setResult({
         ok: false,
-        error: {
-          kind: 'unexpected',
-          message: String((error as Error)?.message ?? error),
-        },
+        error: { kind: 'unexpected', message: errorText(error) },
       });
     } finally {
       setInFlightId(null);
@@ -93,18 +131,127 @@ export function App() {
     }
   };
 
+  // The latest click decides what is open, whichever answer arrives last.
+  const latestOpen = useRef(0);
+  const openCall = async (sendId: string) => {
+    const thisOpen = ++latestOpen.current;
+    setOpenedCurl(null);
+    setOpenError(null);
+    try {
+      const got = await window.pigeon.getCall(sendId);
+      if (thisOpen !== latestOpen.current) return;
+      if (!got.ok) {
+        setOpened(null);
+        setOpenError(got.message);
+      } else if (!got.call || got.call.state === 'unreadable') {
+        setOpened(null);
+        setOpenError(got.call ? got.call.error : 'Call not found');
+      } else {
+        setOpened(got.call);
+      }
+    } catch (error) {
+      if (thisOpen !== latestOpen.current) return;
+      setOpened(null);
+      setOpenError(errorText(error));
+    }
+  };
+
+  // The panel renders below the history list, which can be longer than the window: without this, a
+  // click on a row appears to do nothing (found in the author's packaged-app check).
+  const openedRegion = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (opened || openError) {
+      openedRegion.current?.scrollIntoView({ block: 'start' });
+    }
+  }, [opened, openError]);
+
+  // The panel's Replay and Edit act on the form and the result, which sit above the history list.
+  const requestRegion = useRef<HTMLDivElement>(null);
+  const showRequest = () =>
+    requestRegion.current?.scrollIntoView({ block: 'start' });
+  const resultRegion = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (result) resultRegion.current?.scrollIntoView({ block: 'nearest' });
+  }, [result]);
+
+  const canSend = status?.status === 'up';
+  const inFlight = inFlightId !== null;
+
   return (
     <main>
       <h1>DigitalPigeon</h1>
       <StatusBar status={status} />
-      <RequestForm
-        canSend={status?.status === 'up'}
-        inFlight={inFlightId !== null}
-        onSend={send}
-        onCancel={() => inFlightId && window.pigeon.cancel(inFlightId)}
+      <div ref={requestRegion}>
+        <RequestForm
+          form={form}
+          onChange={setForm}
+          canSend={canSend}
+          inFlight={inFlight}
+          onSend={() =>
+            run((clientRequestId) =>
+              window.pigeon.send({
+                clientRequestId,
+                ...form,
+                queryRows: nonEmpty(form.queryRows),
+                headerRows: nonEmpty(form.headerRows),
+              }),
+            )
+          }
+          onCancel={() => inFlightId && window.pigeon.cancel(inFlightId)}
+          onCopyCurl={async () =>
+            setFormCurl(
+              await exportCurl(() =>
+                buildWireRequest({
+                  ...form,
+                  queryRows: nonEmpty(form.queryRows),
+                  headerRows: nonEmpty(form.headerRows),
+                }),
+              ),
+            )
+          }
+        />
+      </div>
+      <CurlView testId="form-curl" outcome={formCurl} />
+      <div ref={resultRegion}>
+        <ResultView result={result} />
+      </div>
+      <HistoryList
+        calls={history}
+        error={historyError}
+        onOpen={(sendId) => void openCall(sendId)}
       />
-      <ResultView result={result} />
-      <HistoryList calls={history} error={historyError} />
+      <div ref={openedRegion}>
+        {openError ? (
+          <p data-testid="open-error" className="error">
+            Could not open the call: {openError}
+          </p>
+        ) : null}
+        {opened ? (
+          <CallPanel
+            call={opened}
+            canReplay={canSend && !inFlight}
+            curl={openedCurl}
+            onReplay={() => {
+              showRequest();
+              void run((clientRequestId) =>
+                window.pigeon.replay({
+                  clientRequestId,
+                  sendId: opened.send._id,
+                }),
+              );
+            }}
+            onEdit={() => {
+              const loaded = formFromCall(opened.send.request);
+              setForm({ ...loaded, method: loaded.method as Method });
+              setFormCurl(null);
+              showRequest();
+            }}
+            onCopyCurl={async () =>
+              setOpenedCurl(await exportCurl(() => opened.send.request))
+            }
+          />
+        ) : null}
+      </div>
     </main>
   );
 }
@@ -174,40 +321,36 @@ function RowsEditor({
 }
 
 function RequestForm({
+  form,
+  onChange,
   canSend,
   inFlight,
   onSend,
   onCancel,
+  onCopyCurl,
 }: {
+  form: Form;
+  onChange: (form: Form) => void;
   canSend: boolean;
   inFlight: boolean;
-  onSend: (input: Omit<SendInput, 'clientRequestId'>) => void;
+  onSend: () => void;
   onCancel: () => void;
+  onCopyCurl: () => void;
 }) {
-  const [method, setMethod] = useState<Method>('GET');
-  const [url, setUrl] = useState('');
-  const [queryRows, setQueryRows] = useState<Row[]>([]);
-  const [headerRows, setHeaderRows] = useState<Row[]>([]);
-  const nonEmpty = (rows: Row[]) => rows.filter(([name]) => name.trim() !== '');
-
   return (
     <form
       onSubmit={(e) => {
         e.preventDefault();
-        if (!inFlight)
-          onSend({
-            method,
-            url,
-            queryRows: nonEmpty(queryRows),
-            headerRows: nonEmpty(headerRows),
-          });
+        if (!inFlight) onSend();
       }}
     >
       <div className="row">
         <select
           aria-label="Method"
-          value={method}
-          onChange={(e) => setMethod(e.target.value as Method)}
+          value={form.method}
+          onChange={(e) =>
+            onChange({ ...form, method: e.target.value as Method })
+          }
         >
           {METHODS.map((m) => (
             <option key={m}>{m}</option>
@@ -217,8 +360,8 @@ function RequestForm({
           aria-label="URL"
           className="url"
           placeholder="https://…"
-          value={url}
-          onChange={(e) => setUrl(e.target.value)}
+          value={form.url}
+          onChange={(e) => onChange({ ...form, url: e.target.value })}
         />
         {inFlight ? (
           <button type="button" onClick={onCancel}>
@@ -229,11 +372,104 @@ function RequestForm({
             Send
           </button>
         )}
+        <button type="button" onClick={onCopyCurl}>
+          Copy as curl
+        </button>
       </div>
-      <RowsEditor label="Query" rows={queryRows} onChange={setQueryRows} />
-      <RowsEditor label="Header" rows={headerRows} onChange={setHeaderRows} />
+      <RowsEditor
+        label="Query"
+        rows={form.queryRows}
+        onChange={(queryRows) => onChange({ ...form, queryRows })}
+      />
+      <RowsEditor
+        label="Header"
+        rows={form.headerRows}
+        onChange={(headerRows) => onChange({ ...form, headerRows })}
+      />
     </form>
   );
+}
+
+function CurlView({
+  testId,
+  outcome,
+}: {
+  testId: string;
+  outcome: CurlOutcome | null;
+}) {
+  if (!outcome) return null;
+  if ('error' in outcome) {
+    return (
+      <p data-testid={`${testId}-error`} className="error">
+        Cannot export as curl: {outcome.error}
+      </p>
+    );
+  }
+  return (
+    <div>
+      <p>{outcome.copied ? 'Copied.' : 'Select the command to copy it:'}</p>
+      <pre data-testid={testId}>{outcome.command}</pre>
+    </div>
+  );
+}
+
+// Everything here is rendered as text: request and response content is untrusted (AGENTS.md).
+function CallPanel({
+  call,
+  canReplay,
+  curl,
+  onReplay,
+  onEdit,
+  onCopyCurl,
+}: {
+  call: Opened;
+  canReplay: boolean;
+  curl: CurlOutcome | null;
+  onReplay: () => void;
+  onEdit: () => void;
+  onCopyCurl: () => void;
+}) {
+  const { method, url, headers } = call.send.request;
+  return (
+    <section data-testid="call-panel" data-state={call.state}>
+      <h2>Call</h2>
+      <div className="row">
+        <button type="button" onClick={onReplay} disabled={!canReplay}>
+          Replay
+        </button>
+        <button type="button" onClick={onEdit}>
+          Edit
+        </button>
+        <button type="button" onClick={onCopyCurl}>
+          Copy call as curl
+        </button>
+      </div>
+      <CurlView testId="call-curl" outcome={curl} />
+      <p data-testid="call-state">{stateText(call.state)}</p>
+      <h3>Request as sent</h3>
+      <p data-testid="call-request-line">
+        {method} {url} · sent {call.send.sentAt.toLocaleString()}
+      </p>
+      <pre data-testid="call-request-headers">
+        {headers.map(([n, v]) => `${n}: ${v}`).join('\n')}
+      </pre>
+      {call.completion ? (
+        <>
+          <h3>Response</h3>
+          <p data-testid="call-completed-at">
+            completed {call.completion.completedAt.toLocaleString()}
+          </p>
+          <CompletionView completion={call.completion} />
+        </>
+      ) : null}
+    </section>
+  );
+}
+
+function stateText(state: Opened['state']): string {
+  if (state === 'in-flight') return 'In flight';
+  if (state === 'interrupted') return 'Interrupted: no response was recorded';
+  return 'Completed';
 }
 
 function ResultView({ result }: { result: SendResult | null }) {
@@ -286,9 +522,11 @@ function CompletionView({ completion }: { completion: CompletionDoc }) {
 function HistoryList({
   calls,
   error,
+  onOpen,
 }: {
   calls: CallView[];
   error: string | null;
+  onOpen: (sendId: string) => void;
 }) {
   return (
     <section>
@@ -306,9 +544,15 @@ function HistoryList({
             </li>
           ) : (
             <li key={call.send._id} data-state={call.state}>
-              <span className="method">{call.send.request.method}</span>{' '}
-              {call.send.request.url} — {outcome(call)} ·{' '}
-              {call.send.sentAt.toLocaleString()}
+              <button
+                type="button"
+                className="history-row"
+                onClick={() => onOpen(call.send._id)}
+              >
+                <span className="method">{call.send.request.method}</span>{' '}
+                {call.send.request.url} — {outcome(call)} ·{' '}
+                {call.send.sentAt.toLocaleString()}
+              </button>
             </li>
           ),
         )}

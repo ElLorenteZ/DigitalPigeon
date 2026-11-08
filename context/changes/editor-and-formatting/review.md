@@ -1,7 +1,7 @@
 ---
 change_id: editor-and-formatting
 produced-by: lz-review
-verdict: merge-with-fixes
+verdict: merge
 created: 2026-11-08
 updated: 2026-11-08
 reviewed: main (merge-base 0250bf69) + working tree on branch editor-and-formatting; plan revision 6; 4 phases
@@ -12,8 +12,8 @@ delegated-to: /code-review, one pass on the working tree (2026-11-08), 8 finding
 
 ## Verdict
 
-**merge-with-fixes** — every phase is evidenced, every divergence recorded, and the code review's chosen findings are fixed; the plan's e2e gate
-command, `npm run test:e2e`, has still not completed, because its packaging step cannot download Electron, so F1 must run it once before merge.
+**merge** — every phase is evidenced, every divergence recorded, and the code review's chosen findings are fixed. F1 is resolved: `npm run test:e2e`
+completed on commit `1fe3beb`, 26 passed (progress.md, "Review finding F1").
 
 ## Scope of this review
 
@@ -65,7 +65,7 @@ This review ran in the same session that planned and built the change. The revie
 - **Finding:** `npm run test:e2e` failed in its packaging step (`fetch failed`, earlier `Response code 504`) downloading Electron 45.2.1 from
   github.com. The specs it runs passed 25 of 25 three times on the `.vite/` build that step produced first. The packaged `.app` was last built in
   phase 2, before the eager import of `internal/common/workers.js`.
-- **Disposition:** fix now
+- **Disposition:** fix now — **resolved** 2026-11-08: `npm run test:e2e` on `1fe3beb`, packaging done, 26 passed (progress.md)
 - **Because:** the gate in `test-strategy.md` is the full command, and the packaged build includes the asar and fuses the Vite build does not.
   Run `npm run test:e2e` once github.com is reachable, and record the result in the ledger.
 

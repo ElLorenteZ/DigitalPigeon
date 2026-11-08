@@ -561,3 +561,32 @@ PASS — findings 1, 2, 4 and 6 fixed; finding 1 has a test seen red; finding 4 
 **Drift:**
 - decision — finding 4's fix turns off JSON folding, hovers, symbols, colours and formatting as well as diagnostics, because each is served by
   the JSON worker re-parsing the whole model; indentation-based folding still shows.
+
+## Review finding F1 — the e2e gate command on the branch
+
+- **Executor:** lz-e2e
+- **Status:** done
+- **Started:** 2026-11-08
+- **Finished:** 2026-11-08
+
+`npm run test:e2e` had not completed in phase 4 or after the code review fixes, because its packaging step could not download Electron 45.2.1
+(`fetch failed`, earlier `Response code 504`). Run again on commit `1fe3beb`, with github.com reachable.
+
+**Changed**
+- Nothing. The packaged `.app` was rebuilt by the command (`out/`, 2026-11-08 15:47), the first packaged build to include the eager import of
+  `internal/common/workers.js` and the code review fixes.
+
+**Verification**
+
+```
+$ npm run test:e2e
+✔ Packaging for arm64 on darwin
+✔ Packaging application
+✔ Running postPackage hook
+Running 26 tests using 1 worker
+  26 passed (23.2s)
+```
+
+PASS — the plan's e2e gate command completes on this branch.
+
+**Drift:** none

@@ -1,7 +1,7 @@
 ---
 produced-by: lz-roadmap
 current-milestone: M1
-updated: 2026-11-07
+updated: 2026-11-08
 ---
 
 # Roadmap
@@ -15,8 +15,8 @@ Appetite: about 2 weeks, sized to replace Postman/Insomnia for REST work (`shape
 - [x] A call record's content does not change after it is written; edit-and-send creates a new record and the original is unchanged when viewed again. *(slice 1: insert-only store, no update or delete; slice 2: `replay.int.test.ts` T1.1, `e2e/edit-and-export.spec.ts`)*
 - [ ] An exact replay sends the same method, URL, headers and body as the recorded request, and creates a new record. *(slices 2 and 3a: holds for no body and for JSON, XML, text and form bodies, `replay.int.test.ts` T1.3; multipart is slice 4)*
 - [ ] A call record disappears only after the user deletes it, one at a time or in bulk.
-- [x] A call record shows the request as sent, response status, response headers, full response body and timing. *(slice 2: the panel shows all of these; slice 3a: a body over 16 MB is stored in full, T1.5, and read to its end with Load more, `e2e/bodies.spec.ts`. As plain text until slice 3b. Renderer memory limits how far a very large body can be paged, T3.10)*
-- [ ] JSON and XML request and response bodies are shown pretty-printed.
+- [x] A call record shows the request as sent, response status, response headers, full response body and timing. *(slice 2: the panel shows all of these; slice 3a: a body over 16 MB is stored in full, T1.5, and read to its end with Load more, `e2e/bodies.spec.ts`; slice 3b: shown in a read-only Monaco editor. Renderer memory limits how far a very large body can be paged, T3.10)*
+- [x] JSON and XML request and response bodies are shown pretty-printed. *(slice 3b: Pretty by default with a Raw switch, chosen from the recorded `Content-Type`; formatted page by page up to 17 MiB with stored bytes unchanged, `src/core/body-format.ts` unit tests, `e2e/bodies.spec.ts`; T1.8 guarded by `e2e/body-safety.spec.ts`)*
 - [ ] JSON, XML, plain-text, form-urlencoded and multipart requests can each be sent and are recorded. *(slice 3a: all but multipart, `send.int.test.ts` T1.2, T1.3; multipart is slice 4)*
 - [ ] A recorded multipart call can be replayed after the uploaded file is deleted from its original location.
 - [ ] History can be narrowed by environment, by saved request, by date range, and by a search term in URL or body.
@@ -30,8 +30,8 @@ Appetite: about 2 weeks, sized to replace Postman/Insomnia for REST work (`shape
 | 1 | Send and record | Type a method, URL, query params and headers (including a pasted auth header), send, see status, headers, body and timing; the call appears in a history list; sending twice shows two entries | done | `send-and-record` |
 | 2 | Preview, replay, export | Open a past call and see the request as sent and the response; replay it exactly or edit and send, and a new entry appears while the original is unchanged; copy either as curl and run it | done | `preview-replay-export` |
 | 3a | Request bodies and storage | Send JSON, XML, plain-text and form-urlencoded bodies; replay and curl export send the same bytes; a body over 16 MB is stored and shown in full | done | `request-bodies-and-storage` |
-| 3b | Editor and formatting | JSON and XML request and response bodies shown pretty-printed in the editor, with what is stored and sent unchanged; a response body cannot run as script | next | — |
-| 4 | Multipart with file copies | Send a multipart request with a file; delete the file from disk; replay the call and the server receives the same bytes | later | — |
+| 3b | Editor and formatting | JSON and XML request and response bodies shown pretty-printed in the editor, with what is stored and sent unchanged; a response body cannot run as script | done | `editor-and-formatting` |
+| 4 | Multipart with file copies | Send a multipart request with a file; delete the file from disk; replay the call and the server receives the same bytes | next | — |
 | 5 | Saved requests and environments | Save a request and edit it later; define environments (name + `baseUrl`), switch the active one, and the same saved request goes to the other `baseUrl`; calls link back to their saved request | later | — |
 | 6 | Find calls | Narrow history by environment, by saved request, by date range, and by a substring of URL or body (for example `/orders/12`) | later | — |
 | 7 | Delete and retention | Delete one call, delete a filtered set in bulk, and define a retention rule; only the targeted calls disappear | later | — |
@@ -91,14 +91,24 @@ Appetite: about 2 weeks, sized to replace Postman/Insomnia for REST work (`shape
 
   The prediction held: undici, curl and GridFS took most of the time. Slice 3b touches none of them, but brings in
   Monaco, which has no earlier calibration.
+- **Slice 3b, `editor-and-formatting`** (2026-11-07 → 2026-11-08): two days, the same as every slice so far, with
+  no undici, curl or GridFS work. The time went on:
+  - a spike whose "no worker" result did not hold inside this app's renderer, found only in phase 2
+  - two plan reviews and six plan revisions, two of them answering defect drifts during the build
+  - Monaco's lazily loaded JSON support throwing unregistered-service errors, missed by a console-only listener
+  - a host code review whose findings ran to CR8
+
+  Leaving the undici boundary did not make the slice cheaper; a new library cost the same. Two days a change is
+  now the observed rate regardless of boundary. Slice 4 returns to undici, curl and GridFS with file bodies.
 - **Host code review:** found defects in all three changes after every other check passed: record-versus-wire
   mismatches in slices 1 and 2, storage and paging defects in slice 3a. One pass before merge is now expected
   (`test-strategy.md`). Plan for it in each slice.
-- **M1 appetite:** about 2 weeks for 7 slices, now 8 changes. After 5 days of slice work, 3 of 8 changes and 4 of 13
-  exit criteria are done, and 3 more criteria hold except for multipart. At two days a change, the remaining 5 take 10
-  days, for about 15 in all. That is over the appetite by a day with no margin.
+- **M1 appetite:** about 2 weeks for 7 slices, now 8 changes. After 6 days of slice work, 4 of 8 changes and 5 of 13
+  exit criteria are done, and 3 more criteria hold except for multipart. At two days a change, the remaining 4 take 8
+  days, for about 14 in all. That meets the appetite with no margin.
 - **Merged:** slices 1, 2 and 3a reached `main` together on 2026-11-07, at `15c97c9`, with no pull request (author's
-  instruction). "Done" here now means closed, archived and merged.
+  instruction). "Done" here now means closed, archived and merged. Slice 3b reached `main` through PR #3 on
+  2026-11-08.
 
 ## Later milestones
 

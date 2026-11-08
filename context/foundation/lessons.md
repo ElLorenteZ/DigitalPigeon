@@ -1,6 +1,6 @@
 ---
 produced-by: lz-lessons
-updated: 2026-11-07
+updated: 2026-11-08
 standing-rules: 2
 ---
 
@@ -40,10 +40,17 @@ demand and binds nothing.
   values; `?filter[a]=1` fails and `?a={1,2}` sends two requests without `--globoff`), request-bodies-and-storage
   (2026-11-07: `spike-gridfs-streaming.md` called `abort()` only before a stream ended and the driver refuses it
   afterwards, so a failed `finish()` left its chunks; range reads ran only with chunks present, and a read with them
-  removed returns short with no error)
-- **Promoted:** 2026-11-07
+  removed returns short with no error), editor-and-formatting (2026-11-08: `spike-monaco.md` ran Monaco in a bare Vite and
+  Electron app and listed "This repository's renderer" as not tried; plan revisions 2 to 4 still marked "no worker
+  requested" verified, two plan reviews accepted it, and in this renderer the editor worker fell back to `blob:` and the
+  CSP blocked it)
+- **Promoted:** 2026-11-07. Check sharpened 2026-11-08 after the third incident, in which a Not tried list existed and
+  named the gap.
 - **Check:** Each `spike-*.md` has a "Not tried" entry. Each plan assumption citing a spike uses wording the
-  spike's output supports, and a phase relying on an untried state has a test for it.
+  spike's output supports, and a phase relying on an untried state has a test for it. An assumption marked
+  verified from a spike names the host the spike ran in (for example "a bare Vite build", "a standalone script") and
+  the Not tried items it depends on; when it depends on any, it reads "partly verified" and names the phase that
+  checks the rest.
 
 ## Observation log
 
@@ -182,3 +189,13 @@ The second code review found it, and a probe confirmed it: a 30 MiB `Uint8Array`
 not timing. The standing undici rule covers what undici writes or refuses, so this is not an incident under it. One
 incident of timing behaviour. Recheck when slice 4 sends file bodies, and when undici is upgraded.
 Source: `context/archive/request-bodies-and-storage/raw/progress.md`, second code review follow-up.
+
+### 2026-11-08 — A "clean console" observation listened to console messages only
+
+Phase 2 of `editor-and-formatting` recorded "console errors and CSP lines at the end: []" from a `console` listener. Monaco
+had thrown five "depends on UNKNOWN service" errors in that build as uncaught exceptions, which reach Playwright's
+`pageerror` event, not `console`. They surfaced in phase 4, when `e2e/body-safety.spec.ts` recorded both. One incident.
+Same family as "Presence checks passed for an element the user could not see" (2026-11-06), through a different
+mechanism: the check observed less than its claim. A second would justify a rule that a claim of a clean console records
+`console` errors and `pageerror` together, as `body-safety.spec.ts` now does.
+Source: `context/archive/editor-and-formatting/raw/review.md` F3; `raw/progress.md` phase 4.

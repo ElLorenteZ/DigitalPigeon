@@ -1,11 +1,11 @@
 ---
 change_id: editor-and-formatting
 title: Show JSON and XML bodies pretty-printed in the editor, with stored bytes unchanged
-status: new
+status: closed
 ticket: null
 created: 2026-11-07
-updated: 2026-11-07
-closed: null
+updated: 2026-11-08
+closed: 2026-11-08
 produced-by: lz-change
 ---
 
@@ -56,3 +56,5 @@ The author chose this cut at slice 3: "Two, bodies first".
   for it, as `e2e/bodies.spec.ts` does.
 - T1.8 must be tested on the production build, because the CSP is injected only there (`test-strategy.md`).
 - `roadmap.md` and `test-strategy.md` are uncommitted on `main`. This change has no branch yet.
+- Closed 2026-11-08: recorded JSON and XML bodies show pretty-printed in a read-only Monaco editor with a Pretty/Raw switch; review verdict merge,
+  4 of 4 phases done with output, F1 resolved by `npm run test:e2e` (26 passed); PR #3 open, not yet merged.

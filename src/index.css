@@ -46,3 +46,10 @@ pre {
 .history-row:hover {
   text-decoration: underline;
 }
+.body-editor {
+  height: 20rem;
+  border: 1px solid #ddd;
+}
+.body-view [aria-pressed='true'] {
+  font-weight: bold;
+}

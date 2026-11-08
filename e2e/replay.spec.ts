@@ -6,7 +6,11 @@ import {
   type CaptureServer,
   startCaptureServer,
 } from '../test-support/capture-server';
-import { type TestApp, launchWithTestDatabase } from './support';
+import {
+  type TestApp,
+  expectBodyText,
+  launchWithTestDatabase,
+} from './support';
 
 let capture: CaptureServer;
 let testApp: TestApp;
@@ -45,7 +49,7 @@ test('replaying a past call adds a row and leaves the original as recorded', asy
   await expect(panel.getByTestId('call-request-headers')).toContainText(
     'Authorization: Bearer t',
   );
-  await expect(panel.getByTestId('response-body')).toHaveText('first response');
+  await expectBodyText(panel.getByTestId('response-body'), 'first response');
   const originalRequest = await panel
     .getByTestId('call-request-line')
     .innerText();
@@ -65,12 +69,10 @@ test('replaying a past call adds a row and leaves the original as recorded', asy
 
   // Opening the replay shows its own response, so the panel is reading what was stored.
   await history.first().getByRole('button').click();
-  await expect(panel.getByTestId('response-body')).toHaveText(
-    'second response',
-  );
+  await expectBodyText(panel.getByTestId('response-body'), 'second response');
 
   await history.nth(1).getByRole('button').click();
-  await expect(panel.getByTestId('response-body')).toHaveText('first response');
+  await expectBodyText(panel.getByTestId('response-body'), 'first response');
   await expect(panel.getByTestId('call-request-line')).toHaveText(
     originalRequest,
   );

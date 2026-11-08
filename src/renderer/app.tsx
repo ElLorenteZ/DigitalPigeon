@@ -1,7 +1,19 @@
 // Renderer: request form, response view, history list, database status.
 // Request and response bodies are untrusted input: rendered as text only, never as HTML (AGENTS.md).
+// Before the editor API: the JSON language loads this module lazily, and the editor contributions it imports register
+// their services as they load. Loaded after the first editor exists, five of them throw "depends on UNKNOWN service";
+// loaded here, they register in time (plan.md, A10).
+import 'monaco-editor/internal/common/workers.js';
+import * as monaco from 'monaco-editor/editor/editor.api.js';
+import EditorWorker from 'monaco-editor/editor/editor.worker.js?worker';
+import JsonWorker from 'monaco-editor/language/json/json.worker.js?worker';
+// Only the JSON and XML languages.
+import { jsonDefaults } from 'monaco-editor/language/json/monaco.contribution.js';
+import 'monaco-editor/languages/definitions/xml/register.js';
 import {
-  Fragment,
+  Component,
+  type ErrorInfo,
+  type ReactNode,
   useCallback,
   useEffect,
   useMemo,
@@ -13,6 +25,12 @@ import type {
   StoredBody,
   StoredFile,
 } from '../core/call-schema';
+import {
+  type BodyFormatter,
+  type BodyKind,
+  bodyKind,
+  createFormatter,
+} from '../core/body-format';
 import { toCurl } from '../core/curl';
 import { formFromCall } from '../core/form-from-call';
 import { type BodyInput, buildWireRequest } from '../core/wire';
@@ -32,6 +50,31 @@ declare global {
     pigeon: PigeonApi;
   }
 }
+
+// Monaco's workers load as bundled files from the app's own file:// origin, which script-src 'self' admits.
+// With no getWorker, the editor worker falls back to a blob: URL, which the CSP blocks (plan.md, A2). Once
+// getWorker exists Monaco uses it for every label, so the JSON worker is created here too.
+self.MonacoEnvironment = {
+  getWorker: (_workerId, label) =>
+    label === 'json' ? new JsonWorker() : new EditorWorker(),
+};
+
+// JSON keeps its highlighting and nothing else. A body read a page at a time is an unfinished document until its
+// last page, so diagnostics would mark valid JSON as invalid, and every worker feature would re-parse the whole
+// model after each page (code review, finding 4). A shown body is read-only, so the editing features add nothing.
+jsonDefaults.setDiagnosticsOptions({ validate: false });
+jsonDefaults.setModeConfiguration({
+  tokens: true,
+  documentFormattingEdits: false,
+  documentRangeFormattingEdits: false,
+  completionItems: false,
+  hovers: false,
+  documentSymbols: false,
+  colors: false,
+  foldingRanges: false,
+  diagnostics: false,
+  selectionRanges: false,
+});
 
 type Row = [string, string];
 type Method = SendInput['method'];
@@ -546,7 +589,9 @@ function CallPanel({
       <pre data-testid="call-request-headers">
         {headers.map(([n, v]) => `${n}: ${v}`).join('\n')}
       </pre>
-      {body ? <BodyText testId="call-request-body" body={body} /> : null}
+      {body ? (
+        <BodyText testId="call-request-body" body={body} headers={headers} />
+      ) : null}
       {call.completion ? (
         <>
           <h3>Response</h3>
@@ -608,36 +653,274 @@ function CompletionView({ completion }: { completion: CompletionDoc }) {
       <pre data-testid="response-headers">
         {headers.map(([n, v]) => `${n}: ${v}`).join('\n')}
       </pre>
-      <BodyText testId="response-body" body={body} />
+      <BodyText testId="response-body" body={body} headers={headers} />
     </div>
   );
 }
 
 // A body in its document is shown whole; one in a file is shown a page at a time.
-function BodyText({ testId, body }: { testId: string; body: StoredBody }) {
-  return 'fileId' in body ? (
-    // One instance per file: an answer for a body no longer shown reaches an unmounted instance.
-    <PagedBodyText key={body.fileId} testId={testId} file={body} />
-  ) : (
-    <InlineBodyText testId={testId} bytes={body} />
+function BodyText({
+  testId,
+  body,
+  headers,
+}: {
+  testId: string;
+  body: StoredBody;
+  headers: Row[];
+}) {
+  return (
+    // Keyed per body: a body that failed to show must not leave its error on the next call opened in the same place
+    // (code review, finding 1).
+    <BodyBoundary key={bodyKey(body)} testId={testId}>
+      {'fileId' in body ? (
+        // One instance per file: an answer for a body no longer shown reaches an unmounted instance.
+        <PagedBodyText
+          key={body.fileId}
+          testId={testId}
+          file={body}
+          kind={bodyKind(headers)}
+        />
+      ) : (
+        <InlineBodyText testId={testId} bytes={body} kind={bodyKind(headers)} />
+      )}
+    </BodyBoundary>
   );
 }
+
+// A stored body is identified by its file; an inline one by its bytes, which a call opened again receives anew.
+const inlineBodyKeys = new WeakMap<Uint8Array, string>();
+let inlineBodiesSeen = 0;
+function bodyKey(body: StoredBody): string {
+  if ('fileId' in body) return `file:${body.fileId}`;
+  let key = inlineBodyKeys.get(body);
+  if (!key) {
+    inlineBodiesSeen += 1;
+    key = `inline:${inlineBodiesSeen}`;
+    inlineBodyKeys.set(body, key);
+  }
+  return key;
+}
+
+// A body that cannot be shown stays inside its own area, so the form, the panel and History keep working.
+class BodyBoundary extends Component<
+  { testId: string; children: ReactNode },
+  { error: string | null }
+> {
+  state = { error: null as string | null };
+
+  static getDerivedStateFromError(error: unknown) {
+    return { error: errorText(error) };
+  }
+
+  componentDidCatch(error: unknown, info: ErrorInfo) {
+    console.error('Could not show the body', error, info.componentStack);
+  }
+
+  render() {
+    return this.state.error === null ? (
+      this.props.children
+    ) : (
+      <p data-testid={`${this.props.testId}-error`} className="error">
+        Could not show the body: {this.state.error}
+      </p>
+    );
+  }
+}
+
+type View = 'pretty' | 'raw';
 
 // Memoized: the status poll re-renders the app every 2 s, and this can hold 1 MiB.
 function InlineBodyText({
   testId,
   bytes,
+  kind,
 }: {
   testId: string;
   bytes: Uint8Array;
+  kind: BodyKind;
 }) {
+  // Pretty is the default for each body shown; a choice made on one body does not carry to the next.
+  const [choice, setChoice] = useState({ bytes, view: 'pretty' as View });
+  const view = choice.bytes === bytes ? choice.view : 'pretty';
+  const setView = (next: View) => setChoice({ bytes, view: next });
   const text = useMemo(() => textDecoder().decode(bytes), [bytes]);
-  return <pre data-testid={testId}>{text}</pre>;
+  const shown = useMemo(() => {
+    if (kind === 'raw' || view === 'raw') return text;
+    const formatter = createFormatter(kind);
+    return formatter.push(text) + formatter.end();
+  }, [text, kind, view]);
+  return (
+    <div>
+      <BodyViewLabel
+        testId={testId}
+        kind={kind}
+        view={view}
+        bom={text.startsWith('﻿')}
+        onChange={setView}
+      />
+      <MonacoBody
+        testId={testId}
+        text={shown}
+        language={languageOf(kind)}
+        loadedChars={text.length}
+      />
+    </div>
+  );
 }
 
-function PagedBodyText({ testId, file }: { testId: string; file: StoredFile }) {
-  // One text node per page: one string would meet V8's limit of 536,870,888 characters (plan.md).
-  const [pages, setPages] = useState<string[]>([]);
+const languageOf = (kind: BodyKind) => (kind === 'raw' ? 'plaintext' : kind);
+
+// Monaco takes a leading byte order mark out of the text it draws (plan.md), so the label says it is there.
+const BOM_NOTE =
+  'The recorded text starts with a byte order mark (U+FEFF), which is not drawn.';
+
+// Pretty is a display of the recorded text; Raw is the recorded text itself. A raw-kind body has no switch, and
+// shows the byte order mark note on its own when it has one.
+function BodyViewLabel({
+  testId,
+  kind,
+  view,
+  bom,
+  onChange,
+}: {
+  testId: string;
+  kind: BodyKind;
+  view: View;
+  bom: boolean;
+  onChange: (view: View) => void;
+}) {
+  if (kind === 'raw') {
+    return bom ? (
+      <p data-testid={`${testId}-view`} data-view="raw">
+        {BOM_NOTE}
+      </p>
+    ) : null;
+  }
+  return (
+    <div className="row body-view">
+      <span data-testid={`${testId}-view`} data-view={view}>
+        {view === 'pretty'
+          ? 'Pretty-printed for reading; Raw shows the recorded text.'
+          : 'Raw: the recorded text.'}
+        {bom ? ` ${BOM_NOTE}` : null}
+      </span>
+      <button
+        type="button"
+        aria-pressed={view === 'pretty'}
+        onClick={() => onChange('pretty')}
+      >
+        Pretty
+      </button>
+      <button
+        type="button"
+        aria-pressed={view === 'raw'}
+        onClick={() => onChange('raw')}
+      >
+        Raw
+      </button>
+    </div>
+  );
+}
+
+// Read-only Monaco: links off, so nothing in a body opens a page; lines wrap, because Monaco stops drawing a
+// long line at "Show more" and a minified body is one line (spike-monaco.md). The editor scrolls inside a
+// fixed-height area, so a long body does not push History down the page. `onCreate` runs for each editor
+// created, including StrictMode's second mount, so a caller can give it a model.
+function useBodyEditor(
+  host: React.RefObject<HTMLDivElement | null>,
+  onCreate: (editor: monaco.editor.IStandaloneCodeEditor) => void = () => {},
+) {
+  const editor = useRef<monaco.editor.IStandaloneCodeEditor | null>(null);
+  const created = useRef(onCreate);
+  created.current = onCreate;
+  useEffect(() => {
+    const instance = monaco.editor.create(host.current as HTMLDivElement, {
+      model: null,
+      readOnly: true,
+      links: false,
+      wordWrap: 'on',
+      automaticLayout: true,
+      minimap: { enabled: false },
+      scrollBeyondLastLine: false,
+    });
+    editor.current = instance;
+    created.current(instance);
+    return () => {
+      instance.getModel()?.dispose();
+      instance.dispose();
+      editor.current = null;
+    };
+  }, [host]);
+  return editor;
+}
+
+// Replaces the editor's model, disposing the old one.
+function setModel(
+  editor: monaco.editor.IStandaloneCodeEditor,
+  text: string,
+  language: string,
+) {
+  const previous = editor.getModel();
+  editor.setModel(monaco.editor.createModel(text, language));
+  previous?.dispose();
+}
+
+function MonacoBody({
+  testId,
+  text,
+  language,
+  loadedChars,
+}: {
+  testId: string;
+  text: string;
+  language: string;
+  loadedChars: number;
+}) {
+  const host = useRef<HTMLDivElement>(null);
+  // The model is set by the effect below, which runs after the editor's own effect on every mount, StrictMode's
+  // second one included; setting it in onCreate as well built every model twice (code review, finding 6).
+  const editor = useBodyEditor(host);
+
+  useEffect(() => {
+    if (editor.current) setModel(editor.current, text, language);
+  }, [editor, text, language]);
+
+  return (
+    <div
+      ref={host}
+      className="body-editor"
+      data-testid={testId}
+      data-loaded-chars={loadedChars}
+    />
+  );
+}
+
+// Appends text at the end of the model as an edit: pages are never joined into one string, which would meet V8's
+// limit of 536,870,888 characters (plan.md).
+function appendToModel(model: monaco.editor.ITextModel, text: string) {
+  if (text === '') return;
+  const line = model.getLineCount();
+  const column = model.getLineMaxColumn(line);
+  model.applyEdits([
+    { range: new monaco.Range(line, column, line, column), text },
+  ]);
+}
+
+function PagedBodyText({
+  testId,
+  file,
+  kind,
+}: {
+  testId: string;
+  file: StoredFile;
+  kind: BodyKind;
+}) {
+  // Decoded pages, kept so a switch between Pretty and Raw can rebuild the model from them.
+  const pages = useRef<string[]>([]);
+  const [loadedChars, setLoadedChars] = useState(0);
+  const [bom, setBom] = useState(false);
+  const [view, setViewState] = useState<View>('pretty');
+  const viewRef = useRef<View>('pretty');
   const [error, setError] = useState<string | null>(null);
   const [reading, setReading] = useState(false);
   const [loaded, setLoaded] = useState(0);
@@ -647,6 +930,59 @@ function PagedBodyText({ testId, file }: { testId: string; file: StoredFile }) {
   const offset = useRef(0);
   // Streaming, so a character split across two pages decodes correctly.
   const decoder = useRef(textDecoder());
+  // The formatter for the model being shown; it carries its state from one page to the next.
+  const formatter = useRef<BodyFormatter | null>(null);
+  // A page ending in CR is held back by that CR until the next page: appended as two edits, a CR and the LF that
+  // follows it would show as two line breaks.
+  const heldCR = useRef('');
+  const host = useRef<HTMLDivElement>(null);
+
+  const complete = () => offset.current >= file.length;
+  const formatterFor = (shownView: View) =>
+    kind === 'raw' || shownView === 'raw' ? null : createFormatter(kind);
+  const shownText = (page: string, last: boolean) => {
+    const current = formatter.current;
+    const text =
+      heldCR.current +
+      (current ? current.push(page) + (last ? current.end() : '') : page);
+    heldCR.current = !last && text.endsWith('\r') ? '\r' : '';
+    return heldCR.current ? text.slice(0, -1) : text;
+  };
+
+  // A new model, with every page loaded so far appended through a new formatter.
+  const rebuild = (
+    target: monaco.editor.IStandaloneCodeEditor,
+    shownView: View,
+  ) => {
+    setModel(target, '', languageOf(kind));
+    formatter.current = formatterFor(shownView);
+    heldCR.current = '';
+    const model = target.getModel() as monaco.editor.ITextModel;
+    pages.current.forEach((page, index) => {
+      appendToModel(
+        model,
+        shownText(page, complete() && index === pages.current.length - 1),
+      );
+    });
+  };
+
+  const editor = useBodyEditor(host, (created) =>
+    rebuild(created, viewRef.current),
+  );
+
+  // A click handler: an error here reaches no error boundary, so it is shown in the body area like a failed read
+  // (code review, finding 2).
+  const setView = (next: View) => {
+    viewRef.current = next;
+    setViewState(next);
+    if (!editor.current) return;
+    try {
+      rebuild(editor.current, next);
+      setError(null);
+    } catch (caught) {
+      setError(`Could not show the body: ${errorText(caught)}`);
+    }
+  };
 
   const readNext = useCallback(async () => {
     if (busy.current || offset.current >= file.length) return;
@@ -667,10 +1003,14 @@ function PagedBodyText({ testId, file }: { testId: string; file: StoredFile }) {
         failure = 'The stored body ended before its recorded length';
       } else {
         offset.current += got.bytes.length;
-        const text = decoder.current.decode(got.bytes, {
-          stream: offset.current < file.length,
-        });
-        setPages((current) => [...current, text]);
+        const last = offset.current >= file.length;
+        const text = decoder.current.decode(got.bytes, { stream: !last });
+        if (pages.current.length === 0 && text.startsWith('﻿')) setBom(true);
+        pages.current.push(text);
+        // Inside the try: an edit that throws is reported like a failed read.
+        const model = editor.current?.getModel();
+        if (model) appendToModel(model, shownText(text, last));
+        setLoadedChars((count) => count + text.length);
         setLoaded(offset.current);
       }
     } catch (caught) {
@@ -680,7 +1020,7 @@ function PagedBodyText({ testId, file }: { testId: string; file: StoredFile }) {
     }
     if (!shown.current) return;
     setReading(false);
-    setError(failure);
+    setError(failure === null ? null : `Could not read the body: ${failure}`);
   }, [file.fileId, file.length]);
 
   useEffect(() => {
@@ -694,14 +1034,22 @@ function PagedBodyText({ testId, file }: { testId: string; file: StoredFile }) {
   const remaining = file.length - loaded;
   return (
     <div>
-      <pre data-testid={testId}>
-        {pages.map((page, index) => (
-          <Fragment key={index}>{page}</Fragment>
-        ))}
-      </pre>
+      <BodyViewLabel
+        testId={testId}
+        kind={kind}
+        view={view}
+        bom={bom}
+        onChange={setView}
+      />
+      <div
+        ref={host}
+        className="body-editor"
+        data-testid={testId}
+        data-loaded-chars={loadedChars}
+      />
       {error ? (
         <p data-testid={`${testId}-error`} className="error">
-          Could not read the body: {error}
+          {error}
         </p>
       ) : null}
       {remaining > 0 ? (

@@ -8,7 +8,11 @@ import {
   type CaptureServer,
   startCaptureServer,
 } from '../test-support/capture-server';
-import { type TestApp, launchWithTestDatabase } from './support';
+import {
+  type TestApp,
+  expectBodyText,
+  launchWithTestDatabase,
+} from './support';
 
 type Reply =
   | {
@@ -161,12 +165,12 @@ test('a page read for a body no longer shown is ignored', async () => {
   const loadMore = testApp.window.getByRole('button', { name: 'Load more' });
 
   await row(0).click();
-  await expect(body).toHaveText('[file-a@0]');
+  await expectBodyText(body, '[file-a@0]');
   await loadMore.click();
   await expect(loadMore).toBeDisabled();
 
   await row(1).click();
-  await expect(body).toHaveText('[file-b@0]');
+  await expectBodyText(body, '[file-b@0]');
 
   await testApp.app.evaluate(() => {
     (globalThis as unknown as { releaseHeld: () => void }).releaseHeld();
@@ -179,10 +183,10 @@ test('a page read for a body no longer shown is ignored', async () => {
     await pigeon.dbStatus();
     await new Promise(requestAnimationFrame);
   });
-  await expect(body).toHaveText('[file-b@0]');
+  await expectBodyText(body, '[file-b@0]');
 
   // The new body's own Load more is not blocked by the old read, and continues from its own offset.
   await expect(loadMore).toBeEnabled();
   await loadMore.click();
-  await expect(body).toHaveText('[file-b@0][file-b@10]');
+  await expectBodyText(body, '[file-b@0][file-b@10]');
 });

@@ -4,6 +4,7 @@
 // disable the inspector Playwright attaches through (context/archive/test-harness/record.md §3).
 import {
   type ElectronApplication,
+  type Locator,
   type Page,
   _electron as electron,
   expect,
@@ -16,6 +17,61 @@ export interface TestApp {
   database: string;
   close: () => Promise<void>;
 }
+
+// Reads a body shown in the editor. Monaco draws only the lines in view and reuses their elements, so DOM order
+// is not reading order: lines are sorted by their top (spike-monaco.md). Spaces are drawn as no-break spaces.
+// A model line that wraps is drawn as several lines, so this reads what a reader sees, line by line.
+export function bodyLines(body: Locator): Promise<string[]> {
+  return body.evaluate((element) =>
+    [...element.querySelectorAll<HTMLElement>('.view-line')]
+      .sort((a, b) => parseFloat(a.style.top) - parseFloat(b.style.top))
+      .map((line) => (line.textContent ?? '').replace(/\u00a0/g, ' ')),
+  );
+}
+
+export const expectBodyText = (body: Locator, expected: string) =>
+  expect
+    .poll(async () => (await bodyLines(body)).join('\n'), {
+      message: `the body shown as ${JSON.stringify(expected)}`,
+    })
+    .toBe(expected);
+
+// Moves to the start or end of a body and returns the first or last line drawn there. The editor takes focus from a
+// click on a point inside its text area; a click on the line container scrolls it instead (spike-monaco.md).
+export async function bodyEdge(
+  page: Page,
+  body: Locator,
+  edge: 'start' | 'end',
+): Promise<string> {
+  const box = await body.boundingBox();
+  if (!box) throw new Error('the body is not shown');
+  await page.mouse.click(box.x + box.width / 2, box.y + 30);
+  await page.keyboard.press(edge === 'end' ? 'Meta+ArrowDown' : 'Meta+ArrowUp');
+  let line = '';
+  await expect
+    .poll(async () => {
+      const lines = await bodyLines(body);
+      line = (edge === 'end' ? lines.at(-1) : lines[0]) ?? '';
+      return line;
+    })
+    .not.toBe('');
+  // One more frame, so the lines read are the ones drawn after the move.
+  await page.evaluate(() => new Promise(requestAnimationFrame));
+  const lines = await bodyLines(body);
+  return (edge === 'end' ? lines.at(-1) : lines[0]) ?? line;
+}
+
+// A JSON or XML body opens Pretty; a test that checks the recorded text presses Raw first.
+export const showBodyView = (
+  scope: Page | Locator,
+  testId: string,
+  view: 'Pretty' | 'Raw',
+) =>
+  scope
+    .getByTestId(`${testId}-view`)
+    .locator('..')
+    .getByRole('button', { name: view, exact: true })
+    .click();
 
 export async function launchWithTestDatabase(): Promise<TestApp> {
   const db = createE2eDatabase();

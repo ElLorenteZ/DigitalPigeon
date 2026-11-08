@@ -5,7 +5,14 @@ import {
   type CaptureServer,
   startCaptureServer,
 } from '../test-support/capture-server';
-import { type TestApp, launchWithTestDatabase } from './support';
+import {
+  type TestApp,
+  bodyEdge,
+  bodyLines,
+  expectBodyText,
+  launchWithTestDatabase,
+  showBodyView,
+} from './support';
 
 const MIB = 1024 * 1024;
 
@@ -99,12 +106,23 @@ test('T2.7 — a call with a body can be opened, replayed and edited, and the or
   await sendAndSeeNewRow();
 
   await history().first().getByRole('button').click();
-  await expect(panel().getByTestId('call-request-body')).toHaveText(
+  // A JSON body opens Pretty, labelled; Raw shows the recorded text.
+  await expect(panel().getByTestId('call-request-body-view')).toHaveAttribute(
+    'data-view',
+    'pretty',
+  );
+  await expectBodyText(
+    panel().getByTestId('call-request-body'),
+    '{\n  "item": "é"\n}',
+  );
+  await showBodyView(panel(), 'call-request-body', 'Raw');
+  await expectBodyText(
+    panel().getByTestId('call-request-body'),
     '{"item":"é"}',
   );
-  await expect(panel().getByTestId('response-body')).toHaveText(
-    'json response',
-  );
+  // A body with no JSON or XML type has no switch.
+  await expect(panel().getByTestId('response-body-view')).toHaveCount(0);
+  await expectBodyText(panel().getByTestId('response-body'), 'json response');
 
   await button('Replay').click();
   await expect.poll(() => capture.requests.length).toBe(2);
@@ -126,11 +144,15 @@ test('T2.7 — a call with a body can be opened, replayed and edited, and the or
   expect(capture.requests[2]?.body.toString()).toBe('{"item":"changed"}');
 
   await history().nth(2).getByRole('button').click();
-  await expect(panel().getByTestId('call-request-body')).toHaveText(
+  await showBodyView(panel(), 'call-request-body', 'Raw');
+  await expectBodyText(
+    panel().getByTestId('call-request-body'),
     '{"item":"é"}',
   );
   await history().first().getByRole('button').click();
-  await expect(panel().getByTestId('call-request-body')).toHaveText(
+  await showBodyView(panel(), 'call-request-body', 'Raw');
+  await expectBodyText(
+    panel().getByTestId('call-request-body'),
     '{"item":"changed"}',
   );
 });
@@ -155,7 +177,8 @@ test('a Form body typed through rows arrives encoded, and loads back as rows', a
 
   await window.getByLabel('Form field value 1').fill('other');
   await history().first().getByRole('button').click();
-  await expect(panel().getByTestId('call-request-body')).toHaveText(
+  await expectBodyText(
+    panel().getByTestId('call-request-body'),
     'a+b=1%262%3D%C3%A9',
   );
   await button('Edit').click();
@@ -177,8 +200,173 @@ test('T2.9 — a refused HEAD with a body says so in view, and adds no row', asy
   expect(capture.requests).toHaveLength(0);
 });
 
-// Read through evaluate: toContainText would carry the whole body across the Playwright bridge on every
-// retry (plan.md, phase 6).
+test('T2.9 — switching a JSON response between Pretty and Raw keeps it in view, and History is one scroll below a 1 MiB response', async () => {
+  const { window } = testApp;
+  // 1 MiB of JSON that stays inline (just under BODY_PAGE_BYTES), so it opens in the result view.
+  const items: string[] = [];
+  let size = 2;
+  for (let i = 0; size < MIB - 64; i += 1) {
+    const item = `{"i":${i}}`;
+    items.push(item);
+    size += item.length + 1;
+  }
+  capture.respondWith({
+    status: 200,
+    headers: { 'Content-Type': 'application/json' },
+    body: Buffer.from(`[${items.join(',')}]`),
+  });
+  await window.getByLabel('Method').selectOption('GET');
+  await window.getByLabel('URL').fill(`${capture.url}/switch`);
+  await window.getByLabel('Body type').selectOption('none');
+  await sendAndSeeNewRow();
+
+  const result = window.getByTestId('result');
+  const shown = result.getByTestId('response-body');
+  await expect(shown).toBeInViewport({ ratio: 0.9 });
+  for (const view of ['Raw', 'Pretty'] as const) {
+    await showBodyView(result, 'response-body', view);
+    await expect(result.getByTestId('response-body-view')).toHaveAttribute(
+      'data-view',
+      view.toLowerCase(),
+    );
+    // Most of the body area, not any sliver of it: the page is short, so a scroll can leave an edge in view.
+    await expect(shown).toBeInViewport({ ratio: 0.9 });
+  }
+
+  // The body scrolls in its own area, so History is at most one page of scrolling below it (T3.10's long scroll).
+  await window.evaluate(() => scrollBy(0, innerHeight));
+  await expect(
+    window.getByRole('heading', { name: 'History', exact: true }),
+  ).toBeInViewport();
+});
+
+test('a body that could not be shown does not leave its error on the next call opened (code review, finding 1)', async () => {
+  const { window } = testApp;
+  const respondJson = (text: string) =>
+    capture.respondWith({
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+      body: Buffer.from(text),
+    });
+  await window.getByLabel('Method').selectOption('GET');
+  await window.getByLabel('Body type').selectOption('none');
+  respondJson('{"second":2}');
+  await window.getByLabel('URL').fill(`${capture.url}/shows`);
+  await sendAndSeeNewRow();
+  respondJson('{"first":1}');
+  await window.getByLabel('URL').fill(`${capture.url}/fails-to-show`);
+  await sendAndSeeNewRow();
+
+  // The editor constructs a ResizeObserver for its layout; one that throws makes the next body opened fail to show.
+  await window.evaluate(() => {
+    const scope = globalThis as unknown as {
+      ResizeObserver: unknown;
+      __resizeObserver: unknown;
+    };
+    scope.__resizeObserver = scope.ResizeObserver;
+    scope.ResizeObserver = class {
+      constructor() {
+        throw new Error('forced for this test');
+      }
+    };
+  });
+  await history().first().getByRole('button').click();
+  await expect(panel().getByTestId('call-request-line')).toContainText(
+    '/fails-to-show',
+  );
+  await expect(panel().getByTestId('response-body-error')).toContainText(
+    'forced for this test',
+  );
+
+  await window.evaluate(() => {
+    const scope = globalThis as unknown as {
+      ResizeObserver: unknown;
+      __resizeObserver: unknown;
+    };
+    scope.ResizeObserver = scope.__resizeObserver;
+  });
+  await history().nth(1).getByRole('button').click();
+  await expect(panel().getByTestId('call-request-line')).toContainText(
+    '/shows',
+  );
+  await expect(panel().getByTestId('response-body-error')).toHaveCount(0);
+  await showBodyView(panel(), 'response-body', 'Raw');
+  await expectBodyText(panel().getByTestId('response-body'), '{"second":2}');
+});
+
+test('a stored JSON response loads page by page, formatted, to its final value', async () => {
+  const items: string[] = [];
+  let size = 2;
+  for (let i = 0; size < 2.5 * MIB; i += 1) {
+    const item = `{"i":${i},"v":"value-${i}"}`;
+    items.push(item);
+    size += item.length + 1;
+  }
+  const last = items.length - 1;
+  capture.respondWith({
+    status: 200,
+    headers: { 'Content-Type': 'application/json' },
+    body: Buffer.from(`[${items.join(',')}]`),
+  });
+  await testApp.window.getByLabel('Method').selectOption('GET');
+  await testApp.window.getByLabel('URL').fill(`${capture.url}/stored-json`);
+  await testApp.window.getByLabel('Body type').selectOption('none');
+  await sendAndSeeNewRow();
+
+  await history().first().getByRole('button').click();
+  const text = panel().getByTestId('response-body');
+  const loadMore = panel().getByRole('button', { name: 'Load more' });
+  await expect(panel().getByTestId('response-body-view')).toHaveAttribute(
+    'data-view',
+    'pretty',
+  );
+  const remaining = panel().getByTestId('response-body-remaining');
+  const total = Buffer.byteLength(`[${items.join(',')}]`);
+  let expected = total - MIB;
+  await expect(remaining).toHaveAttribute('data-remaining', String(expected));
+  while (expected > 0) {
+    await loadMore.click();
+    expected = Math.max(expected - MIB, 0);
+    if (expected > 0) {
+      await expect(remaining).toHaveAttribute(
+        'data-remaining',
+        String(expected),
+      );
+    } else {
+      await expect(loadMore).toHaveCount(0);
+    }
+  }
+  await expect(text).toHaveAttribute('data-loaded-chars', String(total));
+
+  // The last object, indented as the first one is: the formatter kept its depth across every page.
+  expect(await bodyEdge(testApp.window, text, 'end')).toBe(']');
+  const lines = await bodyLines(text);
+  expect(lines.slice(-5)).toEqual([
+    '  {',
+    `    "i": ${last},`,
+    `    "v": "value-${last}"`,
+    '  }',
+    ']',
+  ]);
+  // A reader scrolling back a little sees the lines in order.
+  const box = await text.boundingBox();
+  if (!box) throw new Error('the body is not shown');
+  await testApp.window.mouse.move(
+    box.x + box.width / 2,
+    box.y + box.height / 2,
+  );
+  await testApp.window.mouse.wheel(0, -90);
+  await expect.poll(async () => (await bodyLines(text)).at(-1)).not.toBe(']');
+  const shownIs = (await bodyLines(text))
+    .map((line) => /"i": (\d+)/.exec(line)?.[1])
+    .filter((value) => value !== undefined)
+    .map(Number);
+  expect(shownIs.length).toBeGreaterThan(1);
+  expect(shownIs).toEqual([...shownIs].sort((x, y) => x - y));
+});
+
+// The editor draws only the lines in view, so the loaded length comes from data-loaded-chars and the start and end are
+// read by moving there with the keyboard (plan.md, phase 3).
 test('a 17 MiB response can be read to its end with Load more', async () => {
   const start = 'START-MARKER';
   const end = 'FINAL-MARKER';
@@ -201,26 +389,10 @@ test('a 17 MiB response can be read to its end with Load more', async () => {
     'data-remaining',
     String(body.length - MIB),
   );
-
-  const ends = () =>
-    text.evaluate((element) => {
-      const content = element.textContent ?? '';
-      return {
-        length: content.length,
-        first: content.slice(0, 12),
-        last: content.slice(-12),
-      };
-    });
-  // T2.9: the page Load more adds starts where the button was, inside the viewport.
-  const lastPageTopInView = () =>
-    text.evaluate((element) => {
-      const range = document.createRange();
-      range.selectNodeContents(element.lastChild as Node);
-      const { top } = range.getBoundingClientRect();
-      return top >= 0 && top < window.innerHeight;
-    });
-
-  await expect(ends()).resolves.toMatchObject({ length: MIB, first: start });
+  await expect(text).toHaveAttribute('data-loaded-chars', String(MIB));
+  expect((await bodyEdge(testApp.window, text, 'start')).slice(0, 12)).toBe(
+    start,
+  );
 
   let expected = body.length - MIB;
   while (expected > 0) {
@@ -228,22 +400,24 @@ test('a 17 MiB response can be read to its end with Load more', async () => {
     const next = Math.max(expected - MIB, 0);
     if (next > 0) {
       await expect(remaining).toHaveAttribute('data-remaining', String(next));
+      // T2.9: the body scrolls in its own area, so after Load more the area and the remaining count stay in view.
+      await expect(text).toBeInViewport({ ratio: 0.9 });
+      await expect(remaining).toBeInViewport({ ratio: 1 });
     } else {
       await expect(loadMore).toHaveCount(0);
     }
     expected = next;
-    await expect(ends()).resolves.toMatchObject({
-      length: body.length - expected,
-    });
-    await expect.poll(lastPageTopInView).toBe(true);
+    await expect(text).toHaveAttribute(
+      'data-loaded-chars',
+      String(body.length - expected),
+    );
   }
 
   await expect(remaining).toHaveCount(0);
-  await expect(ends()).resolves.toEqual({
-    length: body.length,
-    first: start,
-    last: end,
-  });
+  expect((await bodyEdge(testApp.window, text, 'end')).slice(-12)).toBe(end);
+  expect((await bodyEdge(testApp.window, text, 'start')).slice(0, 12)).toBe(
+    start,
+  );
 });
 
 test('opening the call already shown does not load another page (second review, finding 1)', async () => {

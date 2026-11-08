@@ -31,6 +31,10 @@ const createWindow = () => {
     },
   });
 
+  // No page opens a new window: a body is untrusted input, and nothing in it may open a page (T1.8).
+  // This adds a restriction; contextIsolation, sandbox and the CSP are unchanged (AGENTS.md).
+  mainWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+
   // and load the index.html of the app.
   if (MAIN_WINDOW_VITE_DEV_SERVER_URL) {
     mainWindow.loadURL(MAIN_WINDOW_VITE_DEV_SERVER_URL);

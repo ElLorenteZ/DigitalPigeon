@@ -6,7 +6,12 @@ import {
   type CaptureServer,
   startCaptureServer,
 } from '../test-support/capture-server';
-import { type TestApp, launchWithTestDatabase } from './support';
+import {
+  type TestApp,
+  expectBodyText,
+  launchWithTestDatabase,
+  showBodyView,
+} from './support';
 
 let capture: CaptureServer;
 let testApp: TestApp;
@@ -43,7 +48,8 @@ test('each send shows its response and adds its own row to history', async () =>
   await window.getByRole('button', { name: 'Send' }).click();
 
   await expect(window.getByTestId('response-status')).toContainText('201');
-  await expect(window.getByTestId('response-body')).toHaveText('{"id":7}');
+  await showBodyView(window, 'response-body', 'Raw');
+  await expectBodyText(window.getByTestId('response-body'), '{"id":7}');
   await expect(history).toHaveCount(1);
   await expect(history.first()).toContainText(
     `GET ${capture.url}/orders — 201`,

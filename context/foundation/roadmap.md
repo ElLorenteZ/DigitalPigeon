@@ -31,7 +31,7 @@ Appetite: about 2 weeks, sized to replace Postman/Insomnia for REST work (`shape
 | 2 | Preview, replay, export | Open a past call and see the request as sent and the response; replay it exactly or edit and send, and a new entry appears while the original is unchanged; copy either as curl and run it | done | `preview-replay-export` |
 | 3a | Request bodies and storage | Send JSON, XML, plain-text and form-urlencoded bodies; replay and curl export send the same bytes; a body over 16 MB is stored and shown in full | done | `request-bodies-and-storage` |
 | 3b | Editor and formatting | JSON and XML request and response bodies shown pretty-printed in the editor, with what is stored and sent unchanged; a response body cannot run as script | done | `editor-and-formatting` |
-| 4 | Multipart with file copies | Send a multipart request with a file; delete the file from disk; replay the call and the server receives the same bytes | next | — |
+| 4 | Multipart with file copies | Send a multipart request with a file; delete the file from disk; replay the call and the server receives the same bytes | in flight | `multipart-with-file-copies` |
 | 5 | Saved requests and environments | Save a request and edit it later; define environments (name + `baseUrl`), switch the active one, and the same saved request goes to the other `baseUrl`; calls link back to their saved request | later | — |
 | 6 | Find calls | Narrow history by environment, by saved request, by date range, and by a substring of URL or body (for example `/orders/12`) | later | — |
 | 7 | Delete and retention | Delete one call, delete a filtered set in bulk, and define a retention rule; only the targeted calls disappear | later | — |
@@ -54,6 +54,8 @@ Appetite: about 2 weeks, sized to replace Postman/Insomnia for REST work (`shape
 **Carried into later slices** from `archive/request-bodies-and-storage`:
 - Slice 4: recheck undici's headers timer with file bodies, and T1.5 for uploaded files.
 - Slice 7: delete must find chunks with no file document and finished files no call refers to (T3.9), and recheck the error when a file is removed during a read.
+- From `multipart-with-file-copies` (code review CR9): `describeBody` opens one GridFS stream per 1 MiB page; one stream
+  for the whole file would do. Pick up when touching stored-body reads, at the latest in slice 7.
 - When the work machine's OS is decided: curl export fails on Linux above 128 KiB (T2.4, T3.4).
 
 **Decisions needed before a slice can be planned** (PRD Open questions):

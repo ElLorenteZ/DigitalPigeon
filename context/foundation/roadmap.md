@@ -1,7 +1,7 @@
 ---
 produced-by: lz-roadmap
 current-milestone: M1
-updated: 2026-11-08
+updated: 2026-11-10
 ---
 
 # Roadmap
@@ -13,15 +13,15 @@ Appetite: about 2 weeks, sized to replace Postman/Insomnia for REST work (`shape
 **Exit criteria** — from `prd.md` Success criteria:
 - [x] Sending the same unchanged request twice produces two call records, each with its own timestamp. *(slice 1: `call-store.int.test.ts`, `send.int.test.ts` T1.1, e2e journey shows two rows)*
 - [x] A call record's content does not change after it is written; edit-and-send creates a new record and the original is unchanged when viewed again. *(slice 1: insert-only store, no update or delete; slice 2: `replay.int.test.ts` T1.1, `e2e/edit-and-export.spec.ts`)*
-- [ ] An exact replay sends the same method, URL, headers and body as the recorded request, and creates a new record. *(slices 2 and 3a: holds for no body and for JSON, XML, text and form bodies, `replay.int.test.ts` T1.3; multipart is slice 4)*
+- [x] An exact replay sends the same method, URL, headers and body as the recorded request, and creates a new record. *(slices 2 and 3a: holds for no body and for JSON, XML, text and form bodies, `replay.int.test.ts` T1.3; multipart is slice 4; slice 4: multipart, inline and stored, `send.int.test.ts`, `replay.int.test.ts`)*
 - [ ] A call record disappears only after the user deletes it, one at a time or in bulk.
 - [x] A call record shows the request as sent, response status, response headers, full response body and timing. *(slice 2: the panel shows all of these; slice 3a: a body over 16 MB is stored in full, T1.5, and read to its end with Load more, `e2e/bodies.spec.ts`; slice 3b: shown in a read-only Monaco editor. Renderer memory limits how far a very large body can be paged, T3.10)*
 - [x] JSON and XML request and response bodies are shown pretty-printed. *(slice 3b: Pretty by default with a Raw switch, chosen from the recorded `Content-Type`; formatted page by page up to 17 MiB with stored bytes unchanged, `src/core/body-format.ts` unit tests, `e2e/bodies.spec.ts`; T1.8 guarded by `e2e/body-safety.spec.ts`)*
-- [ ] JSON, XML, plain-text, form-urlencoded and multipart requests can each be sent and are recorded. *(slice 3a: all but multipart, `send.int.test.ts` T1.2, T1.3; multipart is slice 4)*
-- [ ] A recorded multipart call can be replayed after the uploaded file is deleted from its original location.
+- [x] JSON, XML, plain-text, form-urlencoded and multipart requests can each be sent and are recorded. *(slice 3a: all but multipart, `send.int.test.ts` T1.2, T1.3; multipart is slice 4; slice 4: multipart on 6 methods, `send.int.test.ts`, `e2e/multipart.spec.ts`)*
+- [x] A recorded multipart call can be replayed after the uploaded file is deleted from its original location. *(slice 4: T1.4, `replay.int.test.ts` inline and GridFS, `e2e/multipart.spec.ts`)*
 - [ ] History can be narrowed by environment, by saved request, by date range, and by a search term in URL or body.
 - [ ] Switching the active environment changes the `baseUrl` a saved request is sent to.
-- [ ] A request exported as curl, run in a terminal, sends the same method, URL, headers and body. *(slices 2 and 3a: holds for no body and for JSON, XML, text and form bodies with a command up to 900 KiB, on macOS, `curl.int.test.ts` T2.4; a longer command is refused with the reason; multipart is slice 4)*
+- [x] A request exported as curl, run in a terminal, sends the same method, URL, headers and body. *(slices 2 and 3a: holds for no body and for JSON, XML, text and form bodies with a command up to 900 KiB, on macOS, `curl.int.test.ts` T2.4; a longer command is refused with the reason; multipart is slice 4; slice 4: a text-only multipart body, `curl.int.test.ts`; a binary file part is refused with the reason, as a command over 900 KiB is)*
 - [x] The app runs as a local install on the personal machine with no account. *(slice 1: the author ran the packaged app from `npm run package` and sent a request with only `config.json`; no installer from `make` yet)*
 - [ ] *(Author's judgement)* Postman/Insomnia goes unopened for REST work for two weeks, and finding and replaying a past call is faster than in Postman.
 
@@ -31,7 +31,7 @@ Appetite: about 2 weeks, sized to replace Postman/Insomnia for REST work (`shape
 | 2 | Preview, replay, export | Open a past call and see the request as sent and the response; replay it exactly or edit and send, and a new entry appears while the original is unchanged; copy either as curl and run it | done | `preview-replay-export` |
 | 3a | Request bodies and storage | Send JSON, XML, plain-text and form-urlencoded bodies; replay and curl export send the same bytes; a body over 16 MB is stored and shown in full | done | `request-bodies-and-storage` |
 | 3b | Editor and formatting | JSON and XML request and response bodies shown pretty-printed in the editor, with what is stored and sent unchanged; a response body cannot run as script | done | `editor-and-formatting` |
-| 4 | Multipart with file copies | Send a multipart request with a file; delete the file from disk; replay the call and the server receives the same bytes | in flight | `multipart-with-file-copies` |
+| 4 | Multipart with file copies | Send a multipart request with a file; delete the file from disk; replay the call and the server receives the same bytes | done | `multipart-with-file-copies` |
 | 5 | Saved requests and environments | Save a request and edit it later; define environments (name + `baseUrl`), switch the active one, and the same saved request goes to the other `baseUrl`; calls link back to their saved request | later | — |
 | 6 | Find calls | Narrow history by environment, by saved request, by date range, and by a substring of URL or body (for example `/orders/12`) | later | — |
 | 7 | Delete and retention | Delete one call, delete a filtered set in bulk, and define a retention rule; only the targeted calls disappear | later | — |
@@ -110,7 +110,8 @@ Appetite: about 2 weeks, sized to replace Postman/Insomnia for REST work (`shape
   days, for about 14 in all. That meets the appetite with no margin.
 - **Merged:** slices 1, 2 and 3a reached `main` together on 2026-11-07, at `15c97c9`, with no pull request (author's
   instruction). "Done" here now means closed, archived and merged. Slice 3b reached `main` through PR #3 on
-  2026-11-08.
+  2026-11-08. Slice 4 reached `main` at `7ab1f65` on 2026-11-09, fast-forwarded with no pull request (author's
+  instruction), and was closed and archived on 2026-11-10.
 
 ## Later milestones
 

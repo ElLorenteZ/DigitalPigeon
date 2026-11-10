@@ -340,3 +340,31 @@ nothing invalid reaches the record.
 **Notes**
 - The #1 scenarios hold the file read by wrapping `File.prototype.arrayBuffer` in the page and restore it afterwards. This arranges timing only; F3's untested read error is still untested.
 - `PartsEditor` reconciles row ids when the number of parts changes from outside; a same-length replacement keeps ids, and the file input's key gives it a fresh input.
+
+## Phase 5 — pick a file, send, delete it, replay
+
+- **Executor:** lz-e2e
+- **Status:** done
+- **Started:** 2026-11-09
+- **Finished:** 2026-11-10
+
+Supersedes the `in-progress` entry above, which holds the changes, the scenarios' output and their red evidence.
+
+**Verification**
+
+```
+$ npm run package && npx playwright test e2e/multipart.spec.ts
+  2 passed (3.9s)            — phase 5 entry above
+$ npx playwright test e2e/multipart.spec.ts e2e/multipart-edit-failures.spec.ts --repeat-each=3
+  30 passed (42.8s)          — after the code review follow-up
+$ npm run test:e2e
+  36 passed (36.1s)          — after the code review follow-up
+Manual check (pick a file through the native file dialog on the built app): NOT PERFORMED.
+```
+
+PASS for the automated scenarios. The manual native-dialog check was not run; the author accepted closing without it
+on 2026-11-10 ("Close without the check"). Picking through the native dialog is unverified: the spike and every
+scenario used `setInputFiles`, which does not open the dialog. Recorded as a known limit in `test-strategy.md`.
+
+**Drift:** decision — the plan's done-when for phase 5 included the manual native-dialog check → not performed,
+accepted by the author (review.md F1, disposition changed from fix now to accept).

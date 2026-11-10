@@ -165,8 +165,9 @@ Known limits inside covered risks:
 - **Multipart, a file that cannot be read when picked** shows "Could not read <name>" in its row and leaves the part
   with no file. No test covers it: Playwright cannot make `File.arrayBuffer()` reject without patching the page, and the
   renderer has no unit layer. Accepted by the author (review of `multipart-with-file-copies`, F3).
-- **Multipart, picking a file through the native dialog** is checked manually, not in e2e: Playwright sets the files
-  without opening it.
+- **Multipart, picking a file through the native dialog** is unverified: Playwright sets the files without opening it,
+  and the manual check planned for it was not performed (accepted by the author, review of `multipart-with-file-copies`,
+  F1).
 - **T3.7:** exact replay sends the recorded token, expired or not. Offering a current one is still a
   PRD open question.
 

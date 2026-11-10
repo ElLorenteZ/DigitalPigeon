@@ -1,11 +1,11 @@
 ---
 change_id: multipart-with-file-copies
 title: Send multipart requests with files, keeping a stored copy so replay survives file deletion
-status: new
+status: closed
 ticket: null
 created: 2026-11-08
-updated: 2026-11-08
-closed: null
+updated: 2026-11-10
+closed: 2026-11-10
 produced-by: lz-change
 ---
 
@@ -39,3 +39,4 @@ Slice 4 in `context/foundation/roadmap.md`: "Send a multipart request with a fil
 - Branch `multipart-with-file-copies`, cut from `main` at `00dc9d3` (slice 3b merged through PR #3).
 - Test-strategy gaps this slice closes: T1.4; T1.2, T1.3, T2.4 for multipart; T1.5 for uploaded files (`test-strategy.md` lines 112, 116).
 - Calibration: every slice so far took two days; this one returns to undici, curl and GridFS (`roadmap.md`).
+- Closed 2026-11-10: shipped. Six phases done; review verdict merge-with-fixes with every finding triaged and the code review fixes applied; the manual native-dialog check was not performed (accepted by the author, review F1). Merged to `main` at `7ab1f65` on 2026-11-09, before closing. Recorded status `new` corrected at close; the artifacts derived `reviewing`.

@@ -3,7 +3,7 @@ change_id: multipart-with-file-copies
 produced-by: lz-review
 verdict: merge-with-fixes
 created: 2026-11-09
-updated: 2026-11-09
+updated: 2026-11-10
 reviewed: working tree on branch multipart-with-file-copies against main at 00dc9d3 (17 files outside context/, 1164 insertions, 65 deletions); plan.md revision 3, 6 phases; progress.md
 delegated-to: /code-review (first pass, 2026-11-09; 10 findings, triaged below). The fixes have not had a second pass
 ---
@@ -12,11 +12,12 @@ delegated-to: /code-review (first pass, 2026-11-09; 10 findings, triaged below).
 
 ## Verdict
 
-**merge-with-fixes** — the change matches its plan and every recorded divergence has a reason, but phase 5 is not
-verified until the manual native-dialog check is done.
+**merge-with-fixes** — the change matches its plan and every recorded divergence has a reason; the fixes from
+`/code-review` are applied, and the one manual check left open (F1) was accepted unperformed by the author.
 
-Fixes before merge: F1 (the manual check, by the author). A second `/code-review` pass on the fixes is suggested:
-#4 and #6 change what is recorded and sent (`test-strategy.md`, code review step).
+No fix remains outstanding. A second `/code-review` pass on the fixes was suggested and not run: #4 and #6 change what
+is recorded and sent (`test-strategy.md`, code review step). Merged to `main` at `7ab1f65` on 2026-11-09, before
+this update (author's instruction).
 
 **This review was written in the same session that planned and built the change.** The reviewer wrote the code and the
 ledger. Weigh the plan-adherence and verification scores with that in mind; the ledger's red evidence and mutation
@@ -37,7 +38,7 @@ dispositions are below; the fixes were not reviewed by a second pass.
 | Plan adherence | 4/5 | All six phases built as planned. Five divergences, each recorded in `progress.md` with a reason; one of them (the separate failures spec) was recorded only at this review (F2). No scope beyond `change.md`'s boundary. |
 | Convention compliance | 5/5 | `AGENTS.md`: undici and mongodb stay in main (`multipart.ts` imports neither, so the renderer can load it); one new preload function, named and validated with `zod` in main; CSP and `webPreferences` untouched; every integration test uses `openTestDb()` and every e2e spec `launchWithTestDatabase()`. |
 | Lessons compliance | 5/5 | Standing rule "Probe what undici does": `probe-undici-curl-multipart.md`, plus T1.3 cases on 6 methods and a GridFS-stored body. Standing rule "List what a spike did not try": `spike-file-input-ipc.md` has a Not tried list naming its host; plan A1–A4 cite it with "partly verified" and the phase that checks the rest. |
-| Verification completeness | 4/5 | Phases 1, 2, 3, 4 and 6 are `done`, each with the plan's command and its output, red evidence or a mutation for each test, and the full gates (unit 290, integration 270, e2e 32, typecheck, lint). Phase 5 is honestly `in-progress`: its scenarios pass 4×, but its done-when includes a manual check not yet run (F1). |
+| Verification completeness | 4/5 | All six phases `done`, each with the plan's command and its output, red evidence or a mutation for each test, and the full gates (after code review: unit 305, integration 270, e2e 36, typecheck, lint). Phase 5's manual native-dialog check was not performed, accepted by the author (F1). |
 
 ## Drift from the plan
 
@@ -67,9 +68,10 @@ the routing entry from lz-tdd. The last section, which the ledger schema makes a
 - **Finding:** The plan's done-when for phase 5 includes picking a file through the native file dialog on the built
   app (A4's Not tried item). Playwright's `setInputFiles` does not open the dialog. The phase is correctly
   `in-progress`; nothing claims it done.
-- **Disposition:** fix now
-- **Because:** the close gate requires every phase verified or dropped. Performed by the author; the result is
-  recorded in phase 5's entry.
+- **Disposition:** accept (changed from fix now on 2026-11-10)
+- **Because:** the author chose to close without the check ("Close without the check", 2026-11-10). Picking through
+  the native dialog is unverified and recorded as a known limit in `test-strategy.md`; phase 5's last entry records
+  the check as not performed.
 
 ### F2 — A new e2e spec file shipped without a drift line
 

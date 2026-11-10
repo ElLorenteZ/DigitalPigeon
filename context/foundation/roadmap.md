@@ -32,7 +32,7 @@ Appetite: about 2 weeks, sized to replace Postman/Insomnia for REST work (`shape
 | 3a | Request bodies and storage | Send JSON, XML, plain-text and form-urlencoded bodies; replay and curl export send the same bytes; a body over 16 MB is stored and shown in full | done | `request-bodies-and-storage` |
 | 3b | Editor and formatting | JSON and XML request and response bodies shown pretty-printed in the editor, with what is stored and sent unchanged; a response body cannot run as script | done | `editor-and-formatting` |
 | 4 | Multipart with file copies | Send a multipart request with a file; delete the file from disk; replay the call and the server receives the same bytes | done | `multipart-with-file-copies` |
-| 5 | Saved requests and environments | Save a request and edit it later; define environments (name + `baseUrl`), switch the active one, and the same saved request goes to the other `baseUrl`; calls link back to their saved request | later | — |
+| 5 | Saved requests and environments | Save a request and edit it later; define environments (name + `baseUrl`), switch the active one, and the same saved request goes to the other `baseUrl`; calls link back to their saved request | next | — |
 | 6 | Find calls | Narrow history by environment, by saved request, by date range, and by a substring of URL or body (for example `/orders/12`) | later | — |
 | 7 | Delete and retention | Delete one call, delete a filtered set in bulk, and define a retention rule; only the targeted calls disappear | later | — |
 
@@ -52,7 +52,7 @@ Appetite: about 2 weeks, sized to replace Postman/Insomnia for REST work (`shape
 - Slice 3 was cut in two, bodies first (author, 2026-11-06). Slice 3b must carry T1.8 and T2.6 from its first phase: it is the first time a body renders as anything but text. It also has to show a body held in a file, which is read a page at a time.
 
 **Carried into later slices** from `archive/request-bodies-and-storage`:
-- Slice 4: recheck undici's headers timer with file bodies, and T1.5 for uploaded files.
+- ~~Slice 4: recheck undici's headers timer with file bodies, and T1.5 for uploaded files.~~ Done in slice 4 (`send.test.ts`, `large-bodies.int.test.ts`).
 - Slice 7: delete must find chunks with no file document and finished files no call refers to (T3.9), and recheck the error when a file is removed during a read.
 - From `multipart-with-file-copies` (code review CR9): `describeBody` opens one GridFS stream per 1 MiB page; one stream
   for the whole file would do. Pick up when touching stored-body reads, at the latest in slice 7.
@@ -60,7 +60,7 @@ Appetite: about 2 weeks, sized to replace Postman/Insomnia for REST work (`shape
 
 **Decisions needed before a slice can be planned** (PRD Open questions):
 - ~~Before slice 1: database-down behaviour~~ — decided 2026-11-03: sending is blocked (`archive/send-and-record`).
-- Before slice 5: how saved requests are organised — directories, a flat list, or tags.
+- **Before slice 5 (blocks it):** how saved requests are organised — directories, a flat list, or tags. Undecided on 2026-11-10.
 
 **Calibration:**
 - **`test-harness`** (2026-11-02): one day. Configuration-heavy; a weak guide to feature slices.
@@ -102,12 +102,22 @@ Appetite: about 2 weeks, sized to replace Postman/Insomnia for REST work (`shape
 
   Leaving the undici boundary did not make the slice cheaper; a new library cost the same. Two days a change is
   now the observed rate regardless of boundary. Slice 4 returns to undici, curl and GridFS with file bodies.
-- **Host code review:** found defects in all three changes after every other check passed: record-versus-wire
-  mismatches in slices 1 and 2, storage and paging defects in slice 3a. One pass before merge is now expected
+- **Slice 4, `multipart-with-file-copies`** (2026-11-08 → 2026-11-10): two days of work, opened on the 8th and closed
+  on the 10th. The prediction "at least two days" held, but not for the predicted reason: the undici and curl probe
+  matched the wire on the first try, and phases 1–3 needed no production change beyond the encoder. The time went on:
+  - a probe and a spike before the plan was approved, and three plan revisions after two plan reviews
+  - the renderer: a parts editor, an incremental parser, an eighth preload function, Edit of stored bodies
+  - a hang in a boundary check, and a test that crashed its worker instead of failing
+  - a host code review with 7 fixes, three of them async state in the renderer that every e2e scenario missed
+
+  Slices 5–7 are mostly renderer and query work, the area that cost most here. Expect two days each.
+- **Host code review:** found defects in all five changes after every other check passed: record-versus-wire
+  mismatches in slices 1 and 2, storage and paging defects in slice 3a, Monaco service errors in 3b, async renderer
+  state and unchecked header values in slice 4. One pass before merge is now expected
   (`test-strategy.md`). Plan for it in each slice.
-- **M1 appetite:** about 2 weeks for 7 slices, now 8 changes. After 6 days of slice work, 4 of 8 changes and 5 of 13
-  exit criteria are done, and 3 more criteria hold except for multipart. At two days a change, the remaining 4 take 8
-  days, for about 14 in all. That meets the appetite with no margin.
+- **M1 appetite:** about 2 weeks for 7 slices, now 8 changes. After 8 days of slice work, 5 of 8 changes and 9 of 13
+  exit criteria are done. At two days a change, the remaining 3 take 6 days, for about 14 in all. That meets the
+  appetite with no margin, and slice 5 cannot start until the saved-request decision is made.
 - **Merged:** slices 1, 2 and 3a reached `main` together on 2026-11-07, at `15c97c9`, with no pull request (author's
   instruction). "Done" here now means closed, archived and merged. Slice 3b reached `main` through PR #3 on
   2026-11-08. Slice 4 reached `main` at `7ab1f65` on 2026-11-09, fast-forwarded with no pull request (author's

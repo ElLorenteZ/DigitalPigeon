@@ -60,7 +60,7 @@ Appetite: about 2 weeks, sized to replace Postman/Insomnia for REST work (`shape
 
 **Decisions needed before a slice can be planned** (PRD Open questions):
 - ~~Before slice 1: database-down behaviour~~ — decided 2026-11-03: sending is blocked (`archive/send-and-record`).
-- **Before slice 5 (blocks it):** how saved requests are organised — directories, a flat list, or tags. Undecided on 2026-11-10.
+- ~~Before slice 5: how saved requests are organised~~ — decided 2026-11-10: a flat list, tags later (`decisions/0001-saved-requests-are-a-flat-list.md`).
 
 **Calibration:**
 - **`test-harness`** (2026-11-02): one day. Configuration-heavy; a weak guide to feature slices.
@@ -117,7 +117,7 @@ Appetite: about 2 weeks, sized to replace Postman/Insomnia for REST work (`shape
   (`test-strategy.md`). Plan for it in each slice.
 - **M1 appetite:** about 2 weeks for 7 slices, now 8 changes. After 8 days of slice work, 5 of 8 changes and 9 of 13
   exit criteria are done. At two days a change, the remaining 3 take 6 days, for about 14 in all. That meets the
-  appetite with no margin, and slice 5 cannot start until the saved-request decision is made.
+  appetite with no margin.
 - **Merged:** slices 1, 2 and 3a reached `main` together on 2026-11-07, at `15c97c9`, with no pull request (author's
   instruction). "Done" here now means closed, archived and merged. Slice 3b reached `main` through PR #3 on
   2026-11-08. Slice 4 reached `main` at `7ab1f65` on 2026-11-09, fast-forwarded with no pull request (author's

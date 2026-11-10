@@ -1,5 +1,10 @@
 // Replay: a past call is sent again exactly as recorded, as a new call (test-strategy T1.3 replay
 // half, T1.1). The recorded header list is passed on unchanged, never rebuilt through wire.ts.
+import { randomBytes } from 'node:crypto';
+import { existsSync } from 'node:fs';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   afterAll,
   afterEach,
@@ -178,6 +183,55 @@ test('T1.1 — edit and send is a new call with the change, and the original is 
   expect(await store.getCall(original.send._id, new Set())).toEqual(before);
   const raw = capture.requests.at(-1)?.rawHeaders ?? [];
   expect(raw[raw.indexOf('X-Zeta') + 1]).toBe('changed');
+});
+
+describe('T1.4 — a multipart call replays after its file is deleted', () => {
+  test.each([
+    ['inline', 64 * 1024],
+    ['stored in GridFS', 3 * 1024 * 1024 + 7],
+  ])('%s', async (_label, size) => {
+    const dir = await mkdtemp(join(tmpdir(), 'dp-t1.4-'));
+    const path = join(dir, 'upload.bin');
+    await writeFile(path, randomBytes(size));
+    try {
+      // As the renderer does: the bytes are read when the file is picked.
+      const bytes = new Uint8Array(await readFile(path));
+      const store = createCallStore(testDb.db);
+      const original = await sendAndRecord(store, {
+        ...input('POST'),
+        body: {
+          type: 'multipart',
+          parts: [
+            { kind: 'field', name: 'note', value: 'kept' },
+            {
+              kind: 'file',
+              name: 'upload',
+              filename: 'upload.bin',
+              contentType: '',
+              bytes,
+            },
+          ],
+        },
+      });
+      const stored = original.send.request.body;
+      if (size > 1024 * 1024) expect(stored).toHaveProperty('fileId');
+      else expect(stored).not.toHaveProperty('fileId');
+
+      await rm(path);
+      expect(existsSync(path)).toBe(false);
+
+      const replay = await replayCall(store, original.send._id);
+
+      expect(capture.requests).toHaveLength(2);
+      const [first, second] = capture.requests;
+      expect(second?.rawHeaders).toEqual(first?.rawHeaders);
+      expect(second?.body.equals(first?.body ?? Buffer.alloc(1))).toBe(true);
+      expect(first?.body.includes(Buffer.from(bytes))).toBe(true);
+      expect(replay.send._id).not.toBe(original.send._id);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('records an older version could have written', () => {

@@ -195,6 +195,41 @@ describe('T1.5 — a body over 16 MB is stored in full', () => {
   });
 });
 
+describe('T1.5 — an uploaded file over 16 MB', () => {
+  test('a 17 MiB file part is stored in full, reaches the server, and replays with the same bytes', async () => {
+    const store = createCallStore(testDb.db);
+    const file = patterned(LARGE);
+    const call = await sendAndRecord(store, {
+      ...input(`${capture.url}/upload`),
+      body: {
+        type: 'multipart',
+        parts: [
+          { kind: 'field', name: 'note', value: 'big' },
+          {
+            kind: 'file',
+            name: 'upload',
+            filename: 'big.bin',
+            contentType: 'application/octet-stream',
+            bytes: new Uint8Array(file),
+          },
+        ],
+      },
+    });
+
+    const stored = call.send.request.body;
+    expect(isRef(stored)).toBe(true);
+    const sent = capture.requests[0]?.body ?? Buffer.alloc(0);
+    expect(sent.length).toBeGreaterThan(LARGE);
+    expect((stored as StoredRef).length).toBe(sent.length);
+    expect(sha(await fileBytes((stored as StoredRef).fileId))).toBe(sha(sent));
+    expect(sent.includes(file)).toBe(true);
+    expect(await documentSize('sends', call.send._id)).toBeLessThan(64 * 1024);
+
+    await replayCall(store, call.send._id);
+    expect(sha(capture.requests[1]?.body ?? Buffer.alloc(0))).toBe(sha(sent));
+  });
+});
+
 describe('the threshold', () => {
   test.each([
     ['exactly 1 MiB stays in the document', MIB, false],

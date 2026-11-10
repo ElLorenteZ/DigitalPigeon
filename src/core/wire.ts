@@ -4,6 +4,13 @@
 // `keep-alive` whatever Connection value it is given, so the list is built in that form and the send
 // document records it before dispatch. With a body, undici writes `content-length` with the byte count
 // last and leaves `connection` alone (spike-undici-bodies.md). T1.3 checks it against the wire.
+import {
+  type Part,
+  boundaryOccursIn,
+  chooseBoundary,
+  encodeMultipart,
+} from './multipart';
+
 export interface WireInput {
   method: string;
   url: string;
@@ -16,7 +23,9 @@ export interface WireInput {
 export type BodyInput =
   | { type: 'none' }
   | { type: 'json' | 'xml' | 'text'; text: string }
-  | { type: 'form'; rows: [string, string][] };
+  | { type: 'form'; rows: [string, string][] }
+  /** `boundary` is carried from a record by Edit, so an unchanged resend sends the same bytes. */
+  | { type: 'multipart'; parts: Part[]; boundary?: string };
 
 export interface WireRequest {
   method: string;
@@ -94,21 +103,58 @@ function checkedRows(rows: [string, string][]): [string, string][] {
 
 /** A request that cannot carry its body; raised before anything is recorded (plan.md, phase 1). */
 export class InvalidBodyError extends Error {
-  constructor() {
-    super('HEAD cannot carry a body: curl cannot export it reliably');
+  constructor(
+    message = 'HEAD cannot carry a body: curl cannot export it reliably',
+  ) {
+    super(message);
   }
 }
 
-// An empty text box and no form rows are no body: identical on the wire (spike-undici-bodies.md).
-function encodedBody(
-  body: BodyInput | undefined,
-): Uint8Array<ArrayBuffer> | null {
+const MULTIPART_TYPE = 'multipart/form-data';
+// RFC 2046 bchars without the space, which would need the header value quoted; 1 to 70 of them. The boundary
+// arrives over IPC carried from a record, so it is checked like a header value (code review, 6).
+const BOUNDARY = /^[0-9A-Za-z'()+_,\-./:=?]{1,70}$/;
+// A file part's Content-Type is written into the body as a header line: printable ASCII only.
+const PART_CONTENT_TYPE = /^[\x20-\x7e]*$/;
+
+interface EncodedBody {
+  bytes: Uint8Array<ArrayBuffer>;
+  contentType: string;
+}
+
+// An empty text box, no form rows and no parts are no body: identical on the wire (spike-undici-bodies.md).
+function encodedBody(body: BodyInput | undefined): EncodedBody | null {
   if (!body || body.type === 'none') return null;
+  if (body.type === 'multipart') {
+    if (body.parts.length === 0) return null;
+    for (const part of body.parts) {
+      if (part.kind === 'file' && !PART_CONTENT_TYPE.test(part.contentType)) {
+        throw new InvalidBodyError(
+          `The content type of file part "${part.name}" cannot be sent: use printable ASCII with no line breaks`,
+        );
+      }
+    }
+    const boundary =
+      body.boundary !== undefined &&
+      BOUNDARY.test(body.boundary) &&
+      !boundaryOccursIn(body.parts, body.boundary)
+        ? body.boundary
+        : chooseBoundary(body.parts);
+    return {
+      bytes: encodeMultipart(body.parts, boundary),
+      contentType: `${MULTIPART_TYPE}; boundary=${boundary}`,
+    };
+  }
   const text =
     body.type === 'form'
       ? new URLSearchParams(body.rows).toString()
       : body.text;
-  return text === '' ? null : new TextEncoder().encode(text);
+  return text === ''
+    ? null
+    : {
+        bytes: new TextEncoder().encode(text),
+        contentType: GENERATED_CONTENT_TYPE[body.type],
+      };
 }
 
 export const METHODS_WITH_LENGTH = new Set(['POST', 'PUT', 'PATCH']);
@@ -121,11 +167,21 @@ export function buildWireRequest({
   headerRows,
   body,
 }: WireInput): WireRequest {
-  const bytes = encodedBody(body);
+  const encoded = encodedBody(body);
+  const bytes = encoded?.bytes ?? null;
   if (bytes && method === 'HEAD') throw new InvalidBodyError();
   const rows = checkedRows(headerRows);
   const typed = (name: string) =>
     rows.find(([n]) => n.toLowerCase() === name)?.[1];
+  if (
+    encoded &&
+    body?.type === 'multipart' &&
+    typed('content-type') !== undefined
+  ) {
+    throw new InvalidBodyError(
+      'A multipart body sets its own Content-Type: remove the typed Content-Type header',
+    );
+  }
 
   const headers: [string, string][] = [
     ['host', typed('host') ?? new URL(url).host],
@@ -140,11 +196,11 @@ export function buildWireRequest({
     ],
     ...rows.filter(([name]) => !MANAGED.has(name.toLowerCase())),
   ];
-  if (bytes && body && body.type !== 'none') {
+  if (encoded) {
     if (typed('content-type') === undefined) {
-      headers.push(['content-type', GENERATED_CONTENT_TYPE[body.type]]);
+      headers.push(['content-type', encoded.contentType]);
     }
-    headers.push(['content-length', String(bytes.length)]);
+    headers.push(['content-length', String(encoded.bytes.length)]);
   } else if (METHODS_WITH_LENGTH.has(method)) {
     headers.push(['content-length', '0']);
   }

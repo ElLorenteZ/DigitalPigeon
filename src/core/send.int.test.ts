@@ -21,6 +21,7 @@ import {
 import { request } from 'undici';
 import { type TestDb, openTestDb } from '../../test-support/test-db';
 import { createCallStore } from './call-store';
+import { type Part, encodeMultipart } from './multipart';
 import { type BodyInput, InvalidBodyError, InvalidHeaderError } from './wire';
 import { z } from 'zod';
 import {
@@ -209,6 +210,83 @@ describe('T1.3 — a request with a body is recorded as it reached the wire', ()
 });
 
 // Guards the pinned version: wire.ts keeps its own copy of these rules.
+describe('T1.2, T1.3 — a multipart request is recorded as it reached the wire', () => {
+  const parts: Part[] = [
+    { kind: 'field', name: 'note', value: 'zażółć\r\nline 2' },
+    {
+      kind: 'file',
+      name: 'doc',
+      filename: 'gęś.bin',
+      contentType: 'application/octet-stream',
+      bytes: new Uint8Array([0x00, 0x0d, 0x0a, 0xff, 0x2d, 0x2d, 0x41]),
+    },
+    { kind: 'field', name: 'after', value: '' },
+  ];
+
+  test.each(['GET', 'DELETE', 'OPTIONS', 'POST', 'PUT', 'PATCH'])(
+    '%s',
+    async (method) => {
+      const store = createCallStore(testDb.db);
+      const call = await sendAndRecord(store, {
+        ...input(method),
+        body: { type: 'multipart', parts },
+      });
+
+      const received = capture.requests.at(-1);
+      const recorded = call.send.request;
+      expect(received?.method).toBe(recorded.method);
+      expect(`${capture.url}${received?.url}`).toBe(recorded.url);
+      expect(pairs(received?.rawHeaders ?? [])).toEqual(recorded.headers);
+      expect(received?.body).toEqual(Buffer.from(recorded.body as Uint8Array));
+      // The body uses the boundary its Content-Type names.
+      const boundary = /^multipart\/form-data; boundary=(.+)$/.exec(
+        recorded.headers.at(-2)?.[1] ?? '',
+      )?.[1];
+      expect(recorded.headers.at(-2)?.[0]).toBe('content-type');
+      expect(received?.body).toEqual(
+        Buffer.from(encodeMultipart(parts, boundary ?? '')),
+      );
+      expect(call.completion).toHaveProperty('response.status', 200);
+    },
+  );
+
+  test('the recorded multipart body reads back unchanged', async () => {
+    const store = createCallStore(testDb.db);
+    const call = await sendAndRecord(store, {
+      ...input('POST'),
+      body: { type: 'multipart', parts },
+    });
+
+    const read = await store.getCall(call.send._id, new Set());
+    const readBack = read && read.state !== 'unreadable' && read.send.request;
+    // The driver returns stored bytes as a Buffer.
+    expect(readBack && readBack.headers).toEqual(call.send.request.headers);
+    expect(readBack && readBack.body).toEqual(
+      Buffer.from(call.send.request.body as Uint8Array),
+    );
+  });
+
+  test('a typed Content-Type is refused: no send document, nothing sent', async () => {
+    const store = createCallStore(testDb.db);
+    const url = `${capture.url}/refused-${randomUUID()}`;
+    await expect(
+      sendAndRecord(store, {
+        ...input('POST', {
+          headerRows: [['Content-Type', 'multipart/form-data; boundary=x']],
+        }),
+        url,
+        body: { type: 'multipart', parts },
+      }),
+    ).rejects.toThrow(InvalidBodyError);
+
+    const urls = (await store.listCalls(200, new Set())).flatMap((c) =>
+      c.state === 'unreadable' ? [] : [c.send.request.url],
+    );
+    expect(urls.filter((u) => u.startsWith(url))).toEqual([]);
+    expect(capture.requests).toHaveLength(0);
+  });
+});
+
 describe('undici itself refuses what wire.ts refuses', () => {
   test.each<[string, string, string]>([
     ['Transfer-Encoding', 'chunked', 'UND_ERR_INVALID_ARG'],

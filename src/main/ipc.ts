@@ -16,6 +16,7 @@ import {
   replayCall,
   sendAndRecord,
 } from '../core/send';
+import { createPartScanner } from '../core/multipart';
 import { InvalidBodyError, InvalidHeaderError } from '../core/wire';
 import {
   type CallView,
@@ -27,6 +28,10 @@ import {
   GetCallResultSchema,
   type ListCallsResult,
   ListCallsResultSchema,
+  BODY_PAGE_BYTES,
+  DescribeBodyInputSchema,
+  type DescribeBodyResult,
+  DescribeBodyResultSchema,
   ReadBodyInputSchema,
   type ReadBodyResult,
   ReadBodyResultSchema,
@@ -265,6 +270,39 @@ export function registerIpc({ ipcMain, db, dbStatus }: IpcDeps): void {
       try {
         const bytes = await storeFor(database).bodies.readRange(range.data);
         return ReadBodyResultSchema.parse({ ok: true, bytes });
+      } catch (error) {
+        return { ok: false, message: message(error) };
+      }
+    },
+  );
+
+  // Only the `bodies` bucket. Read a page at a time into the scanner, so main holds one page, not the body.
+  ipcMain.handle(
+    channels.describeBody,
+    async (_event, raw: unknown): Promise<DescribeBodyResult> => {
+      const input = DescribeBodyInputSchema.safeParse(raw);
+      if (!input.success) {
+        return { ok: false, message: z.prettifyError(input.error) };
+      }
+      const database = db();
+      if (!database || dbStatus().status !== 'up') {
+        return { ok: false, message: 'Database not running' };
+      }
+      try {
+        const { bodies } = storeFor(database);
+        const scanner = createPartScanner(input.data.boundary);
+        const parts = [];
+        for (let offset = 0; ; offset += BODY_PAGE_BYTES) {
+          const page = await bodies.readRange({
+            fileId: input.data.fileId,
+            offset,
+            length: BODY_PAGE_BYTES,
+          });
+          parts.push(...scanner.push(page));
+          if (page.length < BODY_PAGE_BYTES) break;
+        }
+        parts.push(...scanner.end());
+        return DescribeBodyResultSchema.parse({ ok: true, parts });
       } catch (error) {
         return { ok: false, message: message(error) };
       }

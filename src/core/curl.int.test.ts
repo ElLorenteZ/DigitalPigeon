@@ -9,6 +9,7 @@ import {
   startCaptureServer,
 } from '../../test-support/capture-server';
 import { CurlRefusedError, MAX_COMMAND_BYTES, toCurl } from './curl';
+import type { Part } from './multipart';
 import {
   type BodyInput,
   InvalidHeaderError,
@@ -287,6 +288,64 @@ describe('T2.4 — a command too long for a shell is refused', () => {
     const request = { ...sized('abc'), body: new Uint8Array(bytes) };
     expect(() => toCurl(request)).toThrow(CurlRefusedError);
   });
+});
+
+describe('T2.4 — a multipart body', () => {
+  const textParts: Part[] = [
+    { kind: 'field', name: 'note', value: 'zażółć 🐦 it\'s "x" $HOME' },
+    { kind: 'field', name: 'empty', value: '' },
+    {
+      kind: 'file',
+      name: 'doc',
+      filename: 'notatka.txt',
+      contentType: 'text/plain',
+      bytes: new TextEncoder().encode('line 1\r\nline 2\n@/etc/hosts\n'),
+    },
+  ];
+
+  test.each(['POST', 'PUT', 'PATCH', 'DELETE'])(
+    '%s: text-only parts arrive unchanged, CRLF framing included',
+    async (method) => {
+      const request = wire({
+        method,
+        body: { type: 'multipart', parts: textParts },
+      });
+      await inShell(toCurl(request));
+      expectSameRequest2(request);
+      expect(capture.requests[0]?.body).toEqual(
+        Buffer.from(request.body as Uint8Array),
+      );
+    },
+  );
+
+  test.each<[string, number[]]>([
+    ['a NUL byte', [0x61, 0x00, 0x62]],
+    ['invalid UTF-8', [0x61, 0xff, 0x62]],
+  ])(
+    'a file part holding %s is refused, naming the file part',
+    (_label, bytes) => {
+      const request = wire({
+        method: 'POST',
+        body: {
+          type: 'multipart',
+          parts: [
+            {
+              kind: 'file',
+              name: 'f',
+              filename: 'f.bin',
+              contentType: '',
+              bytes: new Uint8Array(bytes),
+            },
+          ],
+        },
+      });
+      expect(() => toCurl(request)).toThrow(
+        new CurlRefusedError(
+          'A file part holds bytes a shell command cannot hold',
+        ),
+      );
+    },
+  );
 });
 
 describe('records an older version could have written', () => {

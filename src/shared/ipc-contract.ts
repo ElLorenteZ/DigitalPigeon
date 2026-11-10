@@ -17,6 +17,7 @@ export const channels = {
   getCall: 'pigeon:get-call',
   replay: 'pigeon:replay',
   readBody: 'pigeon:read-body',
+  describeBody: 'pigeon:describe-body',
 } as const;
 
 export const METHODS = [
@@ -38,6 +39,27 @@ const BodyInputSchema = z.discriminatedUnion('type', [
     text: z.string(),
   }),
   z.strictObject({ type: z.literal('form'), rows: RowsSchema }),
+  z.strictObject({
+    type: z.literal('multipart'),
+    parts: z.array(
+      z.discriminatedUnion('kind', [
+        z.strictObject({
+          kind: z.literal('field'),
+          name: z.string(),
+          value: z.string(),
+        }),
+        z.strictObject({
+          kind: z.literal('file'),
+          name: z.string(),
+          filename: z.string(),
+          contentType: z.string(),
+          // Arrives in main as a plain Uint8Array, not a Buffer (spike-file-input-ipc.md).
+          bytes: z.instanceof(Uint8Array),
+        }),
+      ]),
+    ),
+    boundary: z.string().optional(),
+  }),
 ]);
 
 export const SendInputSchema = z.strictObject({
@@ -77,6 +99,30 @@ export const ReadBodyResultSchema = z.discriminatedUnion('ok', [
   z.strictObject({ ok: z.literal(false), message: z.string() }),
 ]);
 export type ReadBodyResult = z.infer<typeof ReadBodyResultSchema>;
+
+export const DescribeBodyInputSchema = z.strictObject({
+  fileId: z.string().min(1),
+  boundary: z.string().min(1),
+});
+export type DescribeBodyInput = z.infer<typeof DescribeBodyInputSchema>;
+
+/** The parts of a stored multipart body, without their content (plan.md, phase 6). */
+export const DescribeBodyResultSchema = z.discriminatedUnion('ok', [
+  z.strictObject({
+    ok: z.literal(true),
+    parts: z.array(
+      z.strictObject({
+        name: z.string(),
+        filename: z.string().optional(),
+        contentType: z.string().optional(),
+        offset: z.number().int().nonnegative(),
+        length: z.number().int().nonnegative(),
+      }),
+    ),
+  }),
+  z.strictObject({ ok: z.literal(false), message: z.string() }),
+]);
+export type DescribeBodyResult = z.infer<typeof DescribeBodyResultSchema>;
 
 /** A history row. Sends and completions are summaries: no body (review #9). */
 export const CallViewSchema = z.discriminatedUnion('state', [
@@ -162,4 +208,5 @@ export interface PigeonApi {
   getCall: (sendId: string) => Promise<GetCallResult>;
   replay: (input: ReplayInput) => Promise<SendResult>;
   readBody: (input: ReadBodyInput) => Promise<ReadBodyResult>;
+  describeBody: (input: DescribeBodyInput) => Promise<DescribeBodyResult>;
 }

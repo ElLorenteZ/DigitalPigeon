@@ -93,6 +93,41 @@ describe('every request has the 30 s timeouts', () => {
     expect(request).toHaveBeenCalledWith(url, timeouts);
   });
 
+  test('a 17 MiB multipart file part adds 17 s to the headers timeout only', async () => {
+    await sendAndRecord(
+      {
+        ...store,
+        bodies: { writeBytes: async () => ({ fileId: 'f', length: 1 }) },
+      } as unknown as Parameters<typeof sendAndRecord>[0],
+      {
+        method: 'POST',
+        url,
+        queryRows: [],
+        headerRows: [],
+        body: {
+          type: 'multipart',
+          parts: [
+            {
+              kind: 'file',
+              name: 'f',
+              filename: 'f.bin',
+              contentType: '',
+              bytes: new Uint8Array(17 * 1024 * 1024),
+            },
+          ],
+        },
+      },
+    );
+    // Only the timeouts: a failed toHaveBeenCalledWith prints the 17 MiB body and exhausts the heap.
+    const options = request.mock.calls.at(-1)?.[1] as
+      | { headersTimeout?: number; bodyTimeout?: number }
+      | undefined;
+    expect({
+      headersTimeout: options?.headersTimeout,
+      bodyTimeout: options?.bodyTimeout,
+    }).toEqual({ headersTimeout: 47_000, bodyTimeout: 30_000 });
+  });
+
   test('a larger body adds one second per MiB to the headers timeout only', async () => {
     await withBody(5, 100);
     expect(request).toHaveBeenCalledWith(

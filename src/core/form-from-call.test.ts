@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'vitest';
 import { BodyNotLoadableError, formFromCall } from './form-from-call';
+import { type Part, multipartBoundary } from './multipart';
 import { type BodyInput, type WireInput, buildWireRequest } from './wire';
 
 const typed = (over: Partial<WireInput> = {}): WireInput => ({
@@ -265,4 +266,175 @@ test.each([
   });
 
   expect(loaded.body).toEqual({ type: 'text', text });
+});
+
+describe('a multipart body', () => {
+  const parts: Part[] = [
+    { kind: 'field', name: 'note', value: 'zażółć' },
+    {
+      kind: 'file',
+      name: 'doc',
+      filename: 'a.bin',
+      contentType: 'application/macbinary',
+      bytes: new Uint8Array([0, 13, 10, 255]),
+    },
+    {
+      kind: 'file',
+      name: 'doc',
+      filename: 'b.txt',
+      contentType: 'text/plain',
+      bytes: new TextEncoder().encode('two'),
+    },
+  ];
+  const multipart = (over: Partial<WireInput> = {}) =>
+    buildWireRequest(
+      typed({
+        method: 'POST',
+        headerRows: [['X-A', '1']],
+        body: { type: 'multipart', parts },
+        ...over,
+      }),
+    );
+  // A record built by hand: the given Content-Type and body, as an older version or another tool wrote them.
+  const recordWith = (contentType: string, text: string, typedRow = false) => {
+    const body = new TextEncoder().encode(text);
+    return {
+      method: 'POST',
+      url: 'http://api.test:8080/orders?x=1',
+      headers: [
+        ['host', 'api.test:8080'],
+        ['connection', 'keep-alive'],
+        [typedRow ? 'Content-Type' : 'content-type', contentType],
+        ['content-length', String(body.length)],
+      ] as [string, string][],
+      body,
+    };
+  };
+
+  test('T2.12 — loads its parts and boundary, and sending it unchanged sends the same request', () => {
+    const recorded = multipart();
+    const loaded = formFromCall(recorded);
+    const boundary = multipartBoundary(recorded.headers.at(-2)?.[1] ?? '');
+    expect(loaded.body).toEqual({ type: 'multipart', parts, boundary });
+    expect(loaded.headerRows).toEqual([['X-A', '1']]);
+    expect(buildWireRequest(loaded)).toEqual(recorded);
+  });
+
+  test('T2.12 — a body that does not parse loads as Text with its Content-Type row, and resends the same request', () => {
+    const recorded = recordWith(
+      'multipart/form-data; boundary=B',
+      'not multipart',
+    );
+    const loaded = formFromCall(recorded);
+    expect(loaded.body).toEqual({ type: 'text', text: 'not multipart' });
+    expect(buildWireRequest(loaded)).toEqual(recorded);
+  });
+
+  test.each<[string, string]>([
+    ['a line feed in a field value', 'a\nb'],
+    ['a carriage return in a field value', 'a\rb'],
+  ])('T2.12 — %s loads as Text: a row cannot hold it', (_label, value) => {
+    const recorded = multipart({
+      body: { type: 'multipart', parts: [{ kind: 'field', name: 'n', value }] },
+    });
+    const loaded = formFromCall(recorded);
+    expect(loaded.body?.type).toBe('text');
+    expect(buildWireRequest(loaded)).toEqual(recorded);
+  });
+
+  test('T2.12 — a part with a blank name loads as Text: the form drops blank rows', () => {
+    const recorded = multipart({
+      body: {
+        type: 'multipart',
+        parts: [{ kind: 'field', name: ' ', value: 'v' }],
+      },
+    });
+    const loaded = formFromCall(recorded);
+    expect(loaded.body?.type).toBe('text');
+    expect(buildWireRequest(loaded)).toEqual(recorded);
+  });
+
+  // Code review, 4: Text holds only what decodes as UTF-8; anything else would resend different bytes.
+  test('an inline body that cannot load as multipart and is not text is refused, with the reason', () => {
+    const recorded = multipart({
+      body: {
+        type: 'multipart',
+        parts: [
+          { kind: 'field', name: 'n', value: 'a\nb' },
+          {
+            kind: 'file',
+            name: 'f',
+            filename: 'f.bin',
+            contentType: '',
+            bytes: new Uint8Array([0xff, 0xfe, 0x00]),
+          },
+        ],
+      },
+    });
+    expect(() => formFromCall(recorded)).toThrow(
+      expect.objectContaining({
+        constructor: BodyNotLoadableError,
+        message:
+          'The multipart body cannot be edited: a field value holds a line break, which a row cannot hold',
+      }),
+    );
+  });
+
+  test('a record from before multipart, with Text and a typed multipart Content-Type last, loads as before', () => {
+    const recorded = recordWith(
+      'multipart/form-data; boundary=x',
+      '{"a":1}',
+      true,
+    );
+    const loaded = formFromCall(recorded);
+    expect(loaded.body).toEqual({ type: 'text', text: '{"a":1}' });
+    expect(loaded.headerRows).toEqual([
+      ['Content-Type', 'multipart/form-data; boundary=x'],
+    ]);
+    expect(buildWireRequest(loaded)).toEqual(recorded);
+  });
+
+  test('a stored body read by the caller loads its parts', () => {
+    const recorded = multipart();
+    const bytes = recorded.body as Uint8Array<ArrayBuffer>;
+    const loaded = formFromCall(
+      { ...recorded, body: { fileId: 'f', length: bytes.length } },
+      { storedBody: bytes },
+    );
+    expect(loaded.body).toMatchObject({ type: 'multipart', parts });
+    expect(buildWireRequest(loaded)).toEqual(recorded);
+  });
+
+  test.each<[string, string]>([
+    ['a body that does not parse', 'not multipart'],
+    [
+      'a field value with a line break',
+      '--B\r\nContent-Disposition: form-data; name="n"\r\n\r\na\nb\r\n--B--\r\n',
+    ],
+  ])('a stored body with %s is refused, with the reason', (_label, text) => {
+    const recorded = recordWith('multipart/form-data; boundary=B', text);
+    expect(() =>
+      formFromCall(
+        { ...recorded, body: { fileId: 'f', length: recorded.body.length } },
+        { storedBody: recorded.body },
+      ),
+    ).toThrow(
+      expect.objectContaining({
+        constructor: BodyNotLoadableError,
+        message: expect.stringMatching(
+          /^The multipart body cannot be edited: ./,
+        ),
+      }),
+    );
+  });
+
+  test('a stored body nobody read is still refused as too large to edit', () => {
+    const recorded = multipart();
+    expect(() =>
+      formFromCall({
+        ...recorded,
+        body: { fileId: 'f', length: 2 * 1024 * 1024 },
+      }),
+    ).toThrow(/too large to edit/);
+  });
 });

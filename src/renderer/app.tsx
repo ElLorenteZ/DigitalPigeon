@@ -33,6 +33,12 @@ import {
 } from '../core/body-format';
 import { toCurl } from '../core/curl';
 import { formFromCall } from '../core/form-from-call';
+import {
+  type Part,
+  type PartSummary,
+  createPartScanner,
+  multipartBoundary,
+} from '../core/multipart';
 import { type BodyInput, buildWireRequest } from '../core/wire';
 import {
   BODY_PAGE_BYTES,
@@ -88,6 +94,9 @@ const EMPTY_FORM: Form = {
   queryRows: [],
   headerRows: [],
 };
+// A file row before a file is picked. A picked file always has a name (File.name).
+const noFilePicked = (part: Part) =>
+  part.kind === 'file' && part.filename === '' && part.bytes.length === 0;
 const nonEmpty = (rows: Row[]) => rows.filter(([name]) => name.trim() !== '');
 // Nameless rows are ignored, as the form has always done for query and header rows.
 const requestOf = (form: Form) => ({
@@ -96,6 +105,16 @@ const requestOf = (form: Form) => ({
   headerRows: nonEmpty(form.headerRows),
   ...(form.body?.type === 'form'
     ? { body: { type: 'form' as const, rows: nonEmpty(form.body.rows) } }
+    : {}),
+  ...(form.body?.type === 'multipart'
+    ? {
+        body: {
+          ...form.body,
+          parts: form.body.parts.filter(
+            (part) => part.name.trim() !== '' && !noFilePicked(part),
+          ),
+        },
+      }
     : {}),
 });
 const errorText = (error: unknown) =>
@@ -136,6 +155,7 @@ export function App() {
   const [openError, setOpenError] = useState<string | null>(null);
   const [openedCurl, setOpenedCurl] = useState<CurlOutcome | null>(null);
   const [editError, setEditError] = useState<string | null>(null);
+  const [editLoading, setEditLoading] = useState(false);
 
   // Never rejects: a failure is shown above the list (review #3).
   const refreshHistory = useCallback(async () => {
@@ -182,6 +202,7 @@ export function App() {
   const run = async (
     invoke: (clientRequestId: string) => Promise<SendResult>,
   ) => {
+    endPendingEdit();
     const clientRequestId = crypto.randomUUID();
     setInFlightId(clientRequestId);
     setResult(null);
@@ -199,10 +220,59 @@ export function App() {
     }
   };
 
+  // The latest Edit decides what the form loads: reading a stored body takes one IPC call per page, and an
+  // earlier read finishing later must not replace it (plan.md, phase 6; T2.10). Opening a call also ends a
+  // pending Edit, so its result or error never lands under another call.
+  // A change to the form or a send also ends it, so a slow read never replaces what was typed meanwhile (code
+  // review, 2).
+  const latestEdit = useRef(0);
+  const endPendingEdit = () => {
+    latestEdit.current += 1;
+    setEditLoading(false);
+  };
+  const changeForm = (next: Form) => {
+    endPendingEdit();
+    setForm(next);
+  };
+  const editCall = async (request: Opened['send']['request']) => {
+    const thisEdit = ++latestEdit.current;
+    let storedBody: Uint8Array | undefined;
+    if (
+      request.body &&
+      'fileId' in request.body &&
+      isMultipart(request.headers)
+    ) {
+      setEditError(null);
+      setEditLoading(true);
+      try {
+        storedBody = await readWholeBody(request.body);
+      } catch (error) {
+        if (thisEdit !== latestEdit.current) return;
+        setEditLoading(false);
+        setEditError(errorText(error));
+        return;
+      }
+      if (thisEdit !== latestEdit.current) return;
+      setEditLoading(false);
+    }
+    let loaded: ReturnType<typeof formFromCall>;
+    try {
+      loaded = formFromCall(request, { storedBody });
+    } catch (error) {
+      setEditError(errorText(error));
+      return;
+    }
+    setEditError(null);
+    setForm({ ...loaded, method: loaded.method as Method });
+    setFormCurl(null);
+    showRequest();
+  };
+
   // The latest click decides what is open, whichever answer arrives last.
   const latestOpen = useRef(0);
   const openCall = async (sendId: string) => {
     const thisOpen = ++latestOpen.current;
+    endPendingEdit();
     setOpenedCurl(null);
     setEditError(null);
     setOpenError(null);
@@ -253,7 +323,7 @@ export function App() {
       <div ref={requestRegion}>
         <RequestForm
           form={form}
-          onChange={setForm}
+          onChange={changeForm}
           canSend={canSend}
           inFlight={inFlight}
           onSend={() =>
@@ -290,6 +360,7 @@ export function App() {
             canReplay={canSend && !inFlight}
             curl={openedCurl}
             editError={editError}
+            editLoading={editLoading}
             onReplay={() => {
               showRequest();
               void run((clientRequestId) =>
@@ -299,19 +370,7 @@ export function App() {
                 }),
               );
             }}
-            onEdit={() => {
-              let loaded: ReturnType<typeof formFromCall>;
-              try {
-                loaded = formFromCall(opened.send.request);
-              } catch (error) {
-                setEditError(errorText(error));
-                return;
-              }
-              setEditError(null);
-              setForm({ ...loaded, method: loaded.method as Method });
-              setFormCurl(null);
-              showRequest();
-            }}
+            onEdit={() => void editCall(opened.send.request)}
             onCopyCurl={async () =>
               setOpenedCurl(await exportCurl(() => opened.send.request))
             }
@@ -392,6 +451,7 @@ const BODY_TYPES = [
   ['xml', 'XML'],
   ['text', 'Text'],
   ['form', 'Form'],
+  ['multipart', 'Multipart'],
 ] as const;
 
 // JSON, XML and Text share one text box, so changing between them keeps what was typed.
@@ -399,6 +459,9 @@ function bodyOfType(type: BodyInput['type'], current: BodyInput): BodyInput {
   if (type === 'none') return { type };
   if (type === 'form') {
     return current.type === 'form' ? current : { type, rows: [] };
+  }
+  if (type === 'multipart') {
+    return current.type === 'multipart' ? current : { type, parts: [] };
   }
   return { type, text: 'text' in current ? current.text : '' };
 }
@@ -441,6 +504,172 @@ function BodyEditor({
           onChange={(rows) => onChange({ type: 'form', rows })}
         />
       ) : null}
+      {body.type === 'multipart' ? (
+        <PartsEditor
+          parts={body.parts}
+          onChange={(parts) => onChange({ ...body, parts })}
+        />
+      ) : null}
+    </fieldset>
+  );
+}
+
+const sizeText = (bytes: number) =>
+  bytes < 1024
+    ? `${bytes} B`
+    : bytes < 1024 * 1024
+      ? `${(bytes / 1024).toFixed(1)} KiB`
+      : `${(bytes / (1024 * 1024)).toFixed(1)} MiB`;
+
+// Text fields and files, in order. A file is read whole when it is picked, so the part holds its bytes and
+// the request no longer depends on the file (plan.md, phase 5).
+// Row ids live outside React state: a row keeps its id while it exists, so a file read that finishes after
+// rows were added or removed still lands in its own row, and each file input stays with its part (code
+// review, 1 and 7).
+let nextPartRowId = 1;
+
+function PartsEditor({
+  parts,
+  onChange,
+}: {
+  parts: Part[];
+  onChange: (parts: Part[]) => void;
+}) {
+  const ids = useRef<number[]>([]);
+  // Parts replaced from outside (Edit, switching body type) get fresh rows.
+  if (ids.current.length !== parts.length) {
+    ids.current = parts.map(() => nextPartRowId++);
+  }
+  // The latest parts and onChange, for a read that finishes after later renders: onChange carries the
+  // latest form, so a read never reverts what was typed while it ran.
+  const latest = useRef({ parts, onChange });
+  latest.current = { parts, onChange };
+
+  // Read failures by row id, shown beside the file input.
+  const [readErrors, setReadErrors] = useState<Map<number, string>>(new Map());
+  const setError = (id: number, message: string | undefined) =>
+    setReadErrors((current) => {
+      const next = new Map(current);
+      if (message === undefined) next.delete(id);
+      else next.set(id, message);
+      return next;
+    });
+
+  const changeRow = (id: number, change: (part: Part) => Part) => {
+    const index = ids.current.indexOf(id);
+    if (index === -1) return; // removed while a file was read
+    const { parts: current, onChange: apply } = latest.current;
+    apply(current.map((part, i) => (i === index ? change(part) : part)));
+  };
+
+  const pick = async (id: number, file: File | undefined) => {
+    if (!file) return;
+    try {
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      setError(id, undefined);
+      changeRow(id, (part) => ({
+        kind: 'file',
+        name: part.name,
+        filename: file.name,
+        contentType: file.type,
+        bytes,
+      }));
+    } catch (error) {
+      setError(id, `Could not read ${file.name}: ${errorText(error)}`);
+      changeRow(id, (part) => ({
+        kind: 'file',
+        name: part.name,
+        filename: '',
+        contentType: '',
+        bytes: new Uint8Array(),
+      }));
+    }
+  };
+
+  const add = (part: Part) => {
+    ids.current = [...ids.current, nextPartRowId++];
+    onChange([...parts, part]);
+  };
+
+  return (
+    <fieldset>
+      <legend>Parts</legend>
+      {parts.map((part, index) => {
+        const n = index + 1;
+        const id = ids.current[index] ?? -1;
+        return (
+          <div key={id} className="row">
+            <input
+              aria-label={`Part name ${n}`}
+              value={part.name}
+              onChange={(e) => {
+                const name = e.target.value;
+                changeRow(id, (p) => ({ ...p, name }));
+              }}
+            />
+            {part.kind === 'field' ? (
+              <input
+                aria-label={`Part value ${n}`}
+                value={part.value}
+                onChange={(e) => {
+                  const value = e.target.value;
+                  changeRow(id, (p) =>
+                    p.kind === 'field' ? { ...p, value } : p,
+                  );
+                }}
+              />
+            ) : (
+              <>
+                <input
+                  // A part whose file changed from outside (Edit) gets a fresh input, not the last one picked.
+                  key={`${part.filename}:${part.bytes.length}`}
+                  type="file"
+                  aria-label={`Part file ${n}`}
+                  onChange={(e) => void pick(id, e.target.files?.[0])}
+                />
+                <span data-testid={`part-file-${n}`}>
+                  {noFilePicked(part)
+                    ? 'No file'
+                    : `${part.filename} · ${part.contentType || 'application/octet-stream'} · ${sizeText(part.bytes.length)}`}
+                </span>
+                {readErrors.has(id) ? (
+                  <span role="alert">{readErrors.get(id)}</span>
+                ) : null}
+              </>
+            )}
+            <button
+              type="button"
+              onClick={() => {
+                ids.current = ids.current.filter((_, i) => i !== index);
+                setError(id, undefined);
+                onChange(parts.filter((_, i) => i !== index));
+              }}
+            >
+              Remove
+            </button>
+          </div>
+        );
+      })}
+      <button
+        type="button"
+        onClick={() => add({ kind: 'field', name: '', value: '' })}
+      >
+        Add field
+      </button>
+      <button
+        type="button"
+        onClick={() =>
+          add({
+            kind: 'file',
+            name: '',
+            filename: '',
+            contentType: '',
+            bytes: new Uint8Array(),
+          })
+        }
+      >
+        Add file
+      </button>
     </fieldset>
   );
 }
@@ -543,11 +772,119 @@ function CurlView({
 }
 
 // Everything here is rendered as text: request and response content is untrusted (AGENTS.md).
+const boundaryOf = (headers: readonly (readonly [string, string])[]) =>
+  multipartBoundary(
+    headers.find(([name]) => name.toLowerCase() === 'content-type')?.[1] ?? '',
+  );
+const isMultipart = (headers: readonly (readonly [string, string])[]) =>
+  boundaryOf(headers) !== undefined;
+
+// A stored body, whole, for Edit. Page by page through readBody; a short or failed read is an error.
+async function readWholeBody(body: StoredFile): Promise<Uint8Array> {
+  const whole = new Uint8Array(body.length);
+  let offset = 0;
+  while (offset < body.length) {
+    const got = await window.pigeon.readBody({
+      fileId: body.fileId,
+      offset,
+      length: Math.min(BODY_PAGE_BYTES, body.length - offset),
+    });
+    if (!got.ok) throw new Error(got.message);
+    if (got.bytes.length === 0) {
+      throw new Error(`The stored body ${body.fileId} ends early`);
+    }
+    whole.set(got.bytes, offset);
+    offset += got.bytes.length;
+  }
+  return whole;
+}
+
+type PartsOutcome =
+  | { state: 'loading' }
+  | { state: 'listed'; parts: PartSummary[] }
+  | { state: 'failed'; message: string };
+
+function scanInline(bytes: Uint8Array, boundary: string): PartsOutcome {
+  try {
+    const scanner = createPartScanner(boundary);
+    return {
+      state: 'listed',
+      parts: [...scanner.push(bytes), ...scanner.end()],
+    };
+  } catch (error) {
+    return { state: 'failed', message: errorText(error) };
+  }
+}
+
+// One line per part, above the raw body. An inline body is scanned here; a stored one is listed by main,
+// which reads it a page at a time (describeBody).
+function PartsList({
+  body,
+  headers,
+}: {
+  body: StoredBody;
+  headers: [string, string][];
+}) {
+  const boundary = boundaryOf(headers) ?? '';
+  const fileId = 'fileId' in body ? body.fileId : null;
+  const inline = useMemo(
+    () => ('fileId' in body ? null : scanInline(body, boundary)),
+    [body, boundary],
+  );
+  const [stored, setStored] = useState<PartsOutcome>({ state: 'loading' });
+  useEffect(() => {
+    if (fileId === null) return;
+    let current = true;
+    setStored({ state: 'loading' });
+    window.pigeon
+      .describeBody({ fileId, boundary })
+      .then(
+        (got): PartsOutcome =>
+          got.ok
+            ? { state: 'listed', parts: got.parts }
+            : { state: 'failed', message: got.message },
+        (error: unknown): PartsOutcome => ({
+          state: 'failed',
+          message: errorText(error),
+        }),
+      )
+      .then((outcome) => {
+        if (current) setStored(outcome);
+      });
+    return () => {
+      current = false;
+    };
+  }, [fileId, boundary]);
+
+  const outcome = inline ?? stored;
+  return (
+    <section data-testid="call-request-parts">
+      <h4>Parts</h4>
+      {outcome.state === 'loading' ? <p>Listing parts…</p> : null}
+      {outcome.state === 'failed' ? (
+        <p className="error">Could not list the parts: {outcome.message}</p>
+      ) : null}
+      {outcome.state === 'listed' ? (
+        <ol>
+          {outcome.parts.map((part, index) => (
+            <li key={index}>
+              {part.filename === undefined
+                ? `${part.name} · text · ${sizeText(part.length)}`
+                : `${part.name} · ${part.filename} · ${part.contentType ?? 'no type'} · ${sizeText(part.length)}`}
+            </li>
+          ))}
+        </ol>
+      ) : null}
+    </section>
+  );
+}
+
 function CallPanel({
   call,
   canReplay,
   curl,
   editError,
+  editLoading,
   onReplay,
   onEdit,
   onCopyCurl,
@@ -556,6 +893,7 @@ function CallPanel({
   canReplay: boolean;
   curl: CurlOutcome | null;
   editError: string | null;
+  editLoading: boolean;
   onReplay: () => void;
   onEdit: () => void;
   onCopyCurl: () => void;
@@ -575,6 +913,9 @@ function CallPanel({
           Copy call as curl
         </button>
       </div>
+      {editLoading ? (
+        <p data-testid="call-edit-status">Loading the call into the form…</p>
+      ) : null}
       {editError ? (
         <p data-testid="call-edit-error" className="error">
           Cannot edit this call: {editError}
@@ -589,6 +930,9 @@ function CallPanel({
       <pre data-testid="call-request-headers">
         {headers.map(([n, v]) => `${n}: ${v}`).join('\n')}
       </pre>
+      {body && isMultipart(headers) ? (
+        <PartsList body={body} headers={headers} />
+      ) : null}
       {body ? (
         <BodyText testId="call-request-body" body={body} headers={headers} />
       ) : null}

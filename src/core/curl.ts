@@ -8,6 +8,7 @@
 // A header undici would refuse is refused here too. For a non-ASCII value left by an older version,
 // curl would send UTF-8 where undici sent latin1.
 import type { StoredBody } from './call-schema';
+import { multipartBoundary } from './multipart';
 import { type WireRequest, checkedHeaderValue } from './wire';
 
 /** A command over this is refused. ARG_MAX is 1 MiB here and includes the environment (spike-curl-bodies.md). */
@@ -25,18 +26,27 @@ function withoutUserinfo(url: string): string {
   return parsed.toString();
 }
 
-function bodyText(body: Uint8Array): string {
+// A multipart body is text only when every file part is: a binary file is the usual reason it is not.
+const MULTIPART_REFUSAL = 'A file part holds bytes a shell command cannot hold';
+
+function bodyText(body: Uint8Array, multipart: boolean): string {
   let text: string;
   try {
     text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(
       body,
     );
   } catch {
-    throw new CurlRefusedError('The body is not text a shell command can hold');
+    throw new CurlRefusedError(
+      multipart
+        ? MULTIPART_REFUSAL
+        : 'The body is not text a shell command can hold',
+    );
   }
   if (text.includes('\0')) {
     throw new CurlRefusedError(
-      'The body holds a NUL byte, which a shell command cannot hold',
+      multipart
+        ? MULTIPART_REFUSAL
+        : 'The body holds a NUL byte, which a shell command cannot hold',
     );
   }
   return text;
@@ -57,9 +67,11 @@ export function toCurl({
     const checked = checkedHeaderValue(name, value);
     return `-H ${quote(checked === '' ? `${name};` : `${name}: ${checked}`)}`;
   });
-  const hasContentType = headers.some(
+  const contentType = headers.find(
     ([name]) => name.toLowerCase() === 'content-type',
   );
+  const hasContentType = contentType !== undefined;
+  const multipart = multipartBoundary(contentType?.[1] ?? '') !== undefined;
 
   const command = [
     'curl --http1.1 -sS --globoff',
@@ -71,7 +83,7 @@ export function toCurl({
     ...(body
       ? [
           ...(hasContentType ? [] : ["-H 'Content-Type:'"]),
-          `--data-raw ${quote(bodyText(body))}`,
+          `--data-raw ${quote(bodyText(body, multipart))}`,
         ]
       : []),
   ].join(' ');

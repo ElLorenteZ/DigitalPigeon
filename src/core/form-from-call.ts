@@ -3,6 +3,13 @@
 // Pure: the renderer imports this.
 import type { StoredBody } from './call-schema';
 import {
+  MultipartScanError,
+  type Part,
+  encodeMultipart,
+  multipartBoundary,
+  parseMultipart,
+} from './multipart';
+import {
   type BodyInput,
   GENERATED_CONTENT_TYPE,
   METHODS_WITH_LENGTH,
@@ -49,33 +56,120 @@ function loadedBody(
 /** A body in a file stays out of the form: the text box would hold all of it in the renderer. */
 export class BodyNotLoadableError extends Error {}
 
-export function formFromCall({
-  method,
-  url,
-  headers,
-  body,
-}: Omit<WireRequest, 'body'> & { body: StoredBody | null }): WireInput {
-  if (body && 'fileId' in body) {
-    throw new BodyNotLoadableError(
-      `The body is too large to edit: ${(body.length / (1024 * 1024)).toFixed(1)} MiB`,
-    );
+type Multipart = { parts: Part[]; boundary: string };
+
+// Parts only when sending them unchanged sends the same bytes: the Content-Type is the one wire.ts
+// generates, in its place, and the parts encode back to the recorded body. Otherwise the reason.
+function loadedMultipart(
+  bytes: Uint8Array,
+  contentTypeHeader: [string, string] | undefined,
+): Multipart | string {
+  const boundary = multipartBoundary(contentTypeHeader?.[1] ?? '');
+  if (boundary === undefined) return 'it has no multipart boundary';
+  if (
+    contentTypeHeader?.[0] !== 'content-type' ||
+    contentTypeHeader[1] !== `multipart/form-data; boundary=${boundary}`
+  ) {
+    return 'its Content-Type was typed, not generated';
   }
+  let parts: Part[];
+  try {
+    parts = parseMultipart(bytes, boundary);
+  } catch (error) {
+    if (error instanceof MultipartScanError) return error.message;
+    throw error;
+  }
+  // The same rules as form rows (formRows above): a blank name is dropped and an <input> strips line breaks.
+  if (parts.some((part) => part.name.trim() === '')) {
+    return 'a part has a blank name, which the form drops';
+  }
+  if (
+    parts.some((part) => part.kind === 'field' && /[\r\n]/.test(part.value))
+  ) {
+    return 'a field value holds a line break, which a row cannot hold';
+  }
+  const again = encodeMultipart(parts, boundary);
+  if (
+    again.length !== bytes.length ||
+    again.some((byte, i) => byte !== bytes[i])
+  ) {
+    return 'its parts do not encode back to the recorded bytes';
+  }
+  return { parts, boundary };
+}
+
+function isUtf8(bytes: Uint8Array): boolean {
+  try {
+    new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export interface FormFromCallOptions {
+  /** The bytes of a body stored in a file, read by the caller. Only a multipart body loads from them. */
+  storedBody?: Uint8Array;
+}
+
+export function formFromCall(
+  {
+    method,
+    url,
+    headers,
+    body,
+  }: Omit<WireRequest, 'body'> & { body: StoredBody | null },
+  { storedBody }: FormFromCallOptions = {},
+): WireInput {
   const contentTypeHeader = headers.find(
     ([name]) => name.toLowerCase() === 'content-type',
   );
-  const loaded: BodyInput = body
-    ? loadedBody(body, contentTypeHeader?.[1])
-    : { type: 'none' };
+  // wire.ts writes a generated Content-Type second to last.
+  const generatedPlace = headers.at(-2);
+  const isMultipart =
+    multipartBoundary(contentTypeHeader?.[1] ?? '') !== undefined;
+
+  let multipart: Multipart | string | undefined;
+  if (body && 'fileId' in body) {
+    if (!storedBody || !isMultipart) {
+      throw new BodyNotLoadableError(
+        `The body is too large to edit: ${(body.length / (1024 * 1024)).toFixed(1)} MiB`,
+      );
+    }
+    multipart = loadedMultipart(storedBody, generatedPlace);
+    if (typeof multipart === 'string') {
+      throw new BodyNotLoadableError(
+        `The multipart body cannot be edited: ${multipart}`,
+      );
+    }
+  } else if (body && isMultipart) {
+    multipart = loadedMultipart(body, generatedPlace);
+    // The Text fallback holds only bytes that decode as UTF-8; anything else would resend different bytes
+    // (code review, 4).
+    if (typeof multipart === 'string' && !isUtf8(body)) {
+      throw new BodyNotLoadableError(
+        `The multipart body cannot be edited: ${multipart}`,
+      );
+    }
+  }
+
+  const loaded: BodyInput =
+    multipart && typeof multipart !== 'string'
+      ? { type: 'multipart', ...multipart }
+      : body && !('fileId' in body)
+        ? loadedBody(body, contentTypeHeader?.[1])
+        : { type: 'none' };
 
   // wire.ts writes its Content-Type in lowercase, second to last. A typed one elsewhere keeps its place.
-  const secondToLast = headers.at(-2);
   const generatedContentType =
-    body &&
-    loaded.type !== 'none' &&
-    secondToLast?.[0] === 'content-type' &&
-    secondToLast[1] === GENERATED_CONTENT_TYPE[loaded.type]
-      ? secondToLast
-      : undefined;
+    loaded.type === 'multipart'
+      ? generatedPlace
+      : body &&
+          loaded.type !== 'none' &&
+          generatedPlace?.[0] === 'content-type' &&
+          generatedPlace[1] === GENERATED_CONTENT_TYPE[loaded.type]
+        ? generatedPlace
+        : undefined;
 
   const generated = (header: [string, string]): boolean => {
     const [name, value] = header;

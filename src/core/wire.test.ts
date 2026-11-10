@@ -5,6 +5,7 @@ import {
   InvalidHeaderError,
   buildWireRequest,
 } from './wire';
+import { type Part, encodeMultipart } from './multipart';
 
 const base = {
   method: 'GET',
@@ -450,4 +451,176 @@ describe('buildWireRequest — a body', () => {
       }).body,
     ).toBeNull();
   });
+});
+
+describe('buildWireRequest — a multipart body', () => {
+  const post = { ...base, method: 'POST' };
+  const parts: Part[] = [
+    { kind: 'field', name: 'note', value: 'hi' },
+    {
+      kind: 'file',
+      name: 'doc',
+      filename: 'a.bin',
+      contentType: 'application/octet-stream',
+      bytes: new Uint8Array([0, 1, 2, 255]),
+    },
+  ];
+  const boundary = `----dp${'k'.repeat(30)}`;
+
+  test('the body is the encoded parts, with a generated Content-Type naming the boundary, then content-length', () => {
+    const wire = buildWireRequest({
+      ...post,
+      headerRows: [['X-A', '1']],
+      body: { type: 'multipart', parts, boundary },
+    });
+    const expected = encodeMultipart(parts, boundary);
+    expect(wire.body).toEqual(expected);
+    expect(wire.headers).toEqual([
+      ['host', 'api.test:8080'],
+      ['connection', 'keep-alive'],
+      ['X-A', '1'],
+      ['content-type', `multipart/form-data; boundary=${boundary}`],
+      ['content-length', String(expected.length)],
+    ]);
+  });
+
+  test('with no boundary given, one is chosen and named in the Content-Type', () => {
+    const wire = buildWireRequest({
+      ...post,
+      body: { type: 'multipart', parts },
+    });
+    const contentType = wire.headers.at(-2);
+    expect(contentType?.[0]).toBe('content-type');
+    const chosen = /^multipart\/form-data; boundary=(----dp[0-9a-z]{30})$/.exec(
+      contentType?.[1] ?? '',
+    )?.[1];
+    expect(chosen).toBeDefined();
+    expect(wire.body).toEqual(encodeMultipart(parts, chosen ?? ''));
+  });
+
+  test('a given boundary that occurs in a part is replaced by a chosen one', () => {
+    const wire = buildWireRequest({
+      ...post,
+      body: {
+        type: 'multipart',
+        parts: [{ kind: 'field', name: 'n', value: `x${boundary}x` }],
+        boundary,
+      },
+    });
+    const header = wire.headers.at(-2)?.[1] ?? '';
+    expect(header).toMatch(
+      /^multipart\/form-data; boundary=----dp[0-9a-z]{30}$/,
+    );
+    expect(header).not.toContain(boundary);
+  });
+
+  test('no parts is no body, and generates no Content-Type', () => {
+    const wire = buildWireRequest({
+      ...post,
+      body: { type: 'multipart', parts: [], boundary },
+    });
+    expect(wire.body).toBeNull();
+    expect(wire.headers).toEqual([
+      ['host', 'api.test:8080'],
+      ['connection', 'keep-alive'],
+      ['content-length', '0'],
+    ]);
+  });
+
+  test('a typed Content-Type, in any case, is refused: the body would not use its boundary', () => {
+    expect(() =>
+      buildWireRequest({
+        ...post,
+        headerRows: [['content-TYPE', 'multipart/form-data; boundary=x']],
+        body: { type: 'multipart', parts, boundary },
+      }),
+    ).toThrow(
+      new InvalidBodyError(
+        'A multipart body sets its own Content-Type: remove the typed Content-Type header',
+      ),
+    );
+  });
+
+  test('HEAD with a multipart body is refused', () => {
+    expect(() =>
+      buildWireRequest({
+        ...base,
+        method: 'HEAD',
+        body: { type: 'multipart', parts, boundary },
+      }),
+    ).toThrow(InvalidBodyError);
+  });
+});
+
+// Code review of multipart-with-file-copies, #5 and #6.
+describe('buildWireRequest — multipart values that reach headers and part heads', () => {
+  const post = { ...base, method: 'POST' };
+  const filePart = (contentType: string): Part => ({
+    kind: 'file',
+    name: 'f',
+    filename: 'f.bin',
+    contentType,
+    bytes: new Uint8Array([1]),
+  });
+
+  test('a typed Content-Type with no parts is not refused: there is no body', () => {
+    const wire = buildWireRequest({
+      ...post,
+      headerRows: [['Content-Type', 'text/plain']],
+      body: { type: 'multipart', parts: [] },
+    });
+    expect(wire.body).toBeNull();
+    expect(wire.headers).toContainEqual(['Content-Type', 'text/plain']);
+  });
+
+  test.each([
+    ['a line feed', 'a\nb'],
+    ['a carriage return', 'a\rb'],
+    ['a space', 'a b'],
+    ['a quote', 'a"b'],
+    ['a semicolon', 'a;b'],
+    ['non-ASCII', 'zażółć'],
+    ['nothing', ''],
+    ['71 characters', 'a'.repeat(71)],
+  ])(
+    'a carried boundary holding %s is replaced by a chosen one',
+    (_label, boundary) => {
+      const wire = buildWireRequest({
+        ...post,
+        body: { type: 'multipart', parts: [filePart('')], boundary },
+      });
+      expect(wire.headers.at(-2)?.[1]).toMatch(
+        /^multipart\/form-data; boundary=----dp[0-9a-z]{30}$/,
+      );
+    },
+  );
+
+  test("a carried boundary of 70 characters from RFC 2046's set is kept", () => {
+    const boundary = `0aZ'()+_,-./:=?${'x'.repeat(55)}`;
+    expect(boundary).toHaveLength(70);
+    const wire = buildWireRequest({
+      ...post,
+      body: { type: 'multipart', parts: [filePart('')], boundary },
+    });
+    expect(wire.headers.at(-2)?.[1]).toBe(
+      `multipart/form-data; boundary=${boundary}`,
+    );
+  });
+
+  test.each([
+    ['a line feed', 'text/plain\nX-Injected: 1'],
+    ['a carriage return', 'text/plain\r'],
+    ['non-ASCII', 'text/żółć'],
+    ['a NUL', 'text/plain\0'],
+  ])(
+    'a file part content type holding %s is refused before anything is recorded',
+    (_label, contentType) => {
+      expect(() =>
+        buildWireRequest({
+          ...post,
+          body: { type: 'multipart', parts: [filePart(contentType)] },
+        }),
+      ).toThrow(InvalidBodyError);
+    },
+  );
 });

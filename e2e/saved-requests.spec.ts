@@ -12,7 +12,13 @@ import {
   type CaptureServer,
   startCaptureServer,
 } from '../test-support/capture-server';
-import { type TestApp, launchWithTestDatabase } from './support';
+import {
+  type TestApp,
+  gate,
+  launchWithTestDatabase,
+  settle,
+  stubOperation,
+} from './support';
 
 let capture: CaptureServer;
 let other: CaptureServer;
@@ -55,57 +61,31 @@ const saved = () =>
 const history = () =>
   testApp.window.getByTestId('history').getByRole('listitem');
 
-// Wraps main's real handler for a channel so its first answer waits for release(); restore() puts the real one back.
-// Reads Electron's private ipcMain._invokeHandlers, as the overlap scenario below does.
+// Answers a channel with the server's own result, but holds the first answer until release(); restore() hands the
+// channel back to the server.
 async function holdFirstAnswer(channel: string) {
-  await testApp.app.evaluate(({ ipcMain }, channel) => {
-    const scope = globalThis as unknown as Record<string, unknown>;
-    const handlers = (
-      ipcMain as unknown as {
-        _invokeHandlers: Map<string, (...a: unknown[]) => unknown>;
-      }
-    )._invokeHandlers;
-    const original = handlers.get(channel);
-    scope[`original:${channel}`] = original;
-    // The gate exists before any call arrives, so release() works whenever it is called.
-    const gate = new Promise<void>((resolve) => {
-      scope[`release:${channel}`] = resolve;
-    });
-    let held = false;
-    ipcMain.removeHandler(channel);
-    ipcMain.handle(channel, async (event, ...args) => {
-      const answer = await original?.(event, ...args);
+  // The gate exists before any call arrives, so release() works whenever it is called.
+  const first = gate();
+  let held = false;
+  const stub = await stubOperation(
+    testApp.window,
+    channel,
+    async (_input, real) => {
+      const answer = await real();
       if (!held) {
         held = true;
-        await gate;
+        await first.wait();
       }
       return answer;
-    });
-  }, channel);
+    },
+  );
   return {
     release: async () => {
-      await testApp.app.evaluate((_electron, channel) => {
-        const scope = globalThis as unknown as Record<string, () => void>;
-        scope[`release:${channel}`]?.();
-      }, channel);
-      // A later round trip to main returns after the held answer, then a frame lets React commit it.
-      await testApp.window.evaluate(async () => {
-        const { pigeon } = window as unknown as {
-          pigeon: { dbStatus: () => Promise<unknown> };
-        };
-        await pigeon.dbStatus();
-        await new Promise(requestAnimationFrame);
-      });
+      first.release();
+      // The held answer reaches the page, then a later round trip and a frame let React commit it.
+      await settle(testApp.window);
     },
-    restore: () =>
-      testApp.app.evaluate(({ ipcMain }, channel) => {
-        const scope = globalThis as unknown as Record<
-          string,
-          (...a: unknown[]) => unknown
-        >;
-        ipcMain.removeHandler(channel);
-        ipcMain.handle(channel, scope[`original:${channel}`] as never);
-      }, channel),
+    restore: stub.restore,
   };
 }
 
@@ -389,16 +369,10 @@ test('typing while a saved request opens keeps what was typed', async () => {
 test('a call linked to a saved request the list could not load is not called deleted', async () => {
   const { window } = testApp;
   const panel = window.getByTestId('call-panel');
-  await testApp.app.evaluate(({ ipcMain }, channel) => {
-    const scope = globalThis as unknown as Record<string, unknown>;
-    scope[`original:${channel}`] = (
-      ipcMain as unknown as {
-        _invokeHandlers: Map<string, (...a: unknown[]) => unknown>;
-      }
-    )._invokeHandlers.get(channel);
-    ipcMain.removeHandler(channel);
-    ipcMain.handle(channel, () => ({ ok: false, message: 'list unavailable' }));
-  }, channels.listSavedRequests);
+  const list = await stubOperation(window, channels.listSavedRequests, () => ({
+    ok: false,
+    message: 'list unavailable',
+  }));
 
   await button('New').click();
   await window.getByLabel('URL').fill(`${capture.url}/cr4`);
@@ -414,18 +388,11 @@ test('a call linked to a saved request the list could not load is not called del
     'From a saved request',
   );
 
-  await testApp.app.evaluate(({ ipcMain }, channel) => {
-    const scope = globalThis as unknown as Record<
-      string,
-      (...a: unknown[]) => unknown
-    >;
-    ipcMain.removeHandler(channel);
-    ipcMain.handle(channel, scope[`original:${channel}`] as never);
-  }, channels.listSavedRequests);
+  await list.restore();
 });
 
 // T2.10: opening one saved request and then another, the form holds the later one whichever answer arrives last. The
-// get handler is replaced to hold the first answer, so this runs last.
+// get answer is held for the first open, so this runs last.
 test('when two opens overlap, the form holds the later saved request', async () => {
   const { window } = testApp;
   await button('New').click();
@@ -438,28 +405,7 @@ test('when two opens overlap, the form holds the later saved request', async () 
   await button('Save').click();
   await expect(saved().filter({ hasText: /^Overlap/ })).toHaveCount(2);
 
-  await testApp.app.evaluate(({ ipcMain }, channel) => {
-    const scope = globalThis as unknown as {
-      releaseHeld?: () => void;
-      heldOnce?: boolean;
-    };
-    const original = (
-      ipcMain as unknown as {
-        _invokeHandlers: Map<string, (...a: unknown[]) => unknown>;
-      }
-    )._invokeHandlers.get(channel);
-    ipcMain.removeHandler(channel);
-    ipcMain.handle(channel, async (event, id) => {
-      const answer = await original?.(event, id);
-      if (!scope.heldOnce) {
-        scope.heldOnce = true;
-        await new Promise<void>((resolve) => {
-          scope.releaseHeld = resolve;
-        });
-      }
-      return answer;
-    });
-  }, channels.getSavedRequest);
+  const open = await holdFirstAnswer(channels.getSavedRequest);
 
   await button('New').click();
   await saved()
@@ -472,16 +418,7 @@ test('when two opens overlap, the form holds the later saved request', async () 
     .click();
   await expect(window.getByLabel('URL')).toHaveValue(`${capture.url}/second`);
 
-  await testApp.app.evaluate(() => {
-    (globalThis as unknown as { releaseHeld: () => void }).releaseHeld();
-  });
-  await window.evaluate(async () => {
-    const { pigeon } = window as unknown as {
-      pigeon: { dbStatus: () => Promise<unknown> };
-    };
-    await pigeon.dbStatus();
-    await new Promise(requestAnimationFrame);
-  });
+  await open.release();
   await expect(window.getByLabel('URL')).toHaveValue(`${capture.url}/second`);
   await expect(window.getByTestId('saved-request-link')).toHaveText(
     'Editing saved request: Overlap second',

@@ -9,10 +9,12 @@ import {
   type TestApp,
   bodyEdge,
   bodyLines,
+  callOperation,
   expectBodyText,
   launchWithTestDatabase,
   showBodyView,
 } from './support';
+import { channels } from '../src/shared/ipc-contract';
 
 const MIB = 1024 * 1024;
 
@@ -26,7 +28,6 @@ test.beforeAll(async () => {
     `up (${testApp.database})`,
     { timeout: 15_000 },
   );
-  await closeDocked(testApp);
   // The Copy presses below must not overwrite the system clipboard (AGENTS.md).
   await testApp.window.evaluate(() => {
     Object.defineProperty(navigator.clipboard, 'writeText', {
@@ -39,37 +40,6 @@ test.afterAll(async () => {
   await testApp?.close();
   await capture?.close();
 });
-
-// DevTools opens when the app is not packaged (src/main.ts). Docking takes half the window's width some
-// time after launch, which reflows long text under a position check. Wait for it, close it, and wait for
-// the page to fill the window again.
-async function closeDocked({ app, window }: TestApp) {
-  await expect
-    .poll(() =>
-      app.evaluate(({ BrowserWindow }) =>
-        BrowserWindow.getAllWindows().some((w) =>
-          w.webContents.isDevToolsOpened(),
-        ),
-      ),
-    )
-    .toBe(true);
-  await app.evaluate(({ BrowserWindow }) => {
-    for (const w of BrowserWindow.getAllWindows())
-      w.webContents.closeDevTools();
-  });
-  await expect
-    .poll(async () => {
-      const content = await app.evaluate(({ BrowserWindow }) =>
-        Math.max(
-          ...BrowserWindow.getAllWindows().map(
-            (w) => w.getContentBounds().width,
-          ),
-        ),
-      );
-      return (await window.evaluate(() => innerWidth)) === content;
-    })
-    .toBe(true);
-}
 
 const button = (name: string) =>
   testApp.window.getByRole('button', { name, exact: true });
@@ -433,21 +403,13 @@ test('opening the call already shown does not load another page (second review, 
   await expect(remaining).toHaveAttribute('data-remaining', String(2 * MIB));
 
   await row.click();
-  // Later round trips to main return after the open's answer and any read it started.
-  await testApp.window.evaluate(async () => {
-    const { pigeon } = window as unknown as {
-      pigeon: {
-        getCall: (id: string) => Promise<unknown>;
-        dbStatus: () => Promise<unknown>;
-      };
-    };
-    for (let round = 0; round < 3; round += 1) {
-      await pigeon.getCall('no-such-call');
-      await new Promise(requestAnimationFrame);
-    }
-    await pigeon.dbStatus();
-    await new Promise(requestAnimationFrame);
-  });
+  // Later round trips to the server return after the open's answer and any read it started.
+  for (let round = 0; round < 3; round += 1) {
+    await callOperation(testApp.window, channels.getCall, 'no-such-call');
+    await testApp.window.evaluate(() => new Promise(requestAnimationFrame));
+  }
+  await callOperation(testApp.window, channels.dbStatus);
+  await testApp.window.evaluate(() => new Promise(requestAnimationFrame));
 
   await expect(remaining).toHaveAttribute('data-remaining', String(2 * MIB));
 });

@@ -1,6 +1,7 @@
-// T1.8 — a response body is untrusted input and must never run as script or open a page. Only the production
-// build carries the CSP, and only a real renderer shows whether markup in a body executes, so this runs on the
-// built app. The console is recorded too: a CSP violation or a blocked worker is an error a reader would not see.
+// T1.8 — a response body is untrusted input and must never run as script or open a page. Only the built UI is
+// served with the CSP header, and only a real browser shows whether markup in a body executes, so this runs on the
+// built app. The console is recorded too, and CSP violations separately, because the console does not report them
+// (support.ts, recordCspViolations).
 import { expect, test } from '@playwright/test';
 import {
   type CaptureServer,
@@ -9,7 +10,9 @@ import {
 import {
   type TestApp,
   bodyLines,
+  expectNoCspViolations,
   launchWithTestDatabase,
+  settle,
   showBodyView,
 } from './support';
 
@@ -86,7 +89,7 @@ for (const [type, body, hasSwitch] of bodies) {
     const result = window.getByTestId('result');
     const shown = result.getByTestId('response-body');
     const pageUrl = window.url();
-    const windows = app.windows().length;
+    const pages = app.pages().length;
 
     for (const view of hasSwitch ? (['Pretty', 'Raw'] as const) : [null]) {
       if (view) await showBodyView(result, 'response-body', view);
@@ -97,24 +100,20 @@ for (const [type, body, hasSwitch] of bodies) {
         .toContain('open-me');
       expect((await bodyLines(shown)).join('')).toContain('<script>');
 
-      // Cmd+click on the URL: links are off, and main denies new windows.
+      // Cmd+click on the URL: links are off, so no page opens.
       await shown
         .locator('.view-line')
         .getByText('example.com', { exact: false })
         .first()
         .click({ modifiers: ['Meta'] });
-      // A round trip to main and one frame let any window or navigation the clicks caused take effect.
-      await window.evaluate(async () => {
-        await (
-          window as unknown as { pigeon: { dbStatus: () => Promise<unknown> } }
-        ).pigeon.dbStatus();
-        await new Promise(requestAnimationFrame);
-      });
+      // A round trip to the server and one frame let any page or navigation the clicks caused take effect.
+      await settle(window);
 
       expect(await flag()).toBeNull();
-      expect(app.windows()).toHaveLength(windows);
+      expect(app.pages()).toHaveLength(pages);
       expect(window.url()).toBe(pageUrl);
     }
     expect(consoleErrors).toEqual([]);
+    await expectNoCspViolations(window);
   });
 }

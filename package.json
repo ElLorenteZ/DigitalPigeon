@@ -12,7 +12,9 @@
   },
   "main": ".vite/build/main.cjs",
   "scripts": {
-    "start": "electron-forge start",
+    "build": "vite build -c vite.renderer.config.mts && vite build -c vite.server.config.mts",
+    "start": "npm run build && node dist/server/main.mjs",
+    "dev": "vite build -c vite.server.config.mts && DP_DEV=1 node dist/server/main.mjs",
     "package": "electron-forge package",
     "make": "electron-forge make",
     "release": "electron-forge release",
@@ -21,7 +23,7 @@
     "typecheck": "tsc --noEmit",
     "test:unit": "vitest run --project unit",
     "test:integration": "vitest run --project integration",
-    "test:e2e": "npm run package && playwright test"
+    "test:e2e": "npm run build && playwright test"
   },
   "devDependencies": {
     "@electron-forge/cli": "^8.0.1",

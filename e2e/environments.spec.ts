@@ -8,7 +8,20 @@ import {
   type CaptureServer,
   startCaptureServer,
 } from '../test-support/capture-server';
-import { type TestApp, launchWithTestDatabase } from './support';
+import {
+  type TestApp,
+  callOperation,
+  gate,
+  launchWithTestDatabase,
+  stubOperation,
+} from './support';
+
+const activeId = async () =>
+  (
+    (await callOperation(testApp.window, channels.listEnvironments)) as {
+      activeId?: string | null;
+    }
+  ).activeId;
 
 let a: CaptureServer;
 let b: CaptureServer;
@@ -156,64 +169,35 @@ test('two quick choices store the later one for startup', async () => {
   await addEnvironment('early', `${a.url}/early`);
   await addEnvironment('late', `${b.url}/late`);
 
-  // Hold the first save of the choice in main, as the B1 scenario below does, but wrap the real handler.
-  await testApp.app.evaluate(({ ipcMain }, channel) => {
-    const scope = globalThis as unknown as Record<string, unknown>;
-    const original = (
-      ipcMain as unknown as {
-        _invokeHandlers: Map<string, (...a: unknown[]) => unknown>;
-      }
-    )._invokeHandlers.get(channel);
-    scope.originalSetActive = original;
-    let held = false;
-    ipcMain.removeHandler(channel);
-    ipcMain.handle(channel, async (event, id) => {
-      if (held) return original?.(event, id);
+  // Hold the first save of the choice, as the B1 scenario below does, but answer with the server's own result.
+  const firstChoice = gate();
+  let firstChoiceStored!: () => void;
+  const firstChoiceDone = new Promise<void>((resolve) => {
+    firstChoiceStored = resolve;
+  });
+  let held = false;
+  const choice = await stubOperation(
+    window,
+    channels.setActiveEnvironment,
+    async (_input, real) => {
+      if (held) return real();
       held = true;
-      await new Promise<void>((resolve) => {
-        scope.releaseFirstChoice = resolve;
-      });
-      const answer = await original?.(event, id);
-      (scope.firstChoiceStored as () => void)();
+      await firstChoice.wait();
+      const answer = await real();
+      firstChoiceStored();
       return answer;
-    });
-    scope.firstChoiceDone = new Promise<void>((resolve) => {
-      scope.firstChoiceStored = resolve;
-    });
-  }, channels.setActiveEnvironment);
+    },
+  );
 
   await select.selectOption({ label: `early — ${a.url}/early` });
   await select.selectOption({ label: `late — ${b.url}/late` });
   const lateId = await select.inputValue();
-  await testApp.app.evaluate(() => {
-    (
-      globalThis as unknown as { releaseFirstChoice: () => void }
-    ).releaseFirstChoice();
-  });
+  firstChoice.release();
   // The held first choice has now been stored; anything queued behind it has had its turn too.
-  await testApp.app.evaluate(
-    () =>
-      (globalThis as unknown as { firstChoiceDone: Promise<void> })
-        .firstChoiceDone,
-  );
-  await expect
-    .poll(() =>
-      window.evaluate(async () => {
-        const { pigeon } = window as unknown as {
-          pigeon: {
-            listEnvironments: () => Promise<{ activeId?: string | null }>;
-          };
-        };
-        return (await pigeon.listEnvironments()).activeId;
-      }),
-    )
-    .toBe(lateId);
+  await firstChoiceDone;
+  await expect.poll(() => activeId()).toBe(lateId);
 
-  await testApp.app.evaluate(({ ipcMain }, channel) => {
-    const scope = globalThis as unknown as { originalSetActive: never };
-    ipcMain.removeHandler(channel);
-    ipcMain.handle(channel, scope.originalSetActive);
-  }, channels.setActiveEnvironment);
+  await choice.restore();
 });
 
 // Second code review, #5: one failed save of the choice does not stop later choices from being saved.
@@ -223,24 +207,18 @@ test('after one choice fails to be stored, a later choice is stored', async () =
   await addEnvironment('fails', `${a.url}/fails`);
   await addEnvironment('recovers', `${b.url}/recovers`);
 
-  await testApp.app.evaluate(({ ipcMain }, channel) => {
-    const scope = globalThis as unknown as Record<string, unknown>;
-    const original = (
-      ipcMain as unknown as {
-        _invokeHandlers: Map<string, (...a: unknown[]) => unknown>;
-      }
-    )._invokeHandlers.get(channel);
-    scope.originalSetActive = original;
-    let failed = false;
-    ipcMain.removeHandler(channel);
-    ipcMain.handle(channel, async (event, id) => {
+  let failed = false;
+  const choice = await stubOperation(
+    window,
+    channels.setActiveEnvironment,
+    async (_input, real) => {
       if (!failed) {
         failed = true;
         throw new Error('store refused once');
       }
-      return original?.(event, id);
-    });
-  }, channels.setActiveEnvironment);
+      return real();
+    },
+  );
 
   await select.selectOption({ label: `fails — ${a.url}/fails` });
   await expect(window.getByTestId('environments-error')).toContainText(
@@ -248,28 +226,13 @@ test('after one choice fails to be stored, a later choice is stored', async () =
   );
   await select.selectOption({ label: `recovers — ${b.url}/recovers` });
   const recoversId = await select.inputValue();
-  await expect
-    .poll(() =>
-      window.evaluate(async () => {
-        const { pigeon } = window as unknown as {
-          pigeon: {
-            listEnvironments: () => Promise<{ activeId?: string | null }>;
-          };
-        };
-        return (await pigeon.listEnvironments()).activeId;
-      }),
-    )
-    .toBe(recoversId);
+  await expect.poll(() => activeId()).toBe(recoversId);
 
-  await testApp.app.evaluate(({ ipcMain }, channel) => {
-    const scope = globalThis as unknown as { originalSetActive: never };
-    ipcMain.removeHandler(channel);
-    ipcMain.handle(channel, scope.originalSetActive);
-  }, channels.setActiveEnvironment);
+  await choice.restore();
 });
 
-// B1, made deterministic: the switch's save is held in main while the send runs. A send that read the stored setting
-// would go to the old environment; one that names its environment goes to the new one. Replaces the handler for the
+// B1, made deterministic: the switch's save is held while the send runs. A send that read the stored setting
+// would go to the old environment; one that names its environment goes to the new one. Replaces the answer for the
 // rest of this launch, so it runs last.
 test('a send while the switch is still being saved goes to the environment the select shows', async () => {
   const { window } = testApp;
@@ -279,32 +242,15 @@ test('a send while the switch is still being saved goes to the environment the s
   await addEnvironment('second', `${b.url}/second`);
   await select.selectOption({ label: `first — ${a.url}/first` });
   await expect(select).toHaveValue(/.+/);
-  // Wait until main has stored "first" as active, so the held save below is the only one pending.
+  // Wait until the server has stored "first" as active, so the held save below is the only one pending.
   const firstId = await select.inputValue();
-  await expect
-    .poll(() =>
-      window.evaluate(async () => {
-        const { pigeon } = window as unknown as {
-          pigeon: {
-            listEnvironments: () => Promise<{ activeId?: string | null }>;
-          };
-        };
-        return (await pigeon.listEnvironments()).activeId;
-      }),
-    )
-    .toBe(firstId);
+  await expect.poll(() => activeId()).toBe(firstId);
 
-  await testApp.app.evaluate(({ ipcMain }, channel) => {
-    const scope = globalThis as unknown as { releaseHeld?: () => void };
-    ipcMain.removeHandler(channel);
-    ipcMain.handle(
-      channel,
-      () =>
-        new Promise((resolve) => {
-          scope.releaseHeld = () => resolve({ ok: true });
-        }),
-    );
-  }, channels.setActiveEnvironment);
+  const save = gate();
+  await stubOperation(window, channels.setActiveEnvironment, async () => {
+    await save.wait();
+    return { ok: true };
+  });
 
   const rowsBefore = await history.count();
   b.requests.length = 0;
@@ -314,7 +260,5 @@ test('a send while the switch is still being saved goes to the environment the s
   await expect(history).toHaveCount(rowsBefore + 1);
   expect(b.requests.map((r) => r.url)).toEqual(['/second/held']);
 
-  await testApp.app.evaluate(() => {
-    (globalThis as unknown as { releaseHeld: () => void }).releaseHeld();
-  });
+  save.release();
 });

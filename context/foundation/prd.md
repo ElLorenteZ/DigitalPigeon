@@ -1,15 +1,21 @@
 ---
 produced-by: lz-spec
-updated: 2026-11-02
-source: context/foundation/shape-notes.md
+updated: 2026-11-11
+source: context/foundation/shape-notes.md; author, 2026-11-11
 status: draft
 ---
 
 # DigitalPigeon
 
+> **Target state.** The Pencil design `~/Documents/digital-pigeon.pen` (screens 01–05 and the
+> system states) shows the final product. The code works towards it. The author's current
+> instructions take precedence over this document, the roadmap and the ADRs. Where they disagree,
+> update the documents. (author, 2026-11-11)
+
 ## Problem
-One developer uses Postman/Insomnia daily to call REST, GraphQL and SOAP APIs. Sending the same
-request twice keeps only the latest call. To preserve an earlier call, the developer has to
+One developer uses Postman/Insomnia daily to call REST, GraphQL and SOAP APIs. Those tools keep a
+request (a template) and only its last response, so sending the same request twice keeps only the
+latest call. To preserve an earlier call, the developer has to
 duplicate the request before sending it, so past requests and responses are lost or hard to
 recover. SOAP/WSDL work is poorly supported, and the tools require accounts and cloud sync.
 
@@ -28,6 +34,12 @@ recover. SOAP/WSDL work is poorly supported, and the tools require accounts and 
 - Requests with JSON, XML, plain-text, form-urlencoded and multipart bodies can each be sent and are recorded.
 - A recorded multipart call can be replayed after the uploaded file has been deleted from its original location on disk.
 - History can be narrowed to the calls of one environment, the calls of one saved request, the calls within a date range, and the calls whose URL or body contains a search term.
+- History can be narrowed by HTTP method (one or several) and by the `Authorization` header value sent. Filters combine, and each option shows how many calls match it.
+- A request shows every response it has received, newest first. Any one of them can be deleted without affecting the others.
+- A call can be resent from History, one at a time or as a selection. An exact resend and an edit-and-send each create a new record.
+- A deleted call can be restored with Undo for a few seconds, then it is gone permanently.
+- Importing an OpenAPI JSON file creates one request template per operation, filed into directories by tag or by first path segment. Importing a WSDL file creates one template per operation, filed by service and port. An invalid file imports nothing and shows where it failed.
+- Re-importing the same spec updates its templates in place and does not change History.
 - Switching the active environment changes the `baseUrl` that a saved request is sent to.
 - Running a request exported as curl in a terminal sends the same method, URL, headers and body as the original request.
 - The app runs on the author's personal machine as a local install, and is used without creating or signing in to an account.
@@ -59,17 +71,23 @@ Milestone 1 (REST):
 - Resend a historical call as an exact replay, or open it in the editor, change it and send. Either way a new record is created.
 - Preview any historical call.
 - Find calls by environment, by saved request, by date range, or by full-text search over URL and body.
-- Delete call records one at a time, in bulk, or through retention rules.
+- Delete call records one at a time or in bulk, with Undo for a few seconds. (Retention rules moved out of M1 on 2026-11-11: they are not in the target design.)
 - Export a request or a call as a curl command.
 
+After Milestone 1, towards the target design (`lz-roadmap` sets the order):
+- The sidebar has three tabs: Templates (directories), Saved (flat list, ADR 0001) and History.
+- A "Responses to this request" strip, with each kept response selectable and deletable.
+- History search and filter screen: facets for method, environment and `Authorization` header with counts, a results table, resend and delete per row or for a selection.
+- Undo after delete.
+- Request templates generated from imported OpenAPI JSON and WSDL, stored in directories, with a preview before generating.
+- SOAP requests (sending the templates generated from WSDL).
+- The circuit-trace pigeon logo (`~/Downloads/digital-pigeon-logo.svg`) as the app's brand mark.
+
 ### Out of scope
-These are in the product but deferred past Milestone 1. `lz-roadmap` sets their order.
+These are not in the target design. They stay deferred until the author asks for them.
 - GraphQL requests
-- SOAP requests
 - Grouping history by request type (REST, GraphQL or SOAP)
-- Request templates generated from imported OpenAPI JSON, stored in directories
-- Request templates generated from imported WSDL
-- Auth per environment, with auth usable as a history filter
+- Auth per environment (auth is a header sent with the request; it is filterable either way)
 - Side-by-side diff of two calls
 - Collection runner (running a set of requests in sequence or as a batch)
 - OAuth2 token flows
@@ -104,6 +122,6 @@ These are in the product but deferred past Milestone 1. `lz-roadmap` sets their 
 | What happens when the database (MongoDB in Docker) is not running: block sending, or send and warn that the call is not recorded, or start the container from the app | Author decision. "Every send is recorded" points to blocking. | Milestone 1 plan |
 | Work laptop: which OS (Windows or Linux), and what IT approval requires (a signed installer, a known publisher, a review) | Asking the work IT department | Work-laptop use; whether signing is needed |
 | On exact replay of a call whose stored token has expired, send the token as recorded or offer the current one | First real use of replay against a short-lived token | Replay behaviour detail |
-| What separates a request template from a saved request beyond where it came from (imported from a spec or built by hand) | Shaping of the templates milestone | Templates milestone |
+| What separates a request template from a saved request beyond where it came from (imported from a spec or built by hand) | Partly settled by the design: templates come from imports and live in directories; saved requests are a flat list. Whether a template can be edited, or turned into a saved request, is still open | Templates milestone |
 | Code export in languages other than curl | A need arising after curl export is in use | — |
 | Order of the deferred milestones | `lz-roadmap` | `lz-roadmap` |

@@ -92,6 +92,9 @@ in plain Node.
 
 ## Deeper context
 
+- `~/Documents/digital-pigeon.pen` (Pencil) — the target design: the final state the code works towards. Read it
+  through the Pencil MCP tools, never as a file. The author's current instructions outrank the PRD, roadmap and ADRs;
+  when they disagree, update the documents.
 - `context/foundation/` — PRD, stack rationale and its accepted costs, infrastructure. Read
   deliberately, not every turn.
 - `context/changes/` — work in flight. `context/archive/` — finished changes and what was rejected.

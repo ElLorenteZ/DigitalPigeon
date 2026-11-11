@@ -13,10 +13,12 @@ import {
 import type {
   CompletionDoc,
   CompletionError,
+  EnvironmentSnapshot,
   SendDoc,
   StoredBody,
 } from './call-schema';
 import type { createCallStore } from './call-store';
+import { composeUrl, isPath } from './url';
 import { type WireInput, type WireRequest, buildWireRequest } from './wire';
 
 type CallStore = Pick<
@@ -70,7 +72,14 @@ export interface SendOptions {
   onSent?: (send: SendDoc) => void;
   headersTimeoutMs?: number;
   bodyTimeoutMs?: number;
+  /** The environment the caller loaded for this send; used and recorded only when the URL is a path (slice 5). */
+  environment?: EnvironmentSnapshot;
+  /** The saved request the form came from (slice 5). */
+  savedRequestId?: string;
 }
+
+/** What a send document records beside the request: the environment used and the source saved request. */
+type Links = Pick<SendDoc, 'environment' | 'savedRequestId'>;
 
 export interface RecordedCall {
   send: SendDoc;
@@ -82,7 +91,19 @@ export async function sendAndRecord(
   input: WireInput,
   options: SendOptions = {},
 ): Promise<RecordedCall> {
-  return sendWireAndRecord(store, buildWireRequest(input), options);
+  const { environment, savedRequestId } = options;
+  // Composed before anything is recorded: a path with no environment is refused here.
+  const url = composeUrl(input.url, environment);
+  const links: Links = {
+    ...(isPath(input.url) && environment ? { environment } : {}),
+    ...(savedRequestId ? { savedRequestId } : {}),
+  };
+  return sendWireAndRecord(
+    store,
+    buildWireRequest({ ...input, url }),
+    links,
+    options,
+  );
 }
 
 // Records then dispatches a request already in wire form. Used for a typed request and for a replay,
@@ -90,6 +111,7 @@ export async function sendAndRecord(
 async function sendWireAndRecord(
   store: CallStore,
   wire: WireRequest,
+  links: Links,
   {
     signal,
     onSent,
@@ -108,6 +130,7 @@ async function sendWireAndRecord(
       _id: randomUUID(),
       schemaVersion: 1,
       sentAt: new Date(),
+      ...links,
       request: { ...wire, body },
     };
     await store.insertSend(send);
@@ -253,9 +276,15 @@ export async function replayCall(
     if (cause instanceof MongoError) throw new DatabaseUnavailableError(cause);
     throw cause;
   }
+  // The recorded URL is already composed, so the replay records the original's environment and link as they were.
+  const { environment, savedRequestId } = call.send;
   return sendWireAndRecord(
     store,
     { ...call.send.request, body: bytes },
+    {
+      ...(environment ? { environment } : {}),
+      ...(savedRequestId ? { savedRequestId } : {}),
+    },
     options,
   );
 }

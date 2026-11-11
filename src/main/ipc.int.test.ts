@@ -172,3 +172,75 @@ test('describeBody refuses input that is not a file id and a boundary', async ()
     ok: false,
   });
 });
+
+// Review R2: a send names the saved request its form came from; main records the link only while it still exists.
+test('a send records its saved request while it exists, and is sent without the link once it is deleted', async () => {
+  const saved = (await call(channels.saveSavedRequest, {
+    name: 'R2',
+    request: {
+      method: 'GET',
+      url: `${capture.url}/r2`,
+      queryRows: [],
+      headerRows: [],
+    },
+  })) as unknown as { ok: true; id: string };
+  expect(saved.ok).toBe(true);
+
+  const first = (await call(channels.send, {
+    clientRequestId: 'r2-linked',
+    method: 'GET',
+    url: `${capture.url}/r2`,
+    queryRows: [],
+    headerRows: [],
+    savedRequestId: saved.id,
+  })) as unknown as { ok: true; send: { savedRequestId?: string } };
+  expect(first.send.savedRequestId).toBe(saved.id);
+
+  await call(channels.deleteSavedRequest, saved.id);
+  const second = (await call(channels.send, {
+    clientRequestId: 'r2-deleted',
+    method: 'GET',
+    url: `${capture.url}/r2`,
+    queryRows: [],
+    headerRows: [],
+    savedRequestId: saved.id,
+  })) as unknown as { ok: boolean; send: object };
+  expect(second.ok).toBe(true);
+  expect(second.send).not.toHaveProperty('savedRequestId');
+  expect(capture.requests).toHaveLength(2);
+});
+
+// Second code review, #3: the lookups made before a send is recorded report a driver failure as the database being
+// unavailable, as the send path does (T1.6), not as an unexpected error.
+test('a driver failure while loading the environment for a send reports the database unavailable', async () => {
+  const { MongoError } = await import('mongodb');
+  const failing = {
+    collection: () => ({
+      findOne: async () => {
+        throw new MongoError('connection lost');
+      },
+    }),
+  } as unknown as import('mongodb').Db;
+  const local = new Map<string, Handler>();
+  registerIpc({
+    ipcMain: {
+      handle: (channel: string, handler: Handler) =>
+        local.set(channel, handler),
+    } as unknown as IpcMain,
+    db: () => failing,
+    dbStatus: () => ({ status: 'up', configPath: '' }),
+  });
+  const result = await local.get(channels.send)?.(null, {
+    clientRequestId: 'db-lost',
+    method: 'GET',
+    url: '/orders',
+    queryRows: [],
+    headerRows: [],
+    environmentId: 'env-1',
+  });
+  expect(result).toMatchObject({
+    ok: false,
+    error: { kind: 'database-unavailable' },
+  });
+  expect(capture.requests).toHaveLength(0);
+});

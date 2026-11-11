@@ -234,6 +234,31 @@ describe('T1.4 — a multipart call replays after its file is deleted', () => {
   });
 });
 
+// Slice 5: a replay sends the original's composed URL, so it records the original's environment and link.
+test('a replay records the original environment snapshot and saved request, even after the environment changed', async () => {
+  const store = createCallStore(testDb.db);
+  const environment = { id: 'env-a', name: 'a', baseUrl: `${capture.url}/v1` };
+  const original = await sendAndRecord(
+    store,
+    { ...input('GET'), url: '/orders' },
+    { environment, savedRequestId: 'saved-1' },
+  );
+  // Editing the environment afterwards changes nothing in either record.
+  environment.baseUrl = 'http://elsewhere.test';
+  environment.name = 'renamed';
+
+  const replay = await replayCall(store, original.send._id);
+
+  expect(replay.send.environment).toEqual({
+    id: 'env-a',
+    name: 'a',
+    baseUrl: `${capture.url}/v1`,
+  });
+  expect(replay.send.savedRequestId).toBe('saved-1');
+  expect(replay.send.request.url).toBe(original.send.request.url);
+  expect(capture.requests[1]?.url).toBe(capture.requests[0]?.url);
+});
+
 describe('records an older version could have written', () => {
   test('a value undici refuses records invalid-request and sends nothing', async () => {
     const store = createCallStore(testDb.db);

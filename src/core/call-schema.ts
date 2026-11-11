@@ -16,10 +16,22 @@ export type StoredFile = z.infer<typeof StoredFileSchema>;
 const StoredBodySchema = z.union([z.instanceof(Uint8Array), StoredFileSchema]);
 export type StoredBody = z.infer<typeof StoredBodySchema>;
 
+/** The environment a path was sent against, as it was then: an environment can be edited or deleted later. */
+export const EnvironmentSnapshotSchema = z.strictObject({
+  id: z.string().min(1),
+  name: z.string(),
+  baseUrl: z.string().min(1),
+});
+export type EnvironmentSnapshot = z.infer<typeof EnvironmentSnapshotSchema>;
+
 const sendBase = {
   _id: z.string().min(1),
   schemaVersion: z.literal(1),
   sentAt: z.date(),
+  /** Present only when the URL was a path joined to this environment's baseUrl (slice 5). */
+  environment: EnvironmentSnapshotSchema.optional(),
+  /** The saved request the form came from, if any (slice 5). */
+  savedRequestId: z.string().min(1).optional(),
 };
 const requestBase = {
   method: z.string().min(1),

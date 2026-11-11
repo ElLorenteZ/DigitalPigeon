@@ -22,6 +22,7 @@ import { request } from 'undici';
 import { type TestDb, openTestDb } from '../../test-support/test-db';
 import { createCallStore } from './call-store';
 import { type Part, encodeMultipart } from './multipart';
+import { NoActiveEnvironmentError } from './url';
 import { type BodyInput, InvalidBodyError, InvalidHeaderError } from './wire';
 import { z } from 'zod';
 import {
@@ -283,6 +284,66 @@ describe('T1.2, T1.3 — a multipart request is recorded as it reached the wire'
       c.state === 'unreadable' ? [] : [c.send.request.url],
     );
     expect(urls.filter((u) => u.startsWith(url))).toEqual([]);
+    expect(capture.requests).toHaveLength(0);
+  });
+});
+
+// Slice 5 (plan.md, phase 1): a path is joined to the environment's baseUrl; the record holds the composed URL,
+// the environment as it was, and the saved request the form came from.
+describe('T1.2, T1.3 — a path sent against an environment', () => {
+  const environment = () => ({
+    id: 'env-a',
+    name: 'a',
+    baseUrl: `${capture.url}/api/`,
+  });
+
+  test.each(['GET', 'POST', 'DELETE'])(
+    '%s records the composed URL, the environment and the saved request, as it reached the wire',
+    async (method) => {
+      const store = createCallStore(testDb.db);
+      const call = await sendAndRecord(
+        store,
+        { ...input(method), url: '/orders?x=1' },
+        { environment: environment(), savedRequestId: 'saved-1' },
+      );
+
+      const received = capture.requests.at(-1);
+      const recorded = call.send;
+      expect(received?.url).toBe('/api/orders?x=1&q=two%20words');
+      expect(recorded.request.url).toBe(`${capture.url}${received?.url}`);
+      expect(pairs(received?.rawHeaders ?? [])).toEqual(
+        recorded.request.headers,
+      );
+      expect(recorded.environment).toEqual(environment());
+      expect(recorded.savedRequestId).toBe('saved-1');
+      const read = await store.getCall(recorded._id, new Set());
+      expect(
+        read && read.state !== 'unreadable' && read.send.environment,
+      ).toEqual(environment());
+    },
+  );
+
+  test('a full URL records no environment, even with one given (review R1)', async () => {
+    const store = createCallStore(testDb.db);
+    const call = await sendAndRecord(store, input('GET'), {
+      environment: environment(),
+    });
+    expect(call.send).not.toHaveProperty('environment');
+    expect(call.send).not.toHaveProperty('savedRequestId');
+    expect(capture.requests.at(-1)?.url).toBe('/orders?x=1&q=two%20words');
+  });
+
+  test('a path with no environment is refused: no send document, nothing sent', async () => {
+    const store = createCallStore(testDb.db);
+    const path = `/refused-${randomUUID()}`;
+    await expect(
+      sendAndRecord(store, { ...input('GET'), url: path }),
+    ).rejects.toThrow(NoActiveEnvironmentError);
+
+    const urls = (await store.listCalls(200, new Set())).flatMap((c) =>
+      c.state === 'unreadable' ? [] : [c.send.request.url],
+    );
+    expect(urls.filter((u) => u.includes(path))).toEqual([]);
     expect(capture.requests).toHaveLength(0);
   });
 });

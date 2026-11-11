@@ -190,3 +190,53 @@ describe('a body stored in a file', () => {
     ).toBe(true);
   });
 });
+
+// Slice 5: the environment used and the saved request a send came from (plan.md, phase 1).
+describe('a send with an environment and a saved request', () => {
+  const linked = {
+    ...sendFixture,
+    environment: {
+      id: 'env-1',
+      name: 'staging',
+      baseUrl: 'http://127.0.0.1:8080/',
+    },
+    savedRequestId: 'saved-1',
+  };
+
+  test('parses with both, as a send document and as a summary', () => {
+    expect(SendDocSchema.parse(linked)).toEqual(linked);
+    const { body: _body, ...request } = linked.request;
+    expect(SendSummarySchema.parse({ ...linked, request })).toEqual({
+      ...linked,
+      request,
+    });
+  });
+
+  test('a document written before slice 5 still parses, without either', () => {
+    const parsed = SendDocSchema.parse(sendFixture);
+    expect(parsed).not.toHaveProperty('environment');
+    expect(parsed).not.toHaveProperty('savedRequestId');
+  });
+
+  test.each<[string, unknown]>([
+    ['an environment with no baseUrl', { id: 'e', name: 'n' }],
+    [
+      'an environment with an extra field',
+      { id: 'e', name: 'n', baseUrl: 'http://a/', x: 1 },
+    ],
+    [
+      'an environment with an empty id',
+      { id: '', name: 'n', baseUrl: 'http://a/' },
+    ],
+  ])('%s is refused', (_label, environment) => {
+    expect(
+      SendDocSchema.safeParse({ ...sendFixture, environment }).success,
+    ).toBe(false);
+  });
+
+  test('an empty saved request id is refused', () => {
+    expect(
+      SendDocSchema.safeParse({ ...sendFixture, savedRequestId: '' }).success,
+    ).toBe(false);
+  });
+});

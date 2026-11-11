@@ -1,7 +1,8 @@
 // Turns a recorded request into form input for edit-and-send. Generated headers are left out when they
 // equal what wire.ts generates, and kept as rows when they differ, such as a typed Host (plan.md).
 // Pure: the renderer imports this.
-import type { StoredBody } from './call-schema';
+import type { EnvironmentSnapshot, StoredBody } from './call-schema';
+import { pathFor } from './url';
 import {
   MultipartScanError,
   type Part,
@@ -110,6 +111,8 @@ function isUtf8(bytes: Uint8Array): boolean {
 export interface FormFromCallOptions {
   /** The bytes of a body stored in a file, read by the caller. Only a multipart body loads from them. */
   storedBody?: Uint8Array;
+  /** The environment the call recorded. Its baseUrl is taken off the URL, so Edit loads the path (slice 5). */
+  environment?: EnvironmentSnapshot;
 }
 
 export function formFromCall(
@@ -119,7 +122,7 @@ export function formFromCall(
     headers,
     body,
   }: Omit<WireRequest, 'body'> & { body: StoredBody | null },
-  { storedBody }: FormFromCallOptions = {},
+  { storedBody, environment }: FormFromCallOptions = {},
 ): WireInput {
   const contentTypeHeader = headers.find(
     ([name]) => name.toLowerCase() === 'content-type',
@@ -191,8 +194,9 @@ export function formFromCall(
 
   return {
     method,
-    // The recorded URL already includes its query string.
-    url,
+    // The recorded URL already includes its query string. A call sent against an environment loads its path, so the
+    // edited request follows the active environment (plan revision 2, W1).
+    url: (environment && pathFor(url, environment)) ?? url,
     queryRows: [],
     headerRows: headers.filter((header) => !generated(header)),
     body: loaded,

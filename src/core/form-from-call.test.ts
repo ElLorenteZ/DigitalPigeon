@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'vitest';
 import { BodyNotLoadableError, formFromCall } from './form-from-call';
 import { type Part, multipartBoundary } from './multipart';
+import { composeUrl } from './url';
 import { type BodyInput, type WireInput, buildWireRequest } from './wire';
 
 const typed = (over: Partial<WireInput> = {}): WireInput => ({
@@ -436,5 +437,47 @@ describe('a multipart body', () => {
         body: { fileId: 'f', length: 2 * 1024 * 1024 },
       }),
     ).toThrow(/too large to edit/);
+  });
+});
+
+// Plan revision 2, W1: Edit of a call sent against an environment loads its path, so the edited request follows the
+// active environment again.
+describe('a call sent against an environment', () => {
+  const environment = { id: 'env-a', name: 'a', baseUrl: 'https://a.test/v1/' };
+  const recordedFrom = (form: WireInput) =>
+    buildWireRequest({ ...form, url: composeUrl(form.url, environment) });
+
+  test('loads its path and query, and composes back to the same request', () => {
+    const recorded = recordedFrom(
+      typed({
+        method: 'POST',
+        url: '/orders?x=1',
+        queryRows: [['q', 'two words']],
+        headerRows: [['X-A', '1']],
+        body: { type: 'json', text: '{}' },
+      }),
+    );
+    const loaded = formFromCall(recorded, { environment });
+    expect(loaded.url).toBe('/orders?x=1&q=two%20words');
+    expect(loaded.headerRows).toEqual([['X-A', '1']]);
+    expect(
+      buildWireRequest({ ...loaded, url: composeUrl(loaded.url, environment) }),
+    ).toEqual(recorded);
+  });
+
+  test('a URL that does not start with the recorded baseUrl loads as recorded', () => {
+    const recorded = buildWireRequest(
+      typed({ url: 'https://b.test/v1/orders' }),
+    );
+    expect(formFromCall(recorded, { environment }).url).toBe(
+      'https://b.test/v1/orders',
+    );
+  });
+
+  test('a call with no environment loads its URL as recorded', () => {
+    const recorded = buildWireRequest(
+      typed({ url: 'https://a.test/v1/orders' }),
+    );
+    expect(formFromCall(recorded).url).toBe('https://a.test/v1/orders');
   });
 });

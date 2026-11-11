@@ -5,6 +5,7 @@ import { z } from 'zod';
 import {
   CompletionDocSchema,
   CompletionSummarySchema,
+  EnvironmentSnapshotSchema,
   SendDocSchema,
   SendSummarySchema,
 } from '../core/call-schema';
@@ -18,6 +19,14 @@ export const channels = {
   replay: 'pigeon:replay',
   readBody: 'pigeon:read-body',
   describeBody: 'pigeon:describe-body',
+  listEnvironments: 'pigeon:list-environments',
+  saveEnvironment: 'pigeon:save-environment',
+  deleteEnvironment: 'pigeon:delete-environment',
+  setActiveEnvironment: 'pigeon:set-active-environment',
+  listSavedRequests: 'pigeon:list-saved-requests',
+  getSavedRequest: 'pigeon:get-saved-request',
+  saveSavedRequest: 'pigeon:save-saved-request',
+  deleteSavedRequest: 'pigeon:delete-saved-request',
 } as const;
 
 export const METHODS = [
@@ -62,13 +71,27 @@ const BodyInputSchema = z.discriminatedUnion('type', [
   }),
 ]);
 
-export const SendInputSchema = z.strictObject({
-  clientRequestId: z.string().min(1),
+/** What the form holds: sent, or saved as a saved request (slice 5). */
+export const RequestFormSchema = z.strictObject({
   method: z.enum(METHODS),
-  url: z.url({ protocol: /^https?$/ }),
+  // A full http(s) URL, or a path joined to the chosen environment's baseUrl in main (slice 5).
+  url: z.union([
+    z.url({ protocol: /^https?$/ }),
+    z.string().regex(/^\//, 'A path starts with /'),
+  ]),
   queryRows: RowsSchema,
   headerRows: RowsSchema,
   body: BodyInputSchema.optional(),
+});
+export type RequestForm = z.infer<typeof RequestFormSchema>;
+
+export const SendInputSchema = z.strictObject({
+  clientRequestId: z.string().min(1),
+  ...RequestFormSchema.shape,
+  /** The environment the select shows; main loads it by id (plan revision 2, B1). */
+  environmentId: z.string().min(1).nullable().optional(),
+  /** The saved request the form came from; recorded only if it still exists (review R2). */
+  savedRequestId: z.string().min(1).optional(),
 });
 export type SendInput = z.infer<typeof SendInputSchema>;
 
@@ -99,6 +122,94 @@ export const ReadBodyResultSchema = z.discriminatedUnion('ok', [
   z.strictObject({ ok: z.literal(false), message: z.string() }),
 ]);
 export type ReadBodyResult = z.infer<typeof ReadBodyResultSchema>;
+
+// The same shape main records in a call's snapshot (second code review, 9).
+export const EnvironmentSchema = EnvironmentSnapshotSchema;
+export type EnvironmentView = z.infer<typeof EnvironmentSchema>;
+
+export const ListEnvironmentsResultSchema = z.discriminatedUnion('ok', [
+  z.strictObject({
+    ok: z.literal(true),
+    environments: z.array(EnvironmentSchema),
+    activeId: z.string().nullable(),
+  }),
+  z.strictObject({ ok: z.literal(false), message: z.string() }),
+]);
+export type ListEnvironmentsResult = z.infer<
+  typeof ListEnvironmentsResultSchema
+>;
+
+/** Without an id, a new environment; with one, that environment saved over. */
+export const SaveEnvironmentInputSchema = z.strictObject({
+  id: z.string().min(1).optional(),
+  name: z.string(),
+  baseUrl: z.string(),
+});
+export type SaveEnvironmentInput = z.infer<typeof SaveEnvironmentInputSchema>;
+
+/** For a save, a delete or a choice that returns nothing else: done, or why not. */
+export const MutationResultSchema = z.discriminatedUnion('ok', [
+  z.strictObject({ ok: z.literal(true) }),
+  z.strictObject({ ok: z.literal(false), message: z.string() }),
+]);
+export type MutationResult = z.infer<typeof MutationResultSchema>;
+
+export const IdSchema = z.string().min(1);
+export const ActiveEnvironmentInputSchema = z.string().min(1).nullable();
+
+export const SavedRequestListingSchema = z.strictObject({
+  id: z.string().min(1),
+  name: z.string(),
+  method: z.string(),
+  url: z.string(),
+});
+export type SavedRequestListing = z.infer<typeof SavedRequestListingSchema>;
+
+export const ListSavedRequestsResultSchema = z.discriminatedUnion('ok', [
+  z.strictObject({
+    ok: z.literal(true),
+    savedRequests: z.array(SavedRequestListingSchema),
+  }),
+  z.strictObject({ ok: z.literal(false), message: z.string() }),
+]);
+export type ListSavedRequestsResult = z.infer<
+  typeof ListSavedRequestsResultSchema
+>;
+
+export const GetSavedRequestResultSchema = z.discriminatedUnion('ok', [
+  z.strictObject({
+    ok: z.literal(true),
+    savedRequest: z
+      .strictObject({
+        id: z.string().min(1),
+        name: z.string(),
+        request: RequestFormSchema,
+      })
+      .nullable(),
+  }),
+  z.strictObject({ ok: z.literal(false), message: z.string() }),
+]);
+export type GetSavedRequestResult = z.infer<typeof GetSavedRequestResultSchema>;
+
+/** Without an id, a new saved request; with one, that saved request saved over. */
+export const SaveSavedRequestInputSchema = z.strictObject({
+  id: z.string().min(1).optional(),
+  name: z.string(),
+  request: RequestFormSchema,
+});
+export type SaveSavedRequestInput = z.infer<typeof SaveSavedRequestInputSchema>;
+
+export const SaveSavedRequestResultSchema = z.discriminatedUnion('ok', [
+  z.strictObject({
+    ok: z.literal(true),
+    id: z.string().min(1),
+    name: z.string(),
+  }),
+  z.strictObject({ ok: z.literal(false), message: z.string() }),
+]);
+export type SaveSavedRequestResult = z.infer<
+  typeof SaveSavedRequestResultSchema
+>;
 
 export const DescribeBodyInputSchema = z.strictObject({
   fileId: z.string().min(1),
@@ -209,4 +320,14 @@ export interface PigeonApi {
   replay: (input: ReplayInput) => Promise<SendResult>;
   readBody: (input: ReadBodyInput) => Promise<ReadBodyResult>;
   describeBody: (input: DescribeBodyInput) => Promise<DescribeBodyResult>;
+  listEnvironments: () => Promise<ListEnvironmentsResult>;
+  saveEnvironment: (input: SaveEnvironmentInput) => Promise<MutationResult>;
+  deleteEnvironment: (id: string) => Promise<MutationResult>;
+  setActiveEnvironment: (id: string | null) => Promise<MutationResult>;
+  listSavedRequests: () => Promise<ListSavedRequestsResult>;
+  getSavedRequest: (id: string) => Promise<GetSavedRequestResult>;
+  saveSavedRequest: (
+    input: SaveSavedRequestInput,
+  ) => Promise<SaveSavedRequestResult>;
+  deleteSavedRequest: (id: string) => Promise<MutationResult>;
 }

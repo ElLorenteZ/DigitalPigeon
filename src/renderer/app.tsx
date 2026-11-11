@@ -39,9 +39,15 @@ import {
   createPartScanner,
   multipartBoundary,
 } from '../core/multipart';
+import { composeUrl } from '../core/url';
 import { type BodyInput, buildWireRequest } from '../core/wire';
 import {
   BODY_PAGE_BYTES,
+  type MutationResult,
+  type RequestForm,
+  type SavedRequestListing,
+  type EnvironmentView,
+  type SaveEnvironmentInput,
   type CallDetail,
   type CallView,
   type DbStatusView,
@@ -84,7 +90,8 @@ jsonDefaults.setModeConfiguration({
 
 type Row = [string, string];
 type Method = SendInput['method'];
-type Form = Omit<SendInput, 'clientRequestId' | 'method'> & { method: Method };
+// What the form holds; never an environment or saved-request id, which the send adds (code review #10).
+type Form = RequestForm;
 type Opened = Exclude<CallDetail, { state: 'unreadable' }>;
 type CurlOutcome = { command: string; copied: boolean } | { error: string };
 
@@ -156,6 +163,53 @@ export function App() {
   const [openedCurl, setOpenedCurl] = useState<CurlOutcome | null>(null);
   const [editError, setEditError] = useState<string | null>(null);
   const [editLoading, setEditLoading] = useState(false);
+  const [environments, setEnvironments] = useState<EnvironmentView[]>([]);
+  const [environmentId, setEnvironmentId] = useState<string | null>(null);
+  const [environmentsError, setEnvironmentsError] = useState<string | null>(
+    null,
+  );
+  const environment = environments.find((e) => e.id === environmentId);
+  const choiceSaves = useRef<Promise<void>>(Promise.resolve());
+  const [savedRequests, setSavedRequests] = useState<SavedRequestListing[]>([]);
+  const [savedError, setSavedError] = useState<string | null>(null);
+  // The saved request the form came from, and the name the Save buttons use (slice 5).
+  const [formLink, setFormLink] = useState<{ id: string; name: string } | null>(
+    null,
+  );
+  const [savedName, setSavedName] = useState('');
+
+  // Whether the list is current: a call's saved request is called deleted only when a loaded list lacks it (#4).
+  const [savedListLoaded, setSavedListLoaded] = useState(false);
+  // Kept apart from save and delete errors, so a later successful load clears it (second code review, 10).
+  const [savedListError, setSavedListError] = useState<string | null>(null);
+  const refreshSaved = useCallback(async () => {
+    const listed = await window.pigeon.listSavedRequests();
+    setSavedListLoaded(listed.ok);
+    setSavedListError(listed.ok ? null : listed.message);
+    if (listed.ok) setSavedRequests(listed.savedRequests);
+  }, []);
+
+  // The list and the one shown as active at startup. A choice made since is kept while it still exists.
+  const refreshEnvironments = useCallback(async (keepChoice: boolean) => {
+    const listed = await window.pigeon.listEnvironments();
+    if (!listed.ok) {
+      setEnvironmentsError(listed.message);
+      return;
+    }
+    setEnvironments(listed.environments);
+    setEnvironmentId((current) =>
+      keepChoice &&
+      (current === null || listed.environments.some((e) => e.id === current))
+        ? current
+        : listed.activeId,
+    );
+  }, []);
+  // A result from an environment action: the reason on failure, and the list read again either way.
+  const afterEnvironmentChange = async (done: MutationResult) => {
+    setEnvironmentsError(done.ok ? null : done.message);
+    await refreshEnvironments(true);
+    return done.ok;
+  };
 
   // Never rejects: a failure is shown above the list (review #3).
   const refreshHistory = useCallback(async () => {
@@ -189,6 +243,14 @@ export function App() {
   useEffect(() => {
     if (status?.status === 'up') void refreshHistory();
   }, [status?.status, refreshHistory]);
+
+  useEffect(() => {
+    if (status?.status === 'up') void refreshEnvironments(false);
+  }, [status?.status, refreshEnvironments]);
+
+  useEffect(() => {
+    if (status?.status === 'up') void refreshSaved();
+  }, [status?.status, refreshSaved]);
 
   // The send document is inserted in main shortly after Send is pressed; re-fetch while the send
   // is in flight so its row appears as "in flight".
@@ -226,15 +288,23 @@ export function App() {
   // A change to the form or a send also ends it, so a slow read never replaces what was typed meanwhile (code
   // review, 2).
   const latestEdit = useRef(0);
+  // The same for opening a saved request: a change to the form, a send or an Edit ends a pending open (code review #2).
+  const latestSavedOpen = useRef(0);
+  // Bumped whenever the form is replaced (New, an open, an Edit), not when it is typed in. A save that finishes after
+  // the form was replaced does not link the new form to what it saved (code review #1).
+  const formIdentity = useRef(0);
   const endPendingEdit = () => {
     latestEdit.current += 1;
+    latestSavedOpen.current += 1;
     setEditLoading(false);
   };
   const changeForm = (next: Form) => {
     endPendingEdit();
     setForm(next);
   };
-  const editCall = async (request: Opened['send']['request']) => {
+  const editCall = async (send: Opened['send']) => {
+    const { request } = send;
+    latestSavedOpen.current += 1;
     const thisEdit = ++latestEdit.current;
     let storedBody: Uint8Array | undefined;
     if (
@@ -257,15 +327,83 @@ export function App() {
     }
     let loaded: ReturnType<typeof formFromCall>;
     try {
-      loaded = formFromCall(request, { storedBody });
+      // A call sent against an environment loads its path (plan revision 2, W1).
+      loaded = formFromCall(request, {
+        storedBody,
+        ...(send.environment ? { environment: send.environment } : {}),
+      });
     } catch (error) {
       setEditError(errorText(error));
       return;
     }
     setEditError(null);
+    // Edit of a call is unlinked: Save then creates a new saved request (author, 2026-11-10).
+    formIdentity.current += 1;
+    setFormLink(null);
+    setSavedName('');
     setForm({ ...loaded, method: loaded.method as Method });
     setFormCurl(null);
     showRequest();
+  };
+
+  // Saved requests (slice 5). The latest open decides what the form holds, whichever answer arrives last (T2.10).
+  const openSaved = async (id: string) => {
+    endPendingEdit();
+    const thisOpen = ++latestSavedOpen.current;
+    const got = await window.pigeon.getSavedRequest(id);
+    if (thisOpen !== latestSavedOpen.current) return;
+    if (!got.ok || !got.savedRequest) {
+      setSavedError(
+        got.ok ? 'That saved request no longer exists' : got.message,
+      );
+      return;
+    }
+    const { savedRequest } = got;
+    setSavedError(null);
+    formIdentity.current += 1;
+    setForm({ ...savedRequest.request });
+    setFormLink({ id: savedRequest.id, name: savedRequest.name });
+    setSavedName(savedRequest.name);
+    setFormCurl(null);
+    showRequest();
+  };
+  // One save at a time: Save and Save as new are unavailable while one is in flight (second code review, 1).
+  const [saving, setSaving] = useState(false);
+  const saveForm = async (asNew: boolean) => {
+    const identity = formIdentity.current;
+    setSaving(true);
+    const done = await window.pigeon
+      .saveSavedRequest({
+        ...(formLink && !asNew ? { id: formLink.id } : {}),
+        name: savedName,
+        request: requestOf(form),
+      })
+      .finally(() => setSaving(false));
+    if (!done.ok) {
+      setSavedError(done.message);
+      return;
+    }
+    setSavedError(null);
+    if (identity === formIdentity.current) {
+      setFormLink({ id: done.id, name: done.name });
+    }
+    await refreshSaved();
+  };
+  const newForm = () => {
+    formIdentity.current += 1;
+    changeForm(EMPTY_FORM);
+    setFormLink(null);
+    setSavedName('');
+    setFormCurl(null);
+  };
+  const deleteSaved = async (id: string) => {
+    const done = await window.pigeon.deleteSavedRequest(id);
+    setSavedError(done.ok ? null : done.message);
+    // The form no longer edits a saved request that is gone.
+    if (done.ok) {
+      setFormLink((current) => (current?.id === id ? null : current));
+    }
+    await refreshSaved();
   };
 
   // The latest click decides what is open, whichever answer arrives last.
@@ -324,22 +462,74 @@ export function App() {
         <RequestForm
           form={form}
           onChange={changeForm}
+          environments={environments}
+          environmentId={environmentId}
+          onChooseEnvironment={(id) => {
+            setEnvironmentId(id);
+            // Only what the select shows at the next start; a send names its environment itself (B1). Saved one after
+            // another, so the last choice is the one stored (code review #5).
+            choiceSaves.current = choiceSaves.current.then(async () => {
+              // A failure is shown and does not stop later choices (second code review, 5).
+              try {
+                const done = await window.pigeon.setActiveEnvironment(id);
+                setEnvironmentsError(done.ok ? null : done.message);
+              } catch (error) {
+                setEnvironmentsError(errorText(error));
+              }
+            });
+          }}
           canSend={canSend}
           inFlight={inFlight}
           onSend={() =>
             run((clientRequestId) =>
-              window.pigeon.send({ clientRequestId, ...requestOf(form) }),
+              window.pigeon.send({
+                clientRequestId,
+                ...requestOf(form),
+                environmentId,
+                ...(formLink ? { savedRequestId: formLink.id } : {}),
+              }),
             )
           }
           onCancel={() => inFlightId && window.pigeon.cancel(inFlightId)}
           onCopyCurl={async () =>
             setFormCurl(
-              await exportCurl(() => buildWireRequest(requestOf(form))),
+              await exportCurl(() => {
+                const request = requestOf(form);
+                return buildWireRequest({
+                  ...request,
+                  url: composeUrl(request.url, environment),
+                });
+              }),
             )
           }
         />
       </div>
+      <SavedRequestBar
+        name={savedName}
+        link={formLink}
+        saving={saving}
+        error={savedError ?? savedListError}
+        onName={setSavedName}
+        onSave={() => void saveForm(false)}
+        onSaveAsNew={() => void saveForm(true)}
+        onNew={newForm}
+      />
       <CurlView testId="form-curl" outcome={formCurl} />
+      <SavedRequestList
+        savedRequests={savedRequests}
+        onOpen={(id) => void openSaved(id)}
+        onDelete={(id) => void deleteSaved(id)}
+      />
+      <EnvironmentsEditor
+        environments={environments}
+        error={environmentsError}
+        onSave={async (input) =>
+          afterEnvironmentChange(await window.pigeon.saveEnvironment(input))
+        }
+        onDelete={async (id) =>
+          afterEnvironmentChange(await window.pigeon.deleteEnvironment(id))
+        }
+      />
       <div ref={resultRegion}>
         <ResultView result={result} />
       </div>
@@ -361,6 +551,8 @@ export function App() {
             curl={openedCurl}
             editError={editError}
             editLoading={editLoading}
+            savedRequests={savedRequests}
+            savedListLoaded={savedListLoaded}
             onReplay={() => {
               showRequest();
               void run((clientRequestId) =>
@@ -370,7 +562,7 @@ export function App() {
                 }),
               );
             }}
-            onEdit={() => void editCall(opened.send.request)}
+            onEdit={() => void editCall(opened.send)}
             onCopyCurl={async () =>
               setOpenedCurl(await exportCurl(() => opened.send.request))
             }
@@ -674,9 +866,206 @@ function PartsEditor({
   );
 }
 
+// The form's name for saving, and its link to the saved request it came from (slice 5).
+function SavedRequestBar({
+  name,
+  link,
+  saving,
+  error,
+  onName,
+  onSave,
+  onSaveAsNew,
+  onNew,
+}: {
+  name: string;
+  link: { id: string; name: string } | null;
+  saving: boolean;
+  error: string | null;
+  onName: (name: string) => void;
+  onSave: () => void;
+  onSaveAsNew: () => void;
+  onNew: () => void;
+}) {
+  return (
+    <div className="row">
+      <input
+        aria-label="Saved request name"
+        placeholder="Name"
+        value={name}
+        onChange={(e) => onName(e.target.value)}
+      />
+      <button type="button" onClick={onSave} disabled={saving}>
+        Save
+      </button>
+      <button type="button" onClick={onSaveAsNew} disabled={!link || saving}>
+        Save as new
+      </button>
+      <button type="button" onClick={onNew}>
+        New
+      </button>
+      {link ? (
+        <span data-testid="saved-request-link">
+          Editing saved request: {link.name}
+        </span>
+      ) : null}
+      {error ? (
+        <span data-testid="saved-requests-error" role="alert" className="error">
+          {error}
+        </span>
+      ) : null}
+    </div>
+  );
+}
+
+// One flat list, by name (ADR 0001). Names may repeat; method and URL tell entries apart (plan revision 2, W2).
+function SavedRequestList({
+  savedRequests,
+  onOpen,
+  onDelete,
+}: {
+  savedRequests: SavedRequestListing[];
+  onOpen: (id: string) => void;
+  onDelete: (id: string) => void;
+}) {
+  return (
+    <section>
+      <h2>Saved requests</h2>
+      <ol data-testid="saved-requests">
+        {savedRequests.map((s) => (
+          <li key={s.id} className="row">
+            <button type="button" onClick={() => onOpen(s.id)}>
+              {s.name} — {s.method} {s.url}
+            </button>
+            <button type="button" onClick={() => onDelete(s.id)}>
+              Delete
+            </button>
+          </li>
+        ))}
+      </ol>
+    </section>
+  );
+}
+
+// Saved environments, editable in place, and a row to add one (slice 5). Rows are listed by name; names may repeat.
+function EnvironmentsEditor({
+  environments,
+  error,
+  onSave,
+  onDelete,
+}: {
+  environments: EnvironmentView[];
+  error: string | null;
+  /** Resolves true when saved; on false the reason is shown and the fields keep what was typed. */
+  onSave: (input: SaveEnvironmentInput) => Promise<boolean>;
+  onDelete: (id: string) => Promise<boolean>;
+}) {
+  const [drafts, setDrafts] = useState<
+    Record<string, { name: string; baseUrl: string }>
+  >({});
+  const [newName, setNewName] = useState('');
+  const [newBaseUrl, setNewBaseUrl] = useState('');
+  const draftOf = (e: EnvironmentView) => drafts[e.id] ?? e;
+  const setDraft = (id: string, draft: { name: string; baseUrl: string }) =>
+    setDrafts((current) => ({ ...current, [id]: draft }));
+  const dropDraft = (id: string) =>
+    setDrafts(({ [id]: _dropped, ...rest }) => rest);
+
+  return (
+    <section data-testid="environments">
+      <h2>Environments</h2>
+      {error ? (
+        <p data-testid="environments-error" role="alert" className="error">
+          {error}
+        </p>
+      ) : null}
+      <ol>
+        {environments.map((e, index) => {
+          const n = index + 1;
+          const draft = draftOf(e);
+          return (
+            <li key={e.id} className="row">
+              <input
+                aria-label={`Environment name ${n}`}
+                value={draft.name}
+                onChange={(ev) =>
+                  setDraft(e.id, { ...draft, name: ev.target.value })
+                }
+              />
+              <input
+                aria-label={`Environment base address ${n}`}
+                value={draft.baseUrl}
+                onChange={(ev) =>
+                  setDraft(e.id, { ...draft, baseUrl: ev.target.value })
+                }
+              />
+              <button
+                type="button"
+                aria-label={`Save environment ${n}`}
+                onClick={async () => {
+                  if (await onSave({ id: e.id, ...draft })) {
+                    // Only the draft that was saved; one typed during the save stays.
+                    setDrafts(({ [e.id]: current, ...rest }) =>
+                      current === draft || current === undefined
+                        ? rest
+                        : { ...rest, [e.id]: current },
+                    );
+                  }
+                }}
+              >
+                Save
+              </button>
+              <button
+                type="button"
+                aria-label={`Delete environment ${n}`}
+                onClick={async () => {
+                  if (await onDelete(e.id)) dropDraft(e.id);
+                }}
+              >
+                Delete
+              </button>
+            </li>
+          );
+        })}
+      </ol>
+      <div className="row">
+        <input
+          aria-label="New environment name"
+          placeholder="Name"
+          value={newName}
+          onChange={(e) => setNewName(e.target.value)}
+        />
+        <input
+          aria-label="New environment base address"
+          placeholder="https://…"
+          value={newBaseUrl}
+          onChange={(e) => setNewBaseUrl(e.target.value)}
+        />
+        <button
+          type="button"
+          onClick={async () => {
+            const saved = { name: newName, baseUrl: newBaseUrl };
+            // Cleared only if unchanged since: typing during the save is kept (async state, slice 4 CR1/CR2).
+            if (await onSave(saved)) {
+              setNewName((current) => (current === saved.name ? '' : current));
+              setNewBaseUrl((current) =>
+                current === saved.baseUrl ? '' : current,
+              );
+            }
+          }}
+        >
+          Add environment
+        </button>
+      </div>
+    </section>
+  );
+}
+
 function RequestForm({
   form,
   onChange,
+  environments,
+  environmentId,
+  onChooseEnvironment,
   canSend,
   inFlight,
   onSend,
@@ -685,6 +1074,9 @@ function RequestForm({
 }: {
   form: Form;
   onChange: (form: Form) => void;
+  environments: EnvironmentView[];
+  environmentId: string | null;
+  onChooseEnvironment: (id: string | null) => void;
   canSend: boolean;
   inFlight: boolean;
   onSend: () => void;
@@ -710,10 +1102,22 @@ function RequestForm({
             <option key={m}>{m}</option>
           ))}
         </select>
+        <select
+          aria-label="Environment"
+          value={environmentId ?? ''}
+          onChange={(e) => onChooseEnvironment(e.target.value || null)}
+        >
+          <option value="">None</option>
+          {environments.map((e) => (
+            <option key={e.id} value={e.id}>
+              {e.name} — {e.baseUrl}
+            </option>
+          ))}
+        </select>
         <input
           aria-label="URL"
           className="url"
-          placeholder="https://…"
+          placeholder="https://… or /path, sent to the environment"
           value={form.url}
           onChange={(e) => onChange({ ...form, url: e.target.value })}
         />
@@ -885,6 +1289,8 @@ function CallPanel({
   curl,
   editError,
   editLoading,
+  savedRequests,
+  savedListLoaded,
   onReplay,
   onEdit,
   onCopyCurl,
@@ -894,6 +1300,8 @@ function CallPanel({
   curl: CurlOutcome | null;
   editError: string | null;
   editLoading: boolean;
+  savedRequests: SavedRequestListing[];
+  savedListLoaded: boolean;
   onReplay: () => void;
   onEdit: () => void;
   onCopyCurl: () => void;
@@ -927,6 +1335,25 @@ function CallPanel({
       <p data-testid="call-request-line">
         {method} {url} · sent {call.send.sentAt.toLocaleString()}
       </p>
+      {call.send.savedRequestId ? (
+        <p data-testid="call-saved-request">
+          {(() => {
+            const source = savedRequests.find(
+              (s) => s.id === call.send.savedRequestId,
+            );
+            if (source) return `From saved request: ${source.name}`;
+            return savedListLoaded
+              ? 'From a deleted saved request'
+              : 'From a saved request';
+          })()}
+        </p>
+      ) : null}
+      {call.send.environment ? (
+        <p data-testid="call-environment">
+          Environment: {call.send.environment.name} —{' '}
+          {call.send.environment.baseUrl}
+        </p>
+      ) : null}
       <pre data-testid="call-request-headers">
         {headers.map(([n, v]) => `${n}: ${v}`).join('\n')}
       </pre>

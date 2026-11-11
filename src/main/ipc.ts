@@ -16,7 +16,15 @@ import {
   replayCall,
   sendAndRecord,
 } from '../core/send';
+import {
+  EnvironmentNotFoundError,
+  createEnvironmentStore,
+  resolveEnvironment,
+} from '../core/environment-store';
 import { createPartScanner } from '../core/multipart';
+import { createSavedRequestStore } from '../core/saved-request-store';
+import { InvalidPathError, NoActiveEnvironmentError } from '../core/url';
+import { MongoError } from 'mongodb';
 import { InvalidBodyError, InvalidHeaderError } from '../core/wire';
 import {
   type CallView,
@@ -29,7 +37,20 @@ import {
   type ListCallsResult,
   ListCallsResultSchema,
   BODY_PAGE_BYTES,
+  ActiveEnvironmentInputSchema,
+  type GetSavedRequestResult,
+  GetSavedRequestResultSchema,
+  type ListSavedRequestsResult,
+  ListSavedRequestsResultSchema,
+  SaveSavedRequestInputSchema,
+  type SaveSavedRequestResult,
+  SaveSavedRequestResultSchema,
   DescribeBodyInputSchema,
+  IdSchema,
+  type MutationResult,
+  type ListEnvironmentsResult,
+  ListEnvironmentsResultSchema,
+  SaveEnvironmentInputSchema,
   type DescribeBodyResult,
   DescribeBodyResultSchema,
   ReadBodyInputSchema,
@@ -171,7 +192,10 @@ export function registerIpc({ ipcMain, db, dbStatus }: IpcDeps): void {
       if (
         error instanceof InvalidHeaderError ||
         error instanceof InvalidBodyError ||
-        error instanceof CallNotReplayableError
+        error instanceof CallNotReplayableError ||
+        error instanceof NoActiveEnvironmentError ||
+        error instanceof InvalidPathError ||
+        error instanceof EnvironmentNotFoundError
       ) {
         return {
           ok: false,
@@ -210,10 +234,33 @@ export function registerIpc({ ipcMain, db, dbStatus }: IpcDeps): void {
     async (_event, raw: unknown): Promise<SendResult> => {
       const parsed = SendInputSchema.safeParse(raw);
       if (!parsed.success) return invalidInput(parsed.error);
-      const { clientRequestId, ...input } = parsed.data;
-      return recorded(clientRequestId, (database, options) =>
-        sendAndRecord(storeFor(database), input, options),
-      );
+      const { clientRequestId, environmentId, savedRequestId, ...input } =
+        parsed.data;
+      return recorded(clientRequestId, async (database, options) => {
+        // Loaded by the id the select showed, from the store: never a baseUrl from the renderer (plan revision 2, B1).
+        // A saved request deleted since the form opened it is not linked: the call records what happened (review R2).
+        const [environment, linked] = await Promise.all([
+          resolveEnvironment(
+            createEnvironmentStore(database),
+            environmentId ?? null,
+            input.url,
+          ),
+          savedRequestId === undefined
+            ? false
+            : createSavedRequestStore(database).exists(savedRequestId),
+        ]).catch((cause: unknown) => {
+          // Before anything is recorded, a driver failure is the database being unavailable, as in sendAndRecord
+          // (second code review, 3).
+          throw cause instanceof MongoError
+            ? new DatabaseUnavailableError(cause)
+            : cause;
+        });
+        return sendAndRecord(storeFor(database), input, {
+          ...options,
+          ...(environment ? { environment } : {}),
+          ...(linked ? { savedRequestId } : {}),
+        });
+      });
     },
   );
 
@@ -306,6 +353,141 @@ export function registerIpc({ ipcMain, db, dbStatus }: IpcDeps): void {
       } catch (error) {
         return { ok: false, message: message(error) };
       }
+    },
+  );
+
+  // Environments and saved requests (slice 5). Each handler validates its input, needs the database, and returns a
+  // result, never a rejection, like the others here.
+  const withStore =
+    <Store>(create: (database: Db) => Store) =>
+    async <T>(
+      run: (store: Store) => Promise<T>,
+    ): Promise<T | { ok: false; message: string }> => {
+      const database = db();
+      if (!database || dbStatus().status !== 'up') {
+        return { ok: false, message: 'Database not running' };
+      }
+      try {
+        return await run(create(database));
+      } catch (error) {
+        return { ok: false, message: message(error) };
+      }
+    };
+  const withEnvironments = withStore(createEnvironmentStore);
+  const withSaved = withStore(createSavedRequestStore);
+
+  ipcMain.handle(
+    channels.listEnvironments,
+    async (): Promise<ListEnvironmentsResult> =>
+      withEnvironments(async (store) => {
+        const [environments, active] = await Promise.all([
+          store.list(),
+          store.getActive(),
+        ]);
+        return ListEnvironmentsResultSchema.parse({
+          ok: true,
+          environments,
+          activeId: active?.id ?? null,
+        });
+      }),
+  );
+
+  ipcMain.handle(
+    channels.saveEnvironment,
+    async (_event, raw: unknown): Promise<MutationResult> => {
+      const input = SaveEnvironmentInputSchema.safeParse(raw);
+      if (!input.success) {
+        return { ok: false, message: z.prettifyError(input.error) };
+      }
+      const { id, ...fields } = input.data;
+      return withEnvironments(async (store) => {
+        if (id === undefined) await store.create(fields);
+        else if (!(await store.update(id, fields))) {
+          return { ok: false, message: 'That environment no longer exists' };
+        }
+        return { ok: true };
+      });
+    },
+  );
+
+  ipcMain.handle(
+    channels.deleteEnvironment,
+    async (_event, raw: unknown): Promise<MutationResult> => {
+      const id = IdSchema.safeParse(raw);
+      if (!id.success) return { ok: false, message: z.prettifyError(id.error) };
+      return withEnvironments(async (store) => {
+        await store.delete(id.data);
+        return { ok: true };
+      });
+    },
+  );
+
+  ipcMain.handle(
+    channels.setActiveEnvironment,
+    async (_event, raw: unknown): Promise<MutationResult> => {
+      const id = ActiveEnvironmentInputSchema.safeParse(raw);
+      if (!id.success) return { ok: false, message: z.prettifyError(id.error) };
+      return withEnvironments(async (store) => {
+        await store.setActive(id.data);
+        return { ok: true };
+      });
+    },
+  );
+
+  ipcMain.handle(
+    channels.listSavedRequests,
+    async (): Promise<ListSavedRequestsResult> =>
+      withSaved(async (store) =>
+        ListSavedRequestsResultSchema.parse({
+          ok: true,
+          savedRequests: await store.list(),
+        }),
+      ),
+  );
+
+  ipcMain.handle(
+    channels.getSavedRequest,
+    async (_event, raw: unknown): Promise<GetSavedRequestResult> => {
+      const id = IdSchema.safeParse(raw);
+      if (!id.success) return { ok: false, message: z.prettifyError(id.error) };
+      return withSaved(async (store) =>
+        GetSavedRequestResultSchema.parse({
+          ok: true,
+          savedRequest: await store.get(id.data),
+        }),
+      );
+    },
+  );
+
+  ipcMain.handle(
+    channels.saveSavedRequest,
+    async (_event, raw: unknown): Promise<SaveSavedRequestResult> => {
+      const input = SaveSavedRequestInputSchema.safeParse(raw);
+      if (!input.success) {
+        return { ok: false, message: z.prettifyError(input.error) };
+      }
+      const { id, ...fields } = input.data;
+      return withSaved(async (store) => {
+        const saved =
+          id === undefined
+            ? await store.create(fields)
+            : await store.update(id, fields);
+        return saved
+          ? SaveSavedRequestResultSchema.parse({ ok: true, ...saved })
+          : { ok: false, message: 'That saved request no longer exists' };
+      });
+    },
+  );
+
+  ipcMain.handle(
+    channels.deleteSavedRequest,
+    async (_event, raw: unknown): Promise<MutationResult> => {
+      const id = IdSchema.safeParse(raw);
+      if (!id.success) return { ok: false, message: z.prettifyError(id.error) };
+      return withSaved(async (store) => {
+        await store.delete(id.data);
+        return { ok: true };
+      });
     },
   );
 

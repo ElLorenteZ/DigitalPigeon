@@ -1,7 +1,6 @@
-// IPC handlers: validate input with the contract, call the core, validate output.
-// The only Electron-facing code that touches sending and storage (AGENTS.md).
-// Handlers return results rather than rejecting, so the renderer always has something to show.
-import type { IpcMain } from 'electron';
+// The operations: validate input with the contract, call the core, validate output. Registered through `handle`,
+// which Electron's ipcMain and the local HTTP server (src/server/http.ts) both provide (plan.md, phase 2).
+// Handlers return results rather than rejecting, so the UI always has something to show.
 import type { Db } from 'mongodb';
 import { z } from 'zod';
 import type { CompletionDoc, SendDoc, StoredBody } from '../core/call-schema';
@@ -65,8 +64,16 @@ import {
 
 const HISTORY_LIMIT = 200;
 
+/** Where operations are registered: one handler per channel, called with an unused event and the raw input. */
+export interface Registrar {
+  handle(
+    channel: string,
+    handler: (event: unknown, raw?: unknown) => unknown,
+  ): void;
+}
+
 export interface IpcDeps {
-  ipcMain: IpcMain;
+  ipcMain: Registrar;
   /** The database to record in, when status is `up`. */
   db: () => Db | undefined;
   dbStatus: () => DbStatusView;

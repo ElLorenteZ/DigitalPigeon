@@ -22,7 +22,8 @@ it. The author's current instructions outrank this file (author, 2026-11-11).
 
 Appetite: about 2 weeks, sized to replace Postman/Insomnia for REST work (`shape-notes.md`). Re-cut on 2026-11-11 to
 the target design: slices 6–9 replace the former slices 6 (find calls) and 7 (delete and retention). The appetite is
-exceeded by the re-cut; the author's instruction sets the target, not the appetite.
+exceeded by the re-cut; the author's instruction sets the target, not the appetite. Slice 5b (desktop to local web app)
+was added on 2026-11-11 by the author's decision, ahead of slice 6.
 
 **Exit criteria** — from `prd.md` Success criteria:
 - [x] Sending the same unchanged request twice produces two call records, each with its own timestamp. *(slice 1: `call-store.int.test.ts`, `send.int.test.ts` T1.1, e2e journey shows two rows)*
@@ -41,7 +42,7 @@ exceeded by the re-cut; the author's instruction sets the target, not the appeti
 - [ ] The app shows the target design's shell: the circuit-trace pigeon logo, title bar with the active environment, sidebar tabs, and the status bar.
 - [x] Switching the active environment changes the `baseUrl` a saved request is sent to. *(slice 5: `e2e/saved-requests.spec.ts` outcome scenario, `e2e/environments.spec.ts`, `send.int.test.ts`, `url.test.ts` T2.5)*
 - [x] A request exported as curl, run in a terminal, sends the same method, URL, headers and body. *(slices 2 and 3a: holds for no body and for JSON, XML, text and form bodies with a command up to 900 KiB, on macOS, `curl.int.test.ts` T2.4; a longer command is refused with the reason; multipart is slice 4; slice 4: a text-only multipart body, `curl.int.test.ts`; a binary file part is refused with the reason, as a command over 900 KiB is)*
-- [x] The app runs as a local install on the personal machine with no account. *(slice 1: the author ran the packaged app from `npm run package` and sent a request with only `config.json`; no installer from `make` yet)*
+- [x] The app runs as a local install on the personal machine with no account. *(slice 1: the author ran the packaged app from `npm run package` and sent a request with only `config.json`; no installer from `make` yet. Slice 5b must hold it again for the local web app: started on the personal machine, opened in a browser, no account)*
 - [ ] *(Author's judgement)* Postman/Insomnia goes unopened for REST work for two weeks, and finding and replaying a past call is faster than in Postman.
 
 | # | Slice | Observable outcome | Status | Change |
@@ -52,7 +53,8 @@ exceeded by the re-cut; the author's instruction sets the target, not the appeti
 | 3b | Editor and formatting | JSON and XML request and response bodies shown pretty-printed in the editor, with what is stored and sent unchanged; a response body cannot run as script | done | `editor-and-formatting` |
 | 4 | Multipart with file copies | Send a multipart request with a file; delete the file from disk; replay the call and the server receives the same bytes | done | `multipart-with-file-copies` |
 | 5 | Saved requests and environments | Save a request and edit it later; define environments (name + `baseUrl`), switch the active one, and the same saved request goes to the other `baseUrl`; calls link back to their saved request | done | `saved-requests-and-environments` |
-| 6 | Workspace shell in the design | The app looks like screens 01 and 02: the logo in the title bar, the environment selector in the title bar, a sidebar with Saved and History tabs (Templates appears in M2), request above response, the status bar; every existing e2e journey still passes | next | — |
+| 5b | Desktop to local web app | One command starts a Node server bound to `127.0.0.1`; opening its address in a browser shows the app working as it does today (send, history, preview, replay, curl export, bodies, multipart, saved requests, environments); the Electron shell is gone; every existing e2e journey passes in a plain browser; a request to the server from another origin, or without the per-launch token, is refused and nothing is sent or recorded | next | `local-web-app` |
+| 6 | Workspace shell in the design | The app looks like screens 01 and 02: the logo in the title bar, the environment selector in the title bar, a sidebar with Saved and History tabs (Templates appears in M2), request above response, the status bar; every existing e2e journey still passes | later | — |
 | 7 | Responses to this request | Send the same method and path three times and the response panel shows three response chips, newest selected; pick one to view it; the call record lists the other responses of its request | later | — |
 | 8 | Delete with undo | Delete one response from the strip, the history list or the call record; it disappears, an Undo toast restores it for a few seconds, then it is gone permanently along with its stored bodies and file copies | later | — |
 | 9 | Search, filter, resend | Screen 04: search text plus method, environment, `Authorization` header and date facets with counts, results table, resend one or a selection, delete a selection; an empty result says so and offers to clear filters | later | — |
@@ -68,7 +70,17 @@ exceeded by the re-cut; the author's instruction sets the target, not the appeti
 - Slice 2 next: immutability (T1.1) and exact replay (T1.3) are the product's reason to exist, and curl export is the same "request as data" transformation.
 - Slices 3–4 before saved requests: GridFS, the 16 MB limit (T1.5) and file copies (T1.4) are technical risks with no workaround if the storage shape is wrong. They should fail while the storage design is still cheap to change.
 - Slice 5 is finished before the re-cut slices start: environments and saved-request links are what slices 7 and 9 group and filter by.
-- Slice 6 (shell) next, because it makes every later slice cheaper: `src/renderer/app.tsx` is one 1857-line unstyled file, and slices 7–9 each add UI that the design places in the sidebar, title bar and response panel. Building them before the shell means building their UI twice. Its outcome is observable (the app matches screens 01/02 for what already works) and the existing e2e suite is its regression check. It is the slice most likely to overrun: renderer work cost most in slice 4.
+- Slice 5b (local web app) before slice 6, by the author's decision of 2026-11-11 ("Right now option 1": a browser UI
+  talking to a local Node server; a hosted web app is rejected for now because history and tokens stay on the machine,
+  the budget is $0, there are no accounts, and a hosted server cannot reach `localhost` or VPN-only APIs). It goes first
+  because every later slice is renderer work: building slices 6–9 on Electron means building their UI and e2e
+  journeys on a platform that is then replaced. It is also the riskiest remaining slice: the Electron renderer
+  hardening that AGENTS.md makes non-negotiable (`contextIsolation`, sandbox, CSP, narrow preload) is replaced by a
+  localhost server that any open web page can reach, so a per-launch token, `Host`/`Origin` checks and the CSP as an
+  HTTP header must hold before anything is built on it. `src/core/` does not import `electron` and carries over
+  unchanged; the 16 IPC channels in `src/shared/ipc-contract.ts` become 16 HTTP endpoints validated by the same `zod`
+  schemas.
+- Slice 6 (shell) after 5b, because it makes every later slice cheaper: `src/renderer/app.tsx` is one 1857-line unstyled file, and slices 7–9 each add UI that the design places in the sidebar, title bar and response panel. Building them before the shell means building their UI twice. Its outcome is observable (the app matches screens 01/02 for what already works) and the existing e2e suite is its regression check. It is the slice most likely to overrun: renderer work cost most in slice 4.
 - Slice 7 before 8: the responses strip is where a single delete first appears in the design, and it fixes what "the same request" means (open question below) before delete and search depend on it.
 - Slice 8 before 9: single delete with undo is proven before bulk delete of a selection. Deletion is irreversible after the undo window (T1.7), and the cleanup carried from slice 3a (T3.9) belongs here.
 - Slice 9 last: the biggest UI (screen 04) on top of a store that already groups, deletes and restores calls. The `Authorization` facet reads headers already recorded on every call; no new data is captured.
@@ -84,6 +96,12 @@ exceeded by the re-cut; the author's instruction sets the target, not the appeti
 - When the work machine's OS is decided: curl export fails on Linux above 128 KiB (T2.4, T3.4).
 
 **Decisions needed before a slice can be planned** (PRD Open questions):
+- Before slice 5b: ~~record the move from Electron to a local web app as an ADR~~ — accepted 2026-11-11
+  (`decisions/0002-the-app-is-a-local-web-app-served-from-127-0-0-1.md`). `prd.md`, `tech-stack.md`,
+  `infrastructure.md` and the AGENTS.md non-negotiables updated for it on 2026-11-11; slice 5b rewrites the AGENTS.md
+  commands for the server. Left to `lz-plan`: how the server is started (npm script or packaged binary), the
+  port, and how the browser receives the per-launch token. Screens 01–02 draw a window title bar; slice 6 renders it
+  as a page header.
 - ~~Before slice 1: database-down behaviour~~ — decided 2026-11-03: sending is blocked (`archive/send-and-record`).
 - ~~Before slice 5: how saved requests are organised~~ — decided 2026-11-10: a flat list, tags later (`decisions/0001-saved-requests-are-a-flat-list.md`).
 - ~~Before slice 7: what makes two calls responses to "the same request"~~ — decided 2026-11-11: "same method and path"
@@ -148,7 +166,9 @@ exceeded by the re-cut; the author's instruction sets the target, not the appeti
   (`test-strategy.md`). Plan for it in each slice.
 - **M1 appetite:** about 2 weeks for 7 slices, now 8 changes. After 8 days of slice work, 5 of 8 changes and 9 of 13
   exit criteria are done. At two days a change, the remaining 3 take 6 days, for about 14 in all. That meets the
-  appetite with no margin.
+  appetite with no margin. Slice 5b adds a ninth change, about 2 more days: about 16 in all, over the appetite. Its
+  unknowns are the e2e harness port (Playwright on Electron to a plain browser) and the localhost security model;
+  neither has earlier calibration.
 - **Merged:** slices 1, 2 and 3a reached `main` together on 2026-11-07, at `15c97c9`, with no pull request (author's
   instruction). "Done" here now means closed, archived and merged. Slice 3b reached `main` through PR #3 on
   2026-11-08. Slice 4 reached `main` at `7ab1f65` on 2026-11-09, fast-forwarded with no pull request (author's

@@ -1,18 +1,29 @@
 # DigitalPigeon
 
-Local, single-user desktop HTTP client (Electron + React + strict TypeScript). Every send is
+Local, single-user HTTP client (React + strict TypeScript), today an Electron app. Every send is
 recorded as a call record in MongoDB, which runs in Docker on the same machine.
+
+**Platform in transition.** `context/foundation/decisions/0002-the-app-is-a-local-web-app-served-from-127-0-0-1.md`
+(accepted) replaces Electron with a Node server on `127.0.0.1` that serves the UI to a browser. Roadmap slice 5b does the
+move. Until it merges, the Electron rules and commands below describe the code. The slice 5b change rewrites this file
+for the server in the same change.
 
 ## Non-negotiable
 
-- **HTTP and storage live in the main process only.** `undici` and the `mongodb` driver are imported
-  only from main-process code (`src/main.ts`, `src/main/`, `src/core/`) and from `test-support/`. The
-  renderer has no Node access. `src/preload.ts` exposes a narrow, named API through `contextBridge` — never raw
-  `ipcRenderer` or a generic "invoke anything" channel.
-- **Renderer hardening is fixed.** Never relax `contextIsolation: true`, `sandbox: true`,
-  `nodeIntegration: false` (`src/main.ts`) or the production CSP (`vite.renderer.config.mts`).
-  Response bodies are untrusted input: never render them as live HTML (`dangerouslySetInnerHTML`,
-  `innerHTML`, `<iframe srcdoc>`, `webview`). Display them as text or in the editor.
+- **HTTP and storage live in the Node process only.** `undici` and the `mongodb` driver are imported
+  only from Node-side code (`src/main.ts`, `src/main/`, `src/core/`, and the server that replaces them) and from
+  `test-support/`. The UI has no Node access and never sends a target request itself (no browser `fetch` to the
+  target: it changes headers). It reaches the Node side only through the named operations in
+  `src/shared/ipc-contract.ts`, validated with `zod` — never a generic "invoke anything" channel or endpoint.
+- **Response bodies are untrusted input.** Never render them as live HTML (`dangerouslySetInnerHTML`, `innerHTML`,
+  `<iframe srcdoc>`, `webview`). Display them as text or in the editor. Never relax the production CSP.
+- **Electron hardening is fixed while Electron remains.** Never relax `contextIsolation: true`, `sandbox: true`,
+  `nodeIntegration: false` (`src/main.ts`) or the CSP in `vite.renderer.config.mts`. `src/preload.ts` exposes only
+  named functions through `contextBridge`, never raw `ipcRenderer`.
+- **The local server is reachable by every page in every browser on the machine** (ADR 0002). It binds to
+  `127.0.0.1` only. Every endpoint, including static files that carry data, refuses a request without the per-launch
+  token or with a `Host` or `Origin` that is not the server's own, before anything is sent or recorded. The CSP is sent
+  as an HTTP header. No CORS headers that admit another origin.
 - **Tests never touch the history database.** Integration tests get their database from
   `openTestDb()` (`test-support/test-db.ts`), a throwaway `dp_test_*` database dropped afterwards.
   e2e launches the app only through `launchWithTestDatabase()` (`e2e/support.ts`), which sets

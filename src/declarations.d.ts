@@ -1,4 +1,3 @@
-/// <reference types="@electron-forge/plugin-vite/forge-vite-env" />
 declare module '*.css';
 // Vite's worker import: the module's default export constructs the bundled worker.
 declare module '*?worker' {

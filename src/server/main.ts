@@ -1,5 +1,5 @@
 // `npm start` / `npm run dev`: the local server (plan.md, phase 3; ADR 0002). Resolves the database credentials as
-// the Electron app did, connects with the same retry, generates a per-launch token, serves the UI on 127.0.0.1 and
+// the desktop build did, connects with the same retry, generates a per-launch token, serves the UI on 127.0.0.1 and
 // opens Chrome at the token URL, which the server exchanges for an HttpOnly cookie.
 //
 // Environment:
@@ -25,7 +25,7 @@ import { type ServerOptions, createServer } from './http';
 const DEFAULT_PORT = 4380;
 const APP_NAME = 'DigitalPigeon';
 
-/** Where Electron kept `userData` for this app, so the same config.json is found (plan.md, A7). */
+/** Where the desktop build kept its `userData`, so the same config.json is found (plan.md, A7). */
 function userDataDir(): string {
   if (process.platform === 'darwin') {
     return path.join(homedir(), 'Library', 'Application Support', APP_NAME);

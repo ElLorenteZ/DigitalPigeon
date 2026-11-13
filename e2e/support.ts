@@ -90,7 +90,7 @@ export async function launchWithTestDatabase(): Promise<TestApp> {
   try {
     const url = await tokenUrl(server);
     browser = await chromium.launch({ channel: 'chrome' });
-    // The size the Electron window had, so layout and viewport checks keep their meaning.
+    // The size the desktop window had, so layout and viewport checks keep their meaning.
     const app = await browser.newContext({
       viewport: { width: 1100, height: 800 },
     });

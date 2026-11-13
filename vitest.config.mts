@@ -1,7 +1,7 @@
 import { defineConfig } from 'vitest/config';
 
 // Layers are selected by file suffix (context/foundation/test-strategy.md, Layer contract):
-//   *.test.ts      unit — pure logic, no database, network or Electron
+//   *.test.ts      unit — pure logic, no database, network or browser
 //   *.int.test.ts  integration — real MongoDB from docker-compose.yml, local HTTP
 export default defineConfig({
   test: {

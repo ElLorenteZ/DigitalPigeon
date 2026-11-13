@@ -13,7 +13,7 @@ import {
 import type { AddressInfo } from 'node:net';
 import path from 'node:path';
 import type { Db } from 'mongodb';
-import { registerIpc } from '../main/ipc';
+import { registerIpc } from './ipc';
 import type { DbStatusView } from '../shared/ipc-contract';
 import { decode, encode } from '../shared/wire-codec';
 

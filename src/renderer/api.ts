@@ -1,5 +1,5 @@
-// The operations, called over HTTP on the local server (plan.md, phase 3; ADR 0002). Same `PigeonApi` the Electron
-// preload exposed, so call sites are unchanged. Each call is a same-origin POST: the browser adds the server's own
+// The operations, called over HTTP on the local server (plan.md, phase 3; ADR 0002). Same `PigeonApi` the desktop
+// build's preload exposed, so call sites are unchanged. Each call is a same-origin POST: the browser adds the server's own
 // Origin and the HttpOnly session cookie, which the server checks before anything runs. A refused or failed call
 // rejects, as a thrown handler rejected `ipcRenderer.invoke`.
 import { type PigeonApi, channels } from '../shared/ipc-contract';

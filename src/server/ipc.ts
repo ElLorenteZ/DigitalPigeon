@@ -1,5 +1,5 @@
 // The operations: validate input with the contract, call the core, validate output. Registered through `handle`,
-// which Electron's ipcMain and the local HTTP server (src/server/http.ts) both provide (plan.md, phase 2).
+// which the local HTTP server (src/server/http.ts) provides; integration tests pass a stand-in.
 // Handlers return results rather than rejecting, so the UI always has something to show.
 import type { Db } from 'mongodb';
 import { z } from 'zod';

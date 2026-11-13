@@ -1,6 +1,6 @@
 ---
 change_id: local-web-app
-produced-by: lz-e2e
+produced-by: lz-build
 plan: plan.md
 updated: 2026-11-11
 ---
@@ -300,3 +300,98 @@ while Edit reads a stored body keeps the change" needs the held read to show `Lo
   away`; the title is unchanged.
 - decision — the browser context is 1100×800, the Electron window's outer size, so content is 1100×800 where Electron's
   content area was smaller by its title bar. No viewport assertion failed.
+
+## Phase 3 — `npm start` opens Chrome on the app, everything that works in Electron today works there, and the whole e2e suite proves it in Chrome
+
+- **Executor:** lz-build
+- **Status:** done
+- **Started:** 2026-11-11
+- **Finished:** 2026-11-11
+
+**Changed:** nothing since the step B entry; committed as `5f9c1bd` on branch `local-web-app`.
+
+**Verification**
+
+```
+Author's walkthrough (plan phase 3), reported by the author on 2026-11-11: "walkthrough done, all good"
+```
+
+PASS — the last open condition of phase 3's done-when. The walkthrough's individual steps were not recorded one by
+one; the author reported the whole list as passing. The e2e evidence is in the step B entry above.
+
+**Drift:** none
+
+## Phase 4 — Electron is gone and the repository's rules, gates and strategy describe the server
+
+- **Executor:** lz-build
+- **Status:** done
+- **Started:** 2026-11-11
+- **Finished:** 2026-11-11
+
+**Changed**
+- Deleted `src/main.ts`, `src/preload.ts`, `forge.config.mts`, `vite.main.config.mts`, `vite.preload.config.mts`.
+- Moved `src/main/ipc.ts` → `src/server/ipc.ts` and `src/main/ipc.int.test.ts` → `src/server/ipc.int.test.ts`
+  (`git mv`); `src/server/http.ts` imports `./ipc`; the test passes its stand-in `as Registrar` instead of
+  `as unknown as IpcMain` and no longer imports `electron`.
+- `package.json` — removed `main`, the `package`, `make` and `release` scripts, `electron`, `electron-squirrel-startup`,
+  the eight `@electron-forge/*` packages, `@electron/fuses`, `@types/electron-squirrel-startup`; added
+  `@types/node@^22.20.5`. `package-lock.json` regenerated (`npm install`, `npm prune`).
+- `src/declarations.d.ts` — the Forge type reference removed.
+- Comments that named Electron now name the desktop build, the server or the browser: `src/core/db-config.ts`,
+  `src/core/send.ts`, `src/server/ipc.ts`, `src/server/main.ts`, `src/renderer/api.ts`, `vitest.config.mts`,
+  `e2e/support.ts`.
+- `AGENTS.md` — the transition note and the Electron non-negotiable removed; the HTTP/storage rule names
+  `src/server/`, `src/core/`, `src/renderer/api.ts`; the server rule names the checks in `src/server/http.ts` and adds
+  "never add a route or a websocket that skips these checks"; the Checks table rewritten (`build`, `start`, `dev`, e2e in
+  Chrome) and re-verified; notes on the CSP header, CSP violations and `jitless`, the config path, `stubOperation` and
+  `settle`, `fsevents`, and `DP_DEV` under `cmd.exe`.
+- `context/foundation/test-strategy.md` — revision line; tiers 9/12/10; new T1.9 (another origin or no token reaching an
+  operation, integration, `src/server/http.int.test.ts`); T1.8, T2.1, T2.7, T2.10, T3.3, T3.10 rewritten for the browser,
+  the HTTP boundary and `npm start`; the layer contract, the design-consequence paragraph and the type-system list
+  rewritten; the Build gate is `npm run build`; the E2E gate names Chrome; the known gap on Electron's private
+  `_invokeHandlers` replaced by the `stubOperation` note.
+
+**Verification**
+
+```
+$ npm run typecheck
+exit 0
+$ npm run lint
+All matched files use the correct format.
+$ npm run test:unit
+ Test Files  12 passed (12)
+      Tests  370 passed (370)
+$ npm run test:integration
+ Test Files  13 passed (13)
+      Tests  333 passed (333)
+$ npm run test:e2e
+  51 passed (41.2s)
+$ grep -rni electron src e2e test-support package.json *.mts *.ts AGENTS.md
+(no output)
+$ npm ci
+added 72 packages, and audited 73 packages in 2s
+$ ls node_modules | grep -ci electron
+0
+$ DP_OPEN_BROWSER=0 npm start      # after npm ci
+DigitalPigeon listening: http://127.0.0.1:4380/?token=…
+$ curl -H 'Host: 127.0.0.1:4380' http://127.0.0.1:4380/
+GET / without cookie: 403
+$ npm run typecheck                # after npm ci
+exit 0
+$ DP_OPEN_BROWSER=0 npm run dev    # before the AGENTS.md rewrite, to verify its Checks table
+DigitalPigeon listening: http://127.0.0.1:4380/?token=…
+GET / without cookie: 403
+```
+
+PASS — all gates pass with Electron removed, the grep is empty, and a fresh `npm ci` builds and serves the app. The
+server was started with `DP_OPEN_BROWSER=0`, so the Chrome launch itself was last exercised in the author's phase 3
+walkthrough, not after `npm ci`.
+
+**Drift:**
+- decision — `@types/node` added as a direct dev dependency at `^22`: it had arrived only through Electron's tree
+  (26.6.6), and removing Electron left `Buffer` and `node:*` untyped (`e2e/bodies.spec.ts` TS2591 errors). Major 22
+  matches the runtime (v22.22.2), so types cannot promise APIs Node 22 lacks; the typecheck passes on it.
+- decision — empty `node_modules/@electron*` scope folders left by `npm prune` were removed by hand.
+- decision — `test-strategy.md` changes go beyond the plan's list (T1.9, T1.8, T2.1, E2E layer, Build gate): T2.7,
+  T2.10, T3.3, T3.10 and the known gaps also named Electron, the renderer or `npm run package`, and were rewritten.
+- Not committed. The author authorised commits for phases 1–3; phase 4 waits for the same.

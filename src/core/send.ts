@@ -1,6 +1,6 @@
 // Sends one request and records it as a call: the send document is inserted BEFORE the request is
 // dispatched, so nothing reaches the wire unrecorded (plan.md; test-strategy.md T1.2, T1.6).
-// No `electron` import: integration tests run this in plain Node.
+// No framework or browser import: integration tests run this in plain Node.
 import { randomUUID } from 'node:crypto';
 import { MongoError } from 'mongodb';
 import { request } from 'undici';

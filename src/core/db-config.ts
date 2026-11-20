@@ -1,6 +1,6 @@
 // Where the app's MongoDB credentials come from (plan.md, Approach): the environment first, then
-// config.json in Electron's userData directory, because a Finder-launched packaged app has no shell
-// environment. DP_MONGO_DB overrides the database name so e2e can use a dp_test_* database.
+// config.json in the app's user-data directory (src/server/main.ts, userDataDir), kept for credentials outside the
+// shell environment. DP_MONGO_DB overrides the database name so e2e can use a dp_test_* database.
 import { z } from 'zod';
 
 export interface DbConfig {

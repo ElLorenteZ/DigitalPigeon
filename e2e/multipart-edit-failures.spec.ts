@@ -1,7 +1,7 @@
 // Plan phase 6, R1: Edit on a stored multipart call reads the body one page at a time. Only the latest Edit
 // may load the form (T2.10), and a failed read must leave the form as it was. Answer order and a failing
-// read cannot be arranged from outside, so main's read-body handler is replaced in this launched app only,
-// as e2e/open-call-failures.spec.ts does for get-call. The replacement serves the bytes the capture server
+// read cannot be arranged from outside, so the server's read-body answer is replaced at the network layer for this
+// page only, as e2e/open-call-failures.spec.ts does for get-call. The replacement serves the bytes the capture server
 // received, which are the stored bytes (phase 1, T1.3).
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -12,7 +12,14 @@ import {
   type CaptureServer,
   startCaptureServer,
 } from '../test-support/capture-server';
-import { type TestApp, launchWithTestDatabase } from './support';
+import {
+  type TestApp,
+  callOperation,
+  gate,
+  launchWithTestDatabase,
+  settle,
+  stubOperation,
+} from './support';
 
 let capture: CaptureServer;
 let testApp: TestApp;
@@ -46,75 +53,47 @@ async function sendStored(value: string) {
   await button('Send').click();
   await expect(history()).toHaveCount(rowsBefore + 1, { timeout: 30_000 });
 
-  const fileId = await window.evaluate(async (url) => {
-    const { pigeon } = window as unknown as {
-      pigeon: {
-        listCalls: () => Promise<{
-          calls: { send: { _id: string; request: { url: string } } }[];
-        }>;
-        getCall: (id: string) => Promise<{
-          call: { send: { request: { body: { fileId: string } } } };
-        }>;
-      };
-    };
-    const listed = await pigeon.listCalls();
-    const sent = listed.calls.find((c) => c.send.request.url === url);
-    const got = await pigeon.getCall(sent?.send._id ?? '');
-    return got.call.send.request.body.fileId;
-  }, `${capture.url}/${value}`);
+  const url = `${capture.url}/${value}`;
+  const listed = (await callOperation(window, channels.listCalls)) as {
+    calls: { send: { _id: string; request: { url: string } } }[];
+  };
+  const sent = listed.calls.find((c) => c.send.request.url === url);
+  const got = (await callOperation(
+    window,
+    channels.getCall,
+    sent?.send._id ?? '',
+  )) as { call: { send: { request: { body: { fileId: string } } } } };
+  const fileId = got.call.send.request.body.fileId;
   const body = capture.requests.at(-1)?.body ?? Buffer.alloc(0);
   return { fileId, body: [...body] };
 }
 
 // Serves pages from the given bodies; holds the first page of `holdFileId` until released, and fails every read of
 // `failFileId`.
+let held = gate();
+
 const stubReadBody = (
   bodies: Record<string, number[]>,
   options: { holdFileId?: string; failFileId?: string },
-) =>
-  testApp.app.evaluate(
-    ({ ipcMain }, { channel, bodies, options }) => {
-      const scope = globalThis as unknown as { releaseHeld?: () => void };
-      ipcMain.removeHandler(channel);
-      ipcMain.handle(
-        channel,
-        async (
-          _event,
-          input: { fileId: string; offset: number; length: number },
-        ) => {
-          if (input.fileId === options.failFileId) {
-            return {
-              ok: false,
-              message: `The stored body ${input.fileId} is missing`,
-            };
-          }
-          if (input.fileId === options.holdFileId && input.offset === 0) {
-            await new Promise<void>((resolve) => {
-              scope.releaseHeld = resolve;
-            });
-          }
-          const all = bodies[input.fileId] ?? [];
-          return {
-            ok: true,
-            bytes: new Uint8Array(
-              all.slice(input.offset, input.offset + input.length),
-            ),
-          };
-        },
-      );
-    },
-    { channel: channels.readBody, bodies, options },
-  );
-
-// A later round trip to main returns after the held answer, then a frame lets React commit it.
-const settle = () =>
-  testApp.window.evaluate(async () => {
-    const { pigeon } = window as unknown as {
-      pigeon: { dbStatus: () => Promise<unknown> };
+) => {
+  held = gate();
+  return stubOperation(testApp.window, channels.readBody, async (input) => {
+    const { fileId, offset, length } = input as {
+      fileId: string;
+      offset: number;
+      length: number;
     };
-    await pigeon.dbStatus();
-    await new Promise(requestAnimationFrame);
+    if (fileId === options.failFileId) {
+      return { ok: false, message: `The stored body ${fileId} is missing` };
+    }
+    if (fileId === options.holdFileId && offset === 0) await held.wait();
+    const all = bodies[fileId] ?? [];
+    return {
+      ok: true,
+      bytes: new Uint8Array(all.slice(offset, offset + length)),
+    };
   });
+};
 
 test.beforeAll(async () => {
   capture = await startCaptureServer();
@@ -153,10 +132,9 @@ test('when two Edits overlap, the form holds the later one whichever read finish
   await panel.getByRole('button', { name: 'Edit', exact: true }).click();
   await expect(window.getByLabel('Part value 1')).toHaveValue('from-b');
 
-  await testApp.app.evaluate(() => {
-    (globalThis as unknown as { releaseHeld: () => void }).releaseHeld();
-  });
-  await settle();
+  held.release();
+  // The held answer reaches the page, then a later round trip and a frame let React commit it.
+  await settle(testApp.window);
 
   await expect(window.getByLabel('Part value 1')).toHaveValue('from-b');
   await expect(window.getByLabel('URL')).toHaveValue(`${capture.url}/from-b`);
@@ -198,10 +176,9 @@ test('a change to the form while Edit reads a stored body keeps the change', asy
 
   await window.getByLabel('URL').fill('http://typed-meanwhile.test/');
   await expect(panel.getByTestId('call-edit-status')).toHaveCount(0);
-  await testApp.app.evaluate(() => {
-    (globalThis as unknown as { releaseHeld: () => void }).releaseHeld();
-  });
-  await settle();
+  held.release();
+  // The held answer reaches the page, then a later round trip and a frame let React commit it.
+  await settle(testApp.window);
 
   await expect(window.getByLabel('URL')).toHaveValue(
     'http://typed-meanwhile.test/',

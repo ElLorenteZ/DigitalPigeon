@@ -32,6 +32,7 @@ import {
   createFormatter,
 } from '../core/body-format';
 import { toCurl } from '../core/curl';
+import { pigeon } from './api';
 import { formFromCall } from '../core/form-from-call';
 import {
   type Part,
@@ -52,18 +53,11 @@ import {
   type CallView,
   type DbStatusView,
   METHODS,
-  type PigeonApi,
   type SendInput,
   type SendResult,
 } from '../shared/ipc-contract';
 
-declare global {
-  interface Window {
-    pigeon: PigeonApi;
-  }
-}
-
-// Monaco's workers load as bundled files from the app's own file:// origin, which script-src 'self' admits.
+// Monaco's workers load as bundled files from the server's own origin, which script-src 'self' admits.
 // With no getWorker, the editor worker falls back to a blob: URL, which the CSP blocks (plan.md, A2). Once
 // getWorker exists Monaco uses it for every label, so the JSON worker is created here too.
 self.MonacoEnvironment = {
@@ -127,6 +121,10 @@ const requestOf = (form: Form) => ({
 const errorText = (error: unknown) =>
   String((error as Error)?.message ?? error);
 
+// What the status line shows: the database's state, or that the server itself did not answer (stopped, or restarted
+// with a new token, so this tab's cookie is refused). Code review 2026-11-20, finding 1.
+type StatusView = DbStatusView | { status: 'unreachable'; message: string };
+
 // Builds the command and tries the clipboard; the command stays selectable if the clipboard fails.
 async function exportCurl(
   request: () => Parameters<typeof toCurl>[0],
@@ -151,7 +149,7 @@ const HISTORY_POLL_MS = 500;
 const textDecoder = () => new TextDecoder('utf-8', { ignoreBOM: true });
 
 export function App() {
-  const [status, setStatus] = useState<DbStatusView | null>(null);
+  const [status, setStatus] = useState<StatusView | null>(null);
   const [history, setHistory] = useState<CallView[]>([]);
   const [result, setResult] = useState<SendResult | null>(null);
   const [inFlightId, setInFlightId] = useState<string | null>(null);
@@ -183,7 +181,12 @@ export function App() {
   // Kept apart from save and delete errors, so a later successful load clears it (second code review, 10).
   const [savedListError, setSavedListError] = useState<string | null>(null);
   const refreshSaved = useCallback(async () => {
-    const listed = await window.pigeon.listSavedRequests();
+    let listed: Awaited<ReturnType<typeof pigeon.listSavedRequests>>;
+    try {
+      listed = await pigeon.listSavedRequests();
+    } catch (error) {
+      listed = { ok: false, message: errorText(error) };
+    }
     setSavedListLoaded(listed.ok);
     setSavedListError(listed.ok ? null : listed.message);
     if (listed.ok) setSavedRequests(listed.savedRequests);
@@ -191,7 +194,12 @@ export function App() {
 
   // The list and the one shown as active at startup. A choice made since is kept while it still exists.
   const refreshEnvironments = useCallback(async (keepChoice: boolean) => {
-    const listed = await window.pigeon.listEnvironments();
+    let listed: Awaited<ReturnType<typeof pigeon.listEnvironments>>;
+    try {
+      listed = await pigeon.listEnvironments();
+    } catch (error) {
+      listed = { ok: false, message: errorText(error) };
+    }
     if (!listed.ok) {
       setEnvironmentsError(listed.message);
       return;
@@ -205,7 +213,14 @@ export function App() {
     );
   }, []);
   // A result from an environment action: the reason on failure, and the list read again either way.
-  const afterEnvironmentChange = async (done: MutationResult) => {
+  // A call the server does not answer counts as a failure with its reason (code review 2026-11-20, finding 2).
+  const afterEnvironmentChange = async (call: Promise<MutationResult>) => {
+    const done = await call.catch(
+      (error: unknown): MutationResult => ({
+        ok: false,
+        message: errorText(error),
+      }),
+    );
     setEnvironmentsError(done.ok ? null : done.message);
     await refreshEnvironments(true);
     return done.ok;
@@ -214,7 +229,7 @@ export function App() {
   // Never rejects: a failure is shown above the list (review #3).
   const refreshHistory = useCallback(async () => {
     try {
-      const listed = await window.pigeon.listCalls();
+      const listed = await pigeon.listCalls();
       if (listed.ok) {
         setHistory(listed.calls);
         setHistoryError(null);
@@ -229,7 +244,12 @@ export function App() {
   useEffect(() => {
     let active = true;
     const poll = async () => {
-      const next = await window.pigeon.dbStatus();
+      let next: StatusView;
+      try {
+        next = await pigeon.dbStatus();
+      } catch (error) {
+        next = { status: 'unreachable', message: errorText(error) };
+      }
       if (active) setStatus(next);
     };
     void poll();
@@ -350,7 +370,12 @@ export function App() {
   const openSaved = async (id: string) => {
     endPendingEdit();
     const thisOpen = ++latestSavedOpen.current;
-    const got = await window.pigeon.getSavedRequest(id);
+    let got: Awaited<ReturnType<typeof pigeon.getSavedRequest>>;
+    try {
+      got = await pigeon.getSavedRequest(id);
+    } catch (error) {
+      got = { ok: false, message: errorText(error) };
+    }
     if (thisOpen !== latestSavedOpen.current) return;
     if (!got.ok || !got.savedRequest) {
       setSavedError(
@@ -372,12 +397,16 @@ export function App() {
   const saveForm = async (asNew: boolean) => {
     const identity = formIdentity.current;
     setSaving(true);
-    const done = await window.pigeon
+    const done = await pigeon
       .saveSavedRequest({
         ...(formLink && !asNew ? { id: formLink.id } : {}),
         name: savedName,
         request: requestOf(form),
       })
+      .catch((error: unknown) => ({
+        ok: false as const,
+        message: errorText(error),
+      }))
       .finally(() => setSaving(false));
     if (!done.ok) {
       setSavedError(done.message);
@@ -397,7 +426,12 @@ export function App() {
     setFormCurl(null);
   };
   const deleteSaved = async (id: string) => {
-    const done = await window.pigeon.deleteSavedRequest(id);
+    const done = await pigeon
+      .deleteSavedRequest(id)
+      .catch((error: unknown) => ({
+        ok: false as const,
+        message: errorText(error),
+      }));
     setSavedError(done.ok ? null : done.message);
     // The form no longer edits a saved request that is gone.
     if (done.ok) {
@@ -415,7 +449,7 @@ export function App() {
     setEditError(null);
     setOpenError(null);
     try {
-      const got = await window.pigeon.getCall(sendId);
+      const got = await pigeon.getCall(sendId);
       if (thisOpen !== latestOpen.current) return;
       if (!got.ok) {
         setOpened(null);
@@ -471,7 +505,7 @@ export function App() {
             choiceSaves.current = choiceSaves.current.then(async () => {
               // A failure is shown and does not stop later choices (second code review, 5).
               try {
-                const done = await window.pigeon.setActiveEnvironment(id);
+                const done = await pigeon.setActiveEnvironment(id);
                 setEnvironmentsError(done.ok ? null : done.message);
               } catch (error) {
                 setEnvironmentsError(errorText(error));
@@ -482,7 +516,7 @@ export function App() {
           inFlight={inFlight}
           onSend={() =>
             run((clientRequestId) =>
-              window.pigeon.send({
+              pigeon.send({
                 clientRequestId,
                 ...requestOf(form),
                 environmentId,
@@ -490,7 +524,7 @@ export function App() {
               }),
             )
           }
-          onCancel={() => inFlightId && window.pigeon.cancel(inFlightId)}
+          onCancel={() => inFlightId && pigeon.cancel(inFlightId)}
           onCopyCurl={async () =>
             setFormCurl(
               await exportCurl(() => {
@@ -523,12 +557,10 @@ export function App() {
       <EnvironmentsEditor
         environments={environments}
         error={environmentsError}
-        onSave={async (input) =>
-          afterEnvironmentChange(await window.pigeon.saveEnvironment(input))
+        onSave={(input) =>
+          afterEnvironmentChange(pigeon.saveEnvironment(input))
         }
-        onDelete={async (id) =>
-          afterEnvironmentChange(await window.pigeon.deleteEnvironment(id))
-        }
+        onDelete={(id) => afterEnvironmentChange(pigeon.deleteEnvironment(id))}
       />
       <div ref={resultRegion}>
         <ResultView result={result} />
@@ -556,7 +588,7 @@ export function App() {
             onReplay={() => {
               showRequest();
               void run((clientRequestId) =>
-                window.pigeon.replay({
+                pigeon.replay({
                   clientRequestId,
                   sendId: opened.send._id,
                 }),
@@ -573,8 +605,20 @@ export function App() {
   );
 }
 
-function StatusBar({ status }: { status: DbStatusView | null }) {
+function StatusBar({ status }: { status: StatusView | null }) {
   if (!status) return <p data-testid="db-status">Database: checking…</p>;
+  if (status.status === 'unreachable') {
+    return (
+      <p
+        data-testid="db-status"
+        data-status="unreachable"
+        className="status status-down"
+      >
+        Database: unknown — the server did not answer ({status.message}). If it
+        was stopped or restarted, run npm start again.
+      </p>
+    );
+  }
   const text = {
     connecting: 'connecting…',
     up: `up (${status.database ?? ''})`,
@@ -1188,7 +1232,7 @@ async function readWholeBody(body: StoredFile): Promise<Uint8Array> {
   const whole = new Uint8Array(body.length);
   let offset = 0;
   while (offset < body.length) {
-    const got = await window.pigeon.readBody({
+    const got = await pigeon.readBody({
       fileId: body.fileId,
       offset,
       length: Math.min(BODY_PAGE_BYTES, body.length - offset),
@@ -1240,7 +1284,7 @@ function PartsList({
     if (fileId === null) return;
     let current = true;
     setStored({ state: 'loading' });
-    window.pigeon
+    pigeon
       .describeBody({ fileId, boundary })
       .then(
         (got): PartsOutcome =>
@@ -1762,7 +1806,7 @@ function PagedBodyText({
     setError(null);
     let failure: string | null = null;
     try {
-      const got = await window.pigeon.readBody({
+      const got = await pigeon.readBody({
         fileId: file.fileId,
         offset: offset.current,
         length: BODY_PAGE_BYTES,

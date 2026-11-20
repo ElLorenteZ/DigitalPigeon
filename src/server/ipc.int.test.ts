@@ -1,6 +1,5 @@
-// The IPC handlers against a real MongoDB, through a stand-in for ipcMain. Electron is imported only as
-// a type by ipc.ts, so this runs in plain Node.
-import type { IpcMain } from 'electron';
+// The operations against a real MongoDB, registered through a stand-in `handle`, without the HTTP layer
+// (src/server/http.int.test.ts covers that).
 import {
   afterAll,
   afterEach,
@@ -15,7 +14,7 @@ import {
 } from '../../test-support/capture-server';
 import { type TestDb, openTestDb } from '../../test-support/test-db';
 import { channels } from '../shared/ipc-contract';
-import { registerIpc } from './ipc';
+import { type Registrar, registerIpc } from './ipc';
 
 type Handler = (event: unknown, input?: unknown) => unknown;
 
@@ -35,7 +34,7 @@ beforeAll(async () => {
     ipcMain: {
       handle: (channel: string, handler: Handler) =>
         handlers.set(channel, handler),
-    } as unknown as IpcMain,
+    } as Registrar,
     db: () => testDb.db,
     dbStatus: () => ({ status: 'up', configPath: '' }),
   });
@@ -226,7 +225,7 @@ test('a driver failure while loading the environment for a send reports the data
     ipcMain: {
       handle: (channel: string, handler: Handler) =>
         local.set(channel, handler),
-    } as unknown as IpcMain,
+    } as Registrar,
     db: () => failing,
     dbStatus: () => ({ status: 'up', configPath: '' }),
   });

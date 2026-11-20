@@ -1,20 +1,27 @@
-// Launching the app for e2e against a throwaway database (test-support/e2e-database.ts).
-// Launches the repo root as the app directory: package.json `main` points at .vite/build/main.cjs,
-// so the app name and userData are DigitalPigeon's. The packaged .app is not used: its fuses
-// disable the inspector Playwright attaches through (context/archive/test-harness/record.md §3).
+// Launching the app for e2e: the built local server (dist/server/main.mjs) against a throwaway database
+// (test-support/e2e-database.ts), opened in the installed Chrome (plan.md, phase 3; ADR 0002). Answers the server
+// cannot be made to give from outside are arranged at the network layer with `stubOperation`, so the server carries
+// no test-only code.
+import { type ChildProcess, spawn } from 'node:child_process';
 import {
-  type ElectronApplication,
+  type Browser,
+  type BrowserContext,
   type Locator,
   type Page,
-  _electron as electron,
+  type Route,
+  chromium,
   expect,
 } from '@playwright/test';
+import { decode, encode } from '../src/shared/wire-codec';
 import { createE2eDatabase } from '../test-support/e2e-database';
 
 export interface TestApp {
-  app: ElectronApplication;
+  /** The browser context the app runs in: `app.pages()` counts every open page. */
+  app: BrowserContext;
   window: Page;
   database: string;
+  /** `http://127.0.0.1:<port>`. */
+  origin: string;
   close: () => Promise<void>;
 }
 
@@ -75,35 +82,171 @@ export const showBodyView = (
 
 export async function launchWithTestDatabase(): Promise<TestApp> {
   const db = createE2eDatabase();
-  const app = await electron.launch({
-    args: ['.'],
-    env: { ...process.env, ...db.env },
+  const server = spawn('node', ['dist/server/main.mjs'], {
+    env: { ...process.env, ...db.env, DP_PORT: '0', DP_OPEN_BROWSER: '0' },
+    stdio: ['ignore', 'pipe', 'inherit'],
   });
-  const window = await appWindow(app);
-
-  return {
-    app,
-    window,
-    database: db.database,
-    close: async () => {
-      await app.close();
-      await db.drop();
-    },
-  };
+  let browser: Browser | undefined;
+  try {
+    const url = await tokenUrl(server);
+    browser = await chromium.launch({ channel: 'chrome' });
+    // The size the desktop window had, so layout and viewport checks keep their meaning.
+    const app = await browser.newContext({
+      viewport: { width: 1100, height: 800 },
+    });
+    await app.addInitScript(recordCspViolations);
+    const window = await app.newPage();
+    await window.goto(url);
+    const opened = browser;
+    return {
+      app,
+      window,
+      database: db.database,
+      origin: new URL(url).origin,
+      close: async () => {
+        await opened.close();
+        await stop(server);
+        await db.drop();
+      },
+    };
+  } catch (error) {
+    await browser?.close();
+    await stop(server);
+    await db.drop();
+    throw error;
+  }
 }
 
-// DevTools opens when the app is not packaged (src/main.ts), so select the app window by URL.
-// Polled rather than matched on the 'window' event: a window can be created at about:blank and
-// only then navigate to index.html, which a one-shot predicate on creation would miss.
-async function appWindow(app: ElectronApplication): Promise<Page> {
-  const isAppWindow = (page: Page) =>
-    page.url().endsWith('main_window/index.html');
-  let found: Page | undefined;
-  await expect
-    .poll(() => (found = app.windows().find(isAppWindow)), {
-      message: 'an Electron window showing main_window/index.html',
-      timeout: 30_000,
-    })
-    .toBeDefined();
-  return found as Page;
+// The server prints one line with its token URL (src/server/main.ts).
+function tokenUrl(server: ChildProcess): Promise<string> {
+  return new Promise((resolve, reject) => {
+    let seen = '';
+    server.stdout?.on('data', (chunk: Buffer) => {
+      seen += chunk.toString();
+      const match = /DigitalPigeon listening: (\S+)/.exec(seen);
+      if (match) resolve(match[1] as string);
+    });
+    server.once('exit', (code) =>
+      reject(new Error(`the server exited (${code}) before listening`)),
+    );
+  });
+}
+
+function stop(server: ChildProcess): Promise<void> {
+  if (server.exitCode !== null) return Promise.resolve();
+  return new Promise((resolve) => {
+    server.once('exit', () => resolve());
+    server.kill('SIGTERM');
+  });
+}
+
+// Runs in every page before its scripts. The console does not report CSP violations (spike-browser-host.md,
+// surprise 1); the securitypolicyviolation event does.
+function recordCspViolations() {
+  const seen: string[] = [];
+  (window as unknown as { __cspViolations: string[] }).__cspViolations = seen;
+  document.addEventListener('securitypolicyviolation', (event) => {
+    seen.push(
+      `${event.effectiveDirective} blocked ${event.blockedURI || 'inline'}`,
+    );
+  });
+}
+
+export const cspViolations = (page: Page): Promise<string[]> =>
+  page.evaluate(
+    () =>
+      (window as unknown as { __cspViolations?: string[] }).__cspViolations ??
+      [],
+  );
+
+export const expectNoCspViolations = async (page: Page) =>
+  expect(await cspViolations(page)).toEqual([]);
+
+const operationUrl = (channel: string) =>
+  `**/api/${channel.replace(/^pigeon:/, '')}`;
+
+const pendingAnswers = new WeakMap<Page, Set<Promise<void>>>();
+
+/**
+ * Replaces the server's answer to one operation for this page. `answer` gets the decoded input and `real()`, which
+ * asks the server for its own answer. A thrown error rejects the call in the page, as a thrown handler rejected an
+ * IPC call. Returns `restore`, which hands the operation back to the server.
+ */
+export async function stubOperation(
+  page: Page,
+  channel: string,
+  answer: (input: unknown, real: () => Promise<unknown>) => unknown,
+): Promise<{ restore: () => Promise<void> }> {
+  const pattern = operationUrl(channel);
+  await page.unroute(pattern);
+  const pending = pendingAnswers.get(page) ?? new Set();
+  pendingAnswers.set(page, pending);
+  await page.route(pattern, (route: Route) => {
+    const answered = (async () => {
+      const text = route.request().postData() ?? '';
+      const real = async () => {
+        const response = await route.fetch();
+        return decode(await response.text());
+      };
+      try {
+        const result = await answer(
+          text === '' ? undefined : decode(text),
+          real,
+        );
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: encode(result ?? null),
+        });
+      } catch (error) {
+        await route.fulfill({
+          status: 500,
+          contentType: 'text/plain',
+          body: String((error as Error)?.message ?? error),
+        });
+      }
+    })();
+    pending.add(answered);
+    void answered.finally(() => pending.delete(answered));
+    return answered;
+  });
+  return { restore: () => page.unroute(pattern) };
+}
+
+/** A gate a stubbed answer can wait on; `release()` opens it. */
+export function gate(): { wait: () => Promise<void>; release: () => void } {
+  let release!: () => void;
+  const opened = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  return { wait: () => opened, release };
+}
+
+/** One operation, asked from the page as the app asks it; the answer is decoded here. */
+export async function callOperation(
+  page: Page,
+  channel: string,
+  input?: unknown,
+): Promise<unknown> {
+  const text = await page.evaluate(
+    async ({ path, body }) => {
+      const response = await fetch(path, { method: 'POST', body });
+      return response.text();
+    },
+    {
+      path: `/api/${channel.replace(/^pigeon:/, '')}`,
+      body: input === undefined ? '' : encode(input),
+    },
+  );
+  return decode(text);
+}
+
+/**
+ * Waits until every stubbed answer already released has reached the page, then makes one more round trip and lets
+ * a frame pass, so React has committed whatever those answers caused.
+ */
+export async function settle(page: Page): Promise<void> {
+  await Promise.all(pendingAnswers.get(page) ?? []);
+  await callOperation(page, 'pigeon:db-status');
+  await page.evaluate(() => new Promise(requestAnimationFrame));
 }

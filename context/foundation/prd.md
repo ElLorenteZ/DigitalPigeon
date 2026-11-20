@@ -42,7 +42,7 @@ recover. SOAP/WSDL work is poorly supported, and the tools require accounts and 
 - Re-importing the same spec updates its templates in place and does not change History.
 - Switching the active environment changes the `baseUrl` that a saved request is sent to.
 - Running a request exported as curl in a terminal sends the same method, URL, headers and body as the original request.
-- The app runs on the author's personal machine as a local install, and is used without creating or signing in to an account.
+- The app runs on the author's personal machine as a local web app: a server on that machine, used in the author's browser, without creating or signing in to an account. (Was "a local install" of a desktop app until 2026-11-11, ADR 0002.)
 - *(Subjective, judged by the author)* Postman/Insomnia goes unopened for REST work during two weeks of real use, and finding and replaying a past call is faster than it is in Postman.
 
 ## Non-goals
@@ -55,13 +55,14 @@ recover. SOAP/WSDL work is poorly supported, and the tools require accounts and 
 | Environment variables other than `baseUrl` | Not wanted; an environment is a `baseUrl` (with auth added later) | Hard-coded values in requests become a repeated cost |
 | Reading or committing stored data outside the app | Not required; data is accessed only through the app | Sharing or versioning requests becomes a need |
 | Redacting secrets in history | History is a true record; tokens are stored as sent | The store leaves the user's machine |
+| Hosting the app anywhere but the user's machine | History, including tokens as sent, stays on the machine; no accounts; $0 budget; a hosted server cannot reach `localhost` or VPN-only APIs (ADR 0002) | The author asks for a hosted version. It needs its own decision and reopens accounts and redaction |
 | Size caps or truncation of stored response bodies | History stores everything | Store size becomes a problem |
 
 ## Scope
 
 ### In scope
 Milestone 1 (REST):
-- Use the app as a desktop application.
+- Use the app in the author's browser, served by a server on the author's machine and bound to `127.0.0.1` (ADR 0002, 2026-11-11; was "as a desktop application").
 - Build a REST request with method, path, query parameters, headers, auth set on that request (a pasted token or header), and a body.
 - Send JSON, XML, plain-text, form-urlencoded and multipart bodies, and see JSON and XML pretty-printed.
 - Save a request and edit it later. Saved requests and calls are separate.
@@ -99,7 +100,7 @@ These are not in the target design. They stay deferred until the author asks for
 | Constraint | Source | Consequence |
 |---|---|---|
 | Must run on macOS and on the author's work Windows/Linux machine | Author (spec session) | Rules out anything single-OS. |
-| Primary target is the author's personal machine, with admin rights. The work laptop runs only IT-approved apps. | Author (infra session; revises the stack session's "signed only") | Milestone 1 runs as an unsigned local install. Use on the work laptop depends on IT approval and is deferred. |
+| Primary target is the author's personal machine, with admin rights. The work laptop runs only IT-approved apps. | Author (infra session; revises the stack session's "signed only") | Milestone 1 runs as a local web app on the personal machine, with no package to sign (ADR 0002). Use on the work laptop depends on IT approval and is deferred. |
 | Budget $0. Local install only, no publishing. | Author (infra session) | No signing certificates, hosting or paid services |
 | Docker is required, and Docker Desktop is installed and licensed | Author (stack and infra sessions) | The database runs in a container |
 | The code must be in a language the author can review: TypeScript/JavaScript, C#, Java or Kotlin | Author (stack session) | Rules out stacks whose core logic is in another language, such as a Rust backend. |
@@ -113,14 +114,14 @@ These are not in the target design. They stay deferred until the author asks for
 | A3 | Bulk delete and retention rules are enough to keep the store a manageable size when full bodies and file copies are always kept. | A size limit or archiving would be needed, which conflicts with "store everything". |
 | A4 | Rebuilding existing Postman requests by hand is an acceptable one-time cost. | Postman import would come back as a candidate feature. |
 | A5 | One person uses each installation. | Concurrency and ownership of records would need decisions. |
-| A6 | The work laptop's IT approval, when sought, will accept an Electron app that needs Docker. | Work-laptop use would need a different distribution, or a store that does not need Docker. |
+| A6 | The work laptop's IT approval, when sought, will accept a local Node.js server, used in an approved browser, that needs Docker. (Revised 2026-11-11 from "an Electron app that needs Docker", ADR 0002.) | Work-laptop use would need a different distribution, or a store that does not need Docker. |
 
 ## Open questions
 | Question | What would settle it | Blocks |
 |---|---|---|
 | How saved requests are organised: directories (as templates will be), a flat list, or tags | Author decision before Milestone 1 planning | Milestone 1 plan |
 | What happens when the database (MongoDB in Docker) is not running: block sending, or send and warn that the call is not recorded, or start the container from the app | Author decision. "Every send is recorded" points to blocking. | Milestone 1 plan |
-| Work laptop: which OS (Windows or Linux), and what IT approval requires (a signed installer, a known publisher, a review) | Asking the work IT department | Work-laptop use; whether signing is needed |
+| Work laptop: which OS (Windows or Linux), and what IT approval requires (Node.js and Docker installed, a known publisher, a review) | Asking the work IT department | Work-laptop use; whether signing is needed |
 | On exact replay of a call whose stored token has expired, send the token as recorded or offer the current one | First real use of replay against a short-lived token | Replay behaviour detail |
 | What separates a request template from a saved request beyond where it came from (imported from a spec or built by hand) | Partly settled by the design: templates come from imports and live in directories; saved requests are a flat list. Whether a template can be edited, or turned into a saved request, is still open | Templates milestone |
 | Code export in languages other than curl | A need arising after curl export is in use | — |

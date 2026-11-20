@@ -1,11 +1,11 @@
 ---
 change_id: local-web-app
 title: Replace the Electron shell with a local Node server and a browser UI
-status: new
+status: closed
 ticket: null
 created: 2026-11-11
-updated: 2026-11-11
-closed: null
+updated: 2026-11-20
+closed: 2026-11-20
 produced-by: lz-change
 ---
 
@@ -43,3 +43,8 @@ app, hosted web app): "Right now option 1."
 - Roadmap: `context/foundation/roadmap.md`, M1 slice 5b, with its order rationale and calibration (about two days;
   unknowns are the e2e harness port and the localhost security model).
 - The transitional non-negotiables in AGENTS.md already state the server rules this change must meet.
+- Outcome (2026-11-20): closed as done. DigitalPigeon runs from `npm start` as a `node:http` server on `127.0.0.1:4380`
+  and opens in Chrome; Electron is removed. All 4 plan phases are verified. Review verdict: merge-with-fixes, every
+  finding triaged. The fixes are in PR #4 (https://github.com/ElLorenteZ/DigitalPigeon/pull/4), closed before merge.
+  Still open: dev-mode HMR (author choice); token hardening (roadmap, "Not ordered yet"); a pre-existing
+  `curl.int.test.ts` timeout.

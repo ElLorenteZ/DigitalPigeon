@@ -452,3 +452,68 @@ PASS — every route refuses a foreign `Origin` (the four cases failed first, fo
 still runs in Chrome under the rule (51 e2e), and no foundation document defers to the plan.
 
 **Drift:** none — the fixes are the ones `review.md` names, with its stated shape for F1.
+
+## Code-review fixes — /code-review findings 3, 5, 8, 9, 10 (fix now)
+
+- **Executor:** lz-tdd
+- **Status:** done
+- **Started:** 2026-11-20
+- **Finished:** 2026-11-20
+
+Not a plan phase. `/code-review main...local-web-app` (2026-11-20) reported 10 findings without verifying them. Five are
+fixed here. Findings 1, 2, 4, 6 and 7 are open for the author and recorded in `review.md`, under Host code review.
+
+**Changed**
+- Finding 3: in `src/server/http.ts`, `createServer` rejects when `listen` fails, instead of the error escaping as an
+  unhandled `'error'` event. In `src/server/main.ts`, `EADDRINUSE` prints
+  `Port <n> is in use. Is DigitalPigeon already running? Set DP_PORT to use another port.` and exits 1.
+- Finding 5: in `src/server/http.ts`, the cookie check accepts the request when any cookie named `dp_<port>` holds the
+  token. A cookie of that name planted by another 127.0.0.1 port, which Chrome sends first, no longer locks the UI out.
+- Finding 8: in `src/shared/wire-codec.ts`, the replacer returns the value after `toJSON` for anything that is not
+  bytes, a date or an escaped object. A `URL` or a driver id travels as its JSON form.
+- Finding 9: `src/server/http.ts` uses the `message` helper that `src/server/ipc.ts` now exports.
+- Finding 10: the `/api/*` Origin check is written as `origin === undefined`, since a foreign Origin has already been
+  refused above it.
+- Tests, each seen failing first:
+  - `wire-codec.test.ts`: an object with its own `toJSON`;
+  - `http.int.test.ts`: a planted cookie before the real one gets 200, and a port in use rejects `createServer`.
+
+**Verification**
+
+```
+$ npx vitest run --project unit src/shared/wire-codec.test.ts           # before
+     × an object with its own toJSON travels as that JSON form
+      Tests  1 failed | 13 passed (14)
+$ npx vitest run --project integration src/server/http.int.test.ts      # before
+     × a cookie planted under the same name before the real one does not lock the UI out
+AssertionError: expected 403 to be 200
+     × a port already in use rejects createServer instead of crashing the process
+Error: Test timed out in 5000ms.   Unhandled: listen EADDRINUSE: address already in use
+      Tests  2 failed | 32 passed (34)
+$ (after) wire-codec.test.ts  Tests  14 passed (14)
+$ (after) http.int.test.ts    Tests  34 passed (34)
+$ npm run typecheck
+exit 0
+$ npm run lint
+All matched files use the correct format.
+$ npm run test:unit
+      Tests  371 passed (371)
+$ npm run test:integration
+ Test Files  1 failed | 12 passed (13)
+      Tests  1 failed | 339 passed (340)
+  × src/core/curl.int.test.ts > a command at the limit sends — Test timed out in 5000ms
+$ git stash; npx vitest run --project integration src/core/curl.int.test.ts -t "at the limit"   # without these changes, twice
+      Tests  1 failed | 74 skipped (75)
+$ npm run test:e2e
+  51 passed (1.2m)
+$ DP_PORT=4399 node dist/server/main.mjs     # with 4399 held by another listener
+exit 1
+Port 4399 is in use. Is DigitalPigeon already running? Set DP_PORT to use another port.
+```
+
+PASS, with one exception. `src/core/curl.int.test.ts` "a command at the limit sends" times out at 5 s with or without
+these changes. It passed on 2026-11-13 (338 of 338). The test runs a real shell `curl` with a maximum-length command, and
+this machine's load average was 3.9–6.5. No `src/core/` file changed in this entry, and the timeout is not diagnosed
+here.
+
+**Drift:** none. These are not plan phases; each fix is the one its finding names.

@@ -22,21 +22,25 @@ function fromBase64(text: string): Uint8Array {
 }
 
 export function encode(value: unknown): string {
-  return JSON.stringify(value, function (this: Record<string, unknown>, key) {
-    // `this[key]` is the value before `toJSON` ran: a Date or Buffer, not its JSON form.
-    const original = this[key];
-    if (original instanceof Uint8Array) return { $bytes: toBase64(original) };
-    if (original instanceof Date) return { $date: original.toISOString() };
-    // An object that carries a tag name as its own key is sent as its entries, so the decoder cannot read it
-    // as a tag. JSON.parse revives bottom-up, so the escape must not leave a lookalike object inside.
-    if (
-      isPlainObject(original) &&
-      Object.keys(original).some((k) => TAGS.has(k))
-    ) {
-      return { $object: Object.entries(original) };
-    }
-    return original;
-  });
+  return JSON.stringify(
+    value,
+    function (this: Record<string, unknown>, key, converted: unknown) {
+      // `this[key]` is the value before `toJSON` ran: a Date or Buffer, not its JSON form.
+      const original = this[key];
+      if (original instanceof Uint8Array) return { $bytes: toBase64(original) };
+      if (original instanceof Date) return { $date: original.toISOString() };
+      // An object that carries a tag name as its own key is sent as its entries, so the decoder cannot read it
+      // as a tag. JSON.parse revives bottom-up, so the escape must not leave a lookalike object inside.
+      if (
+        isPlainObject(original) &&
+        Object.keys(original).some((k) => TAGS.has(k))
+      ) {
+        return { $object: Object.entries(original) };
+      }
+      // Anything else with a toJSON (a URL, a driver ObjectId) travels as that JSON form.
+      return converted;
+    },
+  );
 }
 
 const TAGS = new Set(['$bytes', '$date', '$object']);

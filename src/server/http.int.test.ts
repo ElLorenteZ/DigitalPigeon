@@ -379,6 +379,26 @@ describe('refusals: nothing is sent or recorded', () => {
     await nothingSentOrRecorded();
   });
 
+  test('a cookie planted under the same name before the real one does not lock the UI out', async () => {
+    const reply = await raw('/api/list-calls', {
+      method: 'POST',
+      cookie: `dp_${server.port}=planted; ${cookie}`,
+      body: '',
+    });
+    expect(reply.status).toBe(200);
+  });
+
+  test('a port already in use rejects createServer instead of crashing the process', async () => {
+    await expect(
+      createServer({
+        db: () => testDb.db,
+        dbStatus: () => ({ status: 'up', configPath: '' }),
+        token: TOKEN,
+        port: server.port,
+      }),
+    ).rejects.toThrow(/EADDRINUSE/);
+  });
+
   test('GET on an operation → 403', async () => {
     const reply = await raw('/api/send', { cookie });
     expect(reply.status).toBe(403);

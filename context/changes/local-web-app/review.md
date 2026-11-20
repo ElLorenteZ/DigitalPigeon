@@ -3,9 +3,9 @@ change_id: local-web-app
 produced-by: lz-review
 verdict: merge-with-fixes
 created: 2026-11-13
-updated: 2026-11-13
+updated: 2026-11-20
 reviewed: branch local-web-app against main (merge base ea911b3), commits aff8907..c514005, 4 phases, plan revision 3
-delegated-to: nothing yet — general correctness is UNREVIEWED; /code-review is required before merge (test-strategy.md, Quality gates)
+delegated-to: /code-review (2026-11-20), see Host code review; 5 findings open for the author
 ---
 
 # Review: Replace the Electron shell with a local Node server and a browser UI
@@ -137,3 +137,24 @@ General correctness has NOT been reviewed. Run `/code-review` before merging (au
   violations; Chrome requests `/favicon.ico`.
 - Still open: dev-mode HMR is off (a choice left to the author); "server not reachable" after a restart is out of
   scope; Windows `npm run dev`.
+
+## Host code review
+
+`/code-review main...local-web-app` ran on 2026-11-20, after commit `8165405`. It reported 10 findings and did not verify
+them itself. Each disposition is listed below; `progress.md`, under "Code-review fixes", records the fixes.
+
+| # | Finding | Disposition |
+|---|---|---|
+| 1 | The status poll (`app.tsx`) does not catch a rejected `dbStatus()`. After a server stop or restart the status stays stale, and the rejection is unhandled | **open, author decision**: the plan's Out of scope lists "server not reachable"; the plan's risk table already names it |
+| 2 | Saved-request and environment actions do not catch a rejected call. A failure there is lost silently | **open, author decision**: same Out of scope item |
+| 3 | A port in use crashed the process with an unhandled `'error'` | fixed |
+| 4 | Cookies are not isolated by port. Every 127.0.0.1 server the browser visits receives `dp_<port>=<token>` | **open, author decision**: changes ADR 0002's threat model |
+| 5 | A cookie planted by another 127.0.0.1 port, read first, locked the UI out | fixed |
+| 6 | The token appears in stdout and in the browser-launch process arguments | **open, author decision**: same-machine threat model, ADR 0002 |
+| 7 | `readBody` has no size limit and does not settle on an aborted request | **open, author decision**: a cap must stay above the largest allowed body |
+| 8 | The codec dropped `toJSON` results for values other than bytes and dates (latent) | fixed |
+| 9 | The error message is stringified in a second place | fixed |
+| 10 | The `/api/*` Origin check repeated the global one | fixed |
+
+General correctness is now reviewed by `/code-review` at its default level. It was a single pass, and its findings were
+not re-verified before triage.

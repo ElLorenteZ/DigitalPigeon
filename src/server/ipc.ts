@@ -81,7 +81,8 @@ export interface IpcDeps {
 
 type CallStore = ReturnType<typeof createCallStore>;
 
-const message = (error: unknown) => String((error as Error)?.message ?? error);
+export const message = (error: unknown) =>
+  String((error as Error)?.message ?? error);
 
 // Structured clone would turn a Buffer into a Uint8Array anyway; copy explicitly so the contract
 // holds in main as well as in the renderer.

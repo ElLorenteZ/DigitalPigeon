@@ -13,7 +13,7 @@ import {
 import type { AddressInfo } from 'node:net';
 import path from 'node:path';
 import type { Db } from 'mongodb';
-import { registerIpc } from './ipc';
+import { message, registerIpc } from './ipc';
 import type { DbStatusView } from '../shared/ipc-contract';
 import { decode, encode } from '../shared/wire-codec';
 
@@ -66,13 +66,14 @@ const sameSecret = (given: string, expected: string): boolean => {
   return a.length === b.length && timingSafeEqual(a, b);
 };
 
-const cookieValue = (header: string | undefined, name: string) => {
-  for (const part of (header ?? '').split(';')) {
-    const [key, ...rest] = part.trim().split('=');
-    if (key === name) return rest.join('=');
-  }
-  return undefined;
-};
+// Every value sent under `name`. A page on another 127.0.0.1 port can plant a cookie of the same name with a longer
+// Path, which Chrome sends first; reading only the first would lock the UI out.
+const cookieValues = (header: string | undefined, name: string) =>
+  (header ?? '')
+    .split(';')
+    .map((part) => part.trim().split('='))
+    .filter(([key]) => key === name)
+    .map(([, ...rest]) => rest.join('='));
 
 const readBody = (req: IncomingMessage): Promise<string> =>
   new Promise((resolve, reject) => {
@@ -121,7 +122,7 @@ export async function createServer(
       res.end(encode(result ?? null));
     } catch (error) {
       res.writeHead(400, { 'Content-Type': 'text/plain; charset=utf-8' });
-      res.end(String((error as Error)?.message ?? error));
+      res.end(message(error));
     }
   };
 
@@ -169,14 +170,15 @@ export async function createServer(
         return res.end();
       }
 
-      const presented = cookieValue(req.headers.cookie, cookieName());
-      if (presented === undefined || !sameSecret(presented, options.token)) {
+      const presented = cookieValues(req.headers.cookie, cookieName());
+      if (!presented.some((value) => sameSecret(value, options.token))) {
         return refuse(res);
       }
 
       if (url.pathname.startsWith('/api/')) {
         if (req.method !== 'POST') return refuse(res);
-        if (req.headers.origin !== ownOrigin()) return refuse(res);
+        // A foreign Origin was refused above; an operation must also carry one (CSRF).
+        if (origin === undefined) return refuse(res);
         return operation(req, res, url.pathname.slice('/api/'.length));
       }
 
@@ -191,9 +193,14 @@ export async function createServer(
     });
   });
 
-  await new Promise<void>((resolve) =>
-    server.listen(options.port, '127.0.0.1', resolve),
-  );
+  // A port already in use rejects here, so `npm start` can say so instead of crashing on an unhandled 'error'.
+  await new Promise<void>((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(options.port, '127.0.0.1', () => {
+      server.off('error', reject);
+      resolve();
+    });
+  });
   port = (server.address() as AddressInfo).port;
 
   return {

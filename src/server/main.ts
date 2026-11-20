@@ -132,6 +132,13 @@ async function main(): Promise<void> {
 }
 
 main().catch((error: unknown) => {
-  console.error(error);
+  const { code, port } = error as { code?: string; port?: number };
+  if (code === 'EADDRINUSE') {
+    console.error(
+      `Port ${port} is in use. Is DigitalPigeon already running? Set DP_PORT to use another port.`,
+    );
+  } else {
+    console.error(error);
+  }
   process.exit(1);
 });

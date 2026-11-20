@@ -133,6 +133,16 @@ describe('wire codec: contract values survive the trip', () => {
 });
 
 describe('wire codec: values that look like tags', () => {
+  it('an object with its own toJSON travels as that JSON form', () => {
+    const value = {
+      url: new URL('http://example.test/a'),
+      id: { toJSON: () => 'abc' },
+    };
+    expect(roundTrip(value)).toEqual({
+      url: 'http://example.test/a',
+      id: 'abc',
+    });
+  });
   it('a plain object whose own key is $bytes stays that object', () => {
     const value = { headers: { $bytes: 'AQI=' } };
     expect(roundTrip(value)).toEqual(value);

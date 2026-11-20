@@ -517,3 +517,66 @@ this machine's load average was 3.9–6.5. No `src/core/` file changed in this e
 here.
 
 **Drift:** none. These are not plan phases; each fix is the one its finding names.
+
+## Code-review decisions — /code-review findings 1, 2, 4, 6, 7
+
+- **Executor:** lz-e2e (findings 1 and 2); findings 4, 6 and 7 needed no code
+- **Status:** done
+- **Started:** 2026-11-20
+- **Finished:** 2026-11-20
+
+The author's decisions of 2026-11-20:
+- findings 1 and 2: "Catch, no new UI";
+- findings 4 and 6: "Harden in a follow-up";
+- finding 7: "Settle on abort, no cap".
+
+Under test-strategy.md, failure states that are only visible in the assembled app are tested at the e2e layer.
+
+**Changed**
+- `src/renderer/app.tsx`:
+  - The status poll catches a rejected `dbStatus()` and sets `{ status: 'unreachable', message }`.
+  - `StatusBar` shows that state as "Database: unknown — the server did not answer (<message>). If it was stopped or
+    restarted, run npm start again." with `data-status="unreachable"`. Send is unavailable because the status is not
+    `up`.
+  - These calls now turn a rejection into `{ ok: false, message }`, which is shown in the existing error lines: `refreshSaved`, `refreshEnvironments`,
+    `openSaved`, `saveForm`, `deleteSaved`, and `afterEnvironmentChange` (which now takes the pending call).
+- `e2e/server-unreachable.spec.ts` (new) has 4 scenarios. Each stubs one operation so that it rejects (`500`), and each
+  asserts that no `pageerror` occurred:
+  - the status check; when the stub is restored, the status returns to `up`;
+  - a save;
+  - a delete;
+  - an environment change.
+- Findings 4 and 6: no code. A follow-up is recorded in `context/foundation/roadmap.md`, under "Not ordered yet".
+- Finding 7: no code. The probe below shows that Node 22 already rejects `readBody` when the client aborts mid-body. An
+  integration test for it was written and then removed: with `req.on('error', reject)` deleted it still passed, so it
+  could not detect a hung read.
+
+**Verification**
+
+```
+$ npx playwright test e2e/server-unreachable.spec.ts        # before the app.tsx change
+  ✘ a status check the server does not answer …   Expected: "unreachable"  Received: "up"
+  ✘ a save the server does not answer …           Expected substring: "refused"  element(s) not found
+  ✘ a delete the server does not answer …         Expected substring: "refused"  element(s) not found
+  ✘ an environment change the server does not answer …  Expected substring: "refused"  element(s) not found
+  4 failed
+$ npx playwright test e2e/server-unreachable.spec.ts --repeat-each=3   # after
+  12 passed (17.9s)
+$ node abort.mjs      # scratch probe, deleted: client writes 1000 of 1000000 bytes, then destroys the socket
+req data 1000 complete= false
+req aborted  complete= false
+req error ECONNRESET complete= false
+req close  complete= false
+$ npm run typecheck   → 0 errors
+$ npm run lint        → All matched files use the correct format.
+$ npm run test:unit   → Tests  371 passed (371)
+$ npm run test:integration
+     × a command at the limit sends 5006ms        (src/core/curl.int.test.ts; pre-existing, see the entry above)
+      Tests  1 failed | 339 passed (340)
+$ npm run test:e2e    → 55 passed (1.2m)
+```
+
+PASS, with the same `curl.int.test.ts` timeout as in the previous entry, which is unrelated to this change.
+
+**Drift:** decision. The plan's Out of scope excluded a "server not reachable" state. The author chose catch-only with
+no new UI. The one new piece of text is the `unreachable` status line, which reuses the existing status styling.

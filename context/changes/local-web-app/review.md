@@ -5,7 +5,7 @@ verdict: merge-with-fixes
 created: 2026-11-13
 updated: 2026-11-20
 reviewed: branch local-web-app against main (merge base ea911b3), commits aff8907..c514005, 4 phases, plan revision 3
-delegated-to: /code-review (2026-11-20), see Host code review; 5 findings open for the author
+delegated-to: /code-review (2026-11-20), see Host code review; 7 fixed, 1 no change, 2 fix later (roadmap)
 ---
 
 # Review: Replace the Electron shell with a local Node server and a browser UI
@@ -145,13 +145,13 @@ them itself. Each disposition is listed below; `progress.md`, under "Code-review
 
 | # | Finding | Disposition |
 |---|---|---|
-| 1 | The status poll (`app.tsx`) does not catch a rejected `dbStatus()`. After a server stop or restart the status stays stale, and the rejection is unhandled | **open, author decision**: the plan's Out of scope lists "server not reachable"; the plan's risk table already names it |
-| 2 | Saved-request and environment actions do not catch a rejected call. A failure there is lost silently | **open, author decision**: same Out of scope item |
+| 1 | The status poll (`app.tsx`) does not catch a rejected `dbStatus()`. After a server stop or restart the status stays stale, and the rejection is unhandled | fixed: the author chose catch-only, with no new UI (2026-11-20). The status line reads "the server did not answer … run npm start again" and Send is unavailable |
+| 2 | Saved-request and environment actions do not catch a rejected call. A failure there is lost silently | fixed: same decision. A failure shows its reason in the saved-request or environment error line |
 | 3 | A port in use crashed the process with an unhandled `'error'` | fixed |
-| 4 | Cookies are not isolated by port. Every 127.0.0.1 server the browser visits receives `dp_<port>=<token>` | **open, author decision**: changes ADR 0002's threat model |
+| 4 | Cookies are not isolated by port. Every 127.0.0.1 server the browser visits receives `dp_<port>=<token>` | fix later: the author chose a follow-up change (2026-11-20). Ticket: `roadmap.md`, "Not ordered yet", "Harden the per-launch token" |
 | 5 | A cookie planted by another 127.0.0.1 port, read first, locked the UI out | fixed |
-| 6 | The token appears in stdout and in the browser-launch process arguments | **open, author decision**: same-machine threat model, ADR 0002 |
-| 7 | `readBody` has no size limit and does not settle on an aborted request | **open, author decision**: a cap must stay above the largest allowed body |
+| 6 | The token appears in stdout and in the browser-launch process arguments | fix later: same follow-up change as finding 4 |
+| 7 | `readBody` has no size limit and does not settle on an aborted request | no change needed for the abort: on Node 22 an aborted request emits `error` (`ECONNRESET`), which rejects `readBody` (probe in `progress.md`). No size cap, by author decision (2026-11-20) |
 | 8 | The codec dropped `toJSON` results for values other than bytes and dates (latent) | fixed |
 | 9 | The error message is stringified in a second place | fixed |
 | 10 | The `/api/*` Origin check repeated the global one | fixed |

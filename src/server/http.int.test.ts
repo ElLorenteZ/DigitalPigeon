@@ -457,4 +457,26 @@ describe('static files', () => {
     expect(reply.headers['set-cookie']).toBeUndefined();
     expect(reply.body.toString()).not.toContain('<p>app</p>');
   });
+
+  // ADR 0002: every endpoint refuses an Origin that is not the server's own. Outside /api/* an absent Origin is
+  // allowed, because Chrome sends none on navigations and worker scripts (spike-browser-host.md, surprise 3).
+  test.each([
+    ['the UI', '/', 'SET'],
+    ['a script', '/app.js', 'SET'],
+    ['the favicon', '/favicon.ico', 'SET'],
+    ['the token exchange', `/?token=${TOKEN}`, null],
+  ])('%s with a foreign Origin → 403', async (_name, url, withCookie) => {
+    const reply = await raw(url, {
+      origin: 'http://evil.test',
+      cookie: withCookie === 'SET' ? cookie : null,
+    });
+    expect(reply.status).toBe(403);
+    expect(reply.headers['set-cookie']).toBeUndefined();
+    expect(reply.body.toString()).not.toContain('<p>app</p>');
+  });
+
+  test('a script requested with the server’s own Origin is served', async () => {
+    const reply = await raw('/app.js', { cookie });
+    expect(reply.status).toBe(200);
+  });
 });

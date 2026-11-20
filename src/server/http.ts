@@ -1,7 +1,7 @@
 // The local server in front of the operations (plan.md, phase 2; ADR 0002). Bound to 127.0.0.1. Every request must
 // carry the server's own Host (stops DNS rebinding). The browser gets a per-port HttpOnly cookie once, from the token
-// URL that `npm start` opens; every later request must carry it. Operations are POST /api/<channel> and must also
-// carry the server's own Origin (CSRF). Anything refused is refused before a handler runs, so nothing is sent or
+// URL that `npm start` opens; every later request must carry it. A request carrying another Origin is refused
+// everywhere; operations are POST /api/<channel> and must carry the server's own Origin (CSRF). Anything refused is refused before a handler runs, so nothing is sent or
 // recorded. Values cross as tagged JSON (src/shared/wire-codec.ts).
 import { timingSafeEqual } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
@@ -152,6 +152,10 @@ export async function createServer(
   const server = createHttpServer((req, res) => {
     void (async () => {
       if (req.headers.host !== `127.0.0.1:${port}`) return refuse(res);
+      // Every endpoint refuses an Origin that is not the server's own (ADR 0002). An absent one is allowed outside
+      // /api/*: Chrome sends none on navigations and worker scripts (spike-browser-host.md, surprise 3).
+      const { origin } = req.headers;
+      if (origin !== undefined && origin !== ownOrigin()) return refuse(res);
       const url = new URL(req.url ?? '/', ownOrigin());
 
       if (url.pathname === '/' && url.searchParams.has('token')) {

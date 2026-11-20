@@ -15,8 +15,8 @@ every send as a call record in MongoDB, which runs in Docker on the same machine
   `<iframe srcdoc>`, `webview`). Display them as text or in the editor. Never relax the production CSP.
 - **The local server is reachable by every page in every browser on the machine** (ADR 0002). It binds to
   `127.0.0.1` only. Every request must carry the server's own `Host` and the per-port session cookie from the token
-  exchange; every operation (`POST /api/*`) also its own `Origin` — checked in `src/server/http.ts` before a handler
-  runs, so a refused request sends and records nothing. The CSP (`CSP` in `src/server/http.ts`) is sent as a header
+  exchange, and is refused if it carries any other `Origin`; every operation (`POST /api/*`) must carry the server's
+  own `Origin` — checked in `src/server/http.ts` before a handler runs, so a refused request sends and records nothing. The CSP (`CSP` in `src/server/http.ts`) is sent as a header
   with the built UI. No CORS headers. Never add a route or a websocket that skips these checks.
 - **Tests never touch the history database.** Integration tests get their database from
   `openTestDb()` (`test-support/test-db.ts`), a throwaway `dp_test_*` database dropped afterwards.

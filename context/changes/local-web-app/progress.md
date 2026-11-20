@@ -395,3 +395,60 @@ walkthrough, not after `npm ci`.
 - decision — `test-strategy.md` changes go beyond the plan's list (T1.9, T1.8, T2.1, E2E layer, Build gate): T2.7,
   T2.10, T3.3, T3.10 and the known gaps also named Electron, the renderer or `npm run package`, and were rewritten.
 - Not committed. The author authorised commits for phases 1–3; phase 4 waits for the same.
+
+## Review fixes — review.md F1, F2, F3 (fix now)
+
+- **Executor:** lz-build
+- **Status:** done
+- **Started:** 2026-11-13
+- **Finished:** 2026-11-13
+
+Not a plan phase: the fix-now findings of `review.md` (2026-11-13). F4 and F5 are `accept` there and were not changed.
+
+**Changed**
+- F1 — `src/server/http.ts`: right after the `Host` check, a request carrying an `Origin` other than
+  `http://127.0.0.1:<port>` is refused with `403` on every route (UI, scripts, favicon, token exchange, operations); an
+  absent `Origin` stays allowed outside `/api/*`. Header comment updated. `src/server/http.int.test.ts`: 4 cases (UI,
+  script, favicon with a valid cookie; the token exchange without one) with `Origin: http://evil.test` → `403` and no
+  `Set-Cookie`; 1 case: a script with the server's own `Origin` is served. `AGENTS.md` server rule and
+  `test-strategy.md` T1.9 (why and covered) state the rule for every route.
+- F2 — `context/foundation/tech-stack.md`: the Shell row names Node.js 22 and `node:http` (frameworks rejected in this
+  change's plan); the Build row names both Vite builds and `npm run build`; the "server must be running" row names
+  `npm start`, `127.0.0.1:4380`, `DP_PORT`. `context/foundation/infrastructure.md`: the chosen distribution row names
+  the built bundle, `npm start`, the port and `npm run dev`.
+- F3 — this note: commit `0efb1be` ("phase 2") also contains the `devMiddleware` option of `src/server/http.ts`, written
+  during phase 3 step A; `http.ts` was committed as it stood rather than split by hunk. The gates ran on the working
+  tree at the end of each phase and on `c514005`; the commits `b9ada70` and `0efb1be` were not checked out and
+  gate-checked on their own.
+
+**Verification**
+
+```
+$ npx vitest run --project integration src/server/http.int.test.ts     # before the http.ts change
+     × the UI with a foreign Origin → 403
+     × a script with a foreign Origin → 403
+     × the favicon with a foreign Origin → 403
+     × the token exchange with a foreign Origin → 403
+AssertionError: expected 200 to be 403 / expected 204 to be 403 / expected 303 to be 403
+      Tests  4 failed | 28 passed (32)
+$ npx vitest run --project integration src/server/http.int.test.ts     # after
+      Tests  32 passed (32)
+$ npm run typecheck
+exit 0
+$ npm run lint
+All matched files use the correct format.
+$ npm run test:unit
+      Tests  370 passed (370)
+$ npm run test:integration
+ Test Files  13 passed (13)
+      Tests  338 passed (338)
+$ npm run test:e2e
+  51 passed (42.0s)
+$ grep -n "slice 5b's plan" context/foundation/*.md
+(no output)
+```
+
+PASS — every route refuses a foreign `Origin` (the four cases failed first, for the reason the review gave), the app
+still runs in Chrome under the rule (51 e2e), and no foundation document defers to the plan.
+
+**Drift:** none — the fixes are the ones `review.md` names, with its stated shape for F1.

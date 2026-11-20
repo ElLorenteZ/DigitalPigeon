@@ -23,7 +23,7 @@ Alternatives rejected.
 ## Components
 | Layer | Choice | Version | Why |
 |---|---|---|---|
-| Shell | Node.js server bound to `127.0.0.1`, serving the UI to the author's browser | Node.js version and HTTP server library set in roadmap slice 5b's plan | ADR 0002: the app in the author's own browser, an easier work-laptop approval than an unsigned Electron app, no Electron release cadence or packaging. Runs on macOS, Windows and Linux. Replaces Electron (45.2.1 at the switch). |
+| Shell | Node.js server bound to `127.0.0.1`, serving the UI to the author's browser | Node.js 22 (`@types/node@^22`); `node:http`, no framework (`src/server/http.ts`; Fastify and Hono were rejected in change `local-web-app`'s plan) | ADR 0002: the app in the author's own browser, an easier work-laptop approval than an unsigned Electron app, no Electron release cadence or packaging. Runs on macOS, Windows and Linux. Replaces Electron (45.2.1 at the switch). |
 | Language | TypeScript, `strict: true` | 5.x, current at scaffold time | The author can review it. Types are checked when code is edited. |
 | UI | React | 19.x | Most public code of any UI library. |
 | Request/response editor | Monaco Editor | current at scaffold time | JSON formatting and syntax highlighting are built in, and XML highlighting is supported. This covers the PRD's formatter criteria. |
@@ -31,7 +31,7 @@ Alternatives rejected.
 | Storage | MongoDB in a Docker container, accessed with the official `mongodb` Node.js driver from the Node.js process | Server: current stable 8.x image, pinned by tag at scaffold. Driver: current major at scaffold. | Chosen by the author. Records of different shapes (REST now, GraphQL and SOAP later) fit without schema migrations. Pure JavaScript driver, so there is no native module to rebuild against Electron's ABI. |
 | Large bodies and file copies | GridFS in the same MongoDB instance | — | MongoDB documents are limited to 16 MB, and the PRD requires full bodies at any size and a copy of every uploaded file. GridFS keeps them in the same store and backup as the call records. |
 | Container runtime | Docker (Docker Desktop on macOS and Windows) | current at setup | The author confirmed Docker can run on both machines. |
-| Build | Vite for the UI; how the server is built and started is set in slice 5b's plan | current | No installer and no signing: the server runs on the machine it was built on (ADR 0002). Electron Forge is removed. |
+| Build | Vite: the UI to `dist/ui` (`vite.renderer.config.mts`), the server as one ES module to `dist/server/main.mjs` (`vite.server.config.mts`); `npm run build` | current | No installer and no signing: the server runs on the machine it was built on (ADR 0002). Electron Forge is removed. |
 | Validation at the API boundary | `zod` | 3.x or 4.x, pinned at scaffold | Messages between the browser UI and the server are untyped at runtime (see the costs below). The schemas in `src/shared/ipc-contract.ts` carry over from the Electron IPC contract. |
 
 ## Agent-friendliness
@@ -54,7 +54,7 @@ Alternatives rejected.
 | Docker Desktop licensing and system requirements | A large employer needs a paid Docker subscription. Windows needs WSL2 or Hyper-V. | Confirm the work machine's Docker licence. A Docker-compatible runtime (for example Podman or Rancher Desktop) is the fallback. | Author; `lz-infra` |
 | Data lives in a Docker volume | Removing the volume deletes all history. Moving between machines needs `mongodump`/`mongorestore`. | Named volume. Document backup and restore. | `lz-infra` |
 | Local server reachable by every page in every browser on the machine | A malicious page can make the server send requests, or read history including stored credentials (cross-site requests, DNS rebinding). XSS from a response body reaches the whole API. | Bind to `127.0.0.1` only. Every endpoint requires a per-launch token and a `Host` and `Origin` that are the server's own. CSP as an HTTP header; no CORS headers admitting another origin. Never render response HTML as live DOM. (Replaces Electron's `contextIsolation`, sandbox and narrow preload, ADR 0002.) | `lz-onboard`, `lz-test-strategy` |
-| The server must be running | Closing the browser tab does not stop it; starting the app means starting a server and opening a URL | How it is started is set in slice 5b's plan | `lz-plan` |
+| The server must be running | Closing the browser tab does not stop it; starting the app means starting a server and opening a URL | `npm start` builds, starts the server on `127.0.0.1:4380` (`DP_PORT`) and opens Chrome at the token URL; stopping it is Ctrl+C in its terminal | — |
 | Weaker WSDL tooling in the JS ecosystem than in JVM/.NET | The deferred WSDL template milestone may need custom parsing | Spike WSDL parsing (`lz-spike`) before planning that milestone | `lz-roadmap`, `lz-spike` |
 | No native window | No window title bar or native menus; screens 01–02 draw a title bar | Rendered as a page header (roadmap slice 6) | `lz-roadmap` |
 

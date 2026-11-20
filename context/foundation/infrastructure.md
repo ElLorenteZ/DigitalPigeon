@@ -34,7 +34,7 @@ that app yet. For now local install only so budget is 0").
 ### Distribution
 | Option | Cost (2026-11) | Fits constraints | Exit cost | Verdict |
 |---|---|---|---|---|
-| **Local server built from source on the personal machine, opened in the browser** | $0 | Yes, on the personal machine | None | **Chosen** (ADR 0002). The start command, port, and whether daily use runs a built bundle or the dev server are set in roadmap slice 5b's plan. |
+| **Local server built from source on the personal machine, opened in the browser** | $0 | Yes, on the personal machine | None | **Chosen** (ADR 0002). Daily use runs the built bundle: `npm start` builds, serves on `127.0.0.1:4380` (`DP_PORT`) and opens Chrome at the per-launch token URL. `npm run dev` is the development loop. |
 | Unsigned local package (Electron Forge `make` on the personal machine, installed locally) | $0 | Yes, on the personal machine | None | Chosen 2026-11-02; replaced 2026-11-11 by ADR 0002 |
 | Hosted web app (server in the cloud) | Hosting cost, plus accounts | Breaks "data stays local", the $0 budget and the no-accounts non-goal; cannot reach `localhost` or VPN-only APIs | Medium | Rejected (ADR 0002) |
 | Signed builds published to GitHub Releases from CI | Apple Developer ID ~$99/yr, plus a Windows signing certificate (~$120–$300+/yr) | Breaks the $0 budget and the "no publishing" constraint | Low | Applied to the Electron package. No longer applicable: a local server has no installer to sign |

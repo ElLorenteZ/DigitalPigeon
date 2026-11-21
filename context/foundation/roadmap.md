@@ -39,7 +39,7 @@ was added on 2026-11-11 by the author's decision, ahead of slice 6.
 - [ ] A request shows every response it has received, newest first, and any one of them can be deleted without affecting the others.
 - [ ] A call can be resent from History, one at a time or as a selection; each resend creates a new record.
 - [ ] A deleted call can be restored with Undo for a few seconds, then it is gone permanently.
-- [ ] The app shows the target design's shell: the circuit-trace pigeon logo, title bar with the active environment, sidebar tabs, and the status bar.
+- [x] The app shows the target design's shell: the circuit-trace pigeon logo, title bar with the active environment, sidebar tabs, and the status bar. *(slice 6: `e2e/shell.spec.ts`; screenshots compared with screens 01 and 02, `archive/workspace-shell`)*
 - [x] Switching the active environment changes the `baseUrl` a saved request is sent to. *(slice 5: `e2e/saved-requests.spec.ts` outcome scenario, `e2e/environments.spec.ts`, `send.int.test.ts`, `url.test.ts` T2.5)*
 - [x] A request exported as curl, run in a terminal, sends the same method, URL, headers and body. *(slices 2 and 3a: holds for no body and for JSON, XML, text and form bodies with a command up to 900 KiB, on macOS, `curl.int.test.ts` T2.4; a longer command is refused with the reason; multipart is slice 4; slice 4: a text-only multipart body, `curl.int.test.ts`; a binary file part is refused with the reason, as a command over 900 KiB is)*
 - [x] The app runs as a local install on the personal machine with no account. *(slice 1: the author ran the packaged app from `npm run package` and sent a request with only `config.json`; no installer from `make` yet. Slice 5b held it again for the local web app: the author started `npm start` on the personal machine, used the app in Chrome with no account, and attested the phase 3 walkthrough on 2026-11-13, `archive/local-web-app`)*
@@ -54,8 +54,8 @@ was added on 2026-11-11 by the author's decision, ahead of slice 6.
 | 4 | Multipart with file copies | Send a multipart request with a file; delete the file from disk; replay the call and the server receives the same bytes | done | `multipart-with-file-copies` |
 | 5 | Saved requests and environments | Save a request and edit it later; define environments (name + `baseUrl`), switch the active one, and the same saved request goes to the other `baseUrl`; calls link back to their saved request | done | `saved-requests-and-environments` |
 | 5b | Desktop to local web app | One command starts a Node server bound to `127.0.0.1`; opening its address in a browser shows the app working as it does today (send, history, preview, replay, curl export, bodies, multipart, saved requests, environments); the Electron shell is gone; every existing e2e journey passes in a plain browser; a request to the server from another origin, or without the per-launch token, is refused and nothing is sent or recorded | done | `local-web-app` |
-| 6 | Workspace shell in the design | The app looks like screens 01 and 02: the logo in the title bar, the environment selector in the title bar, a sidebar with Saved and History tabs (Templates appears in M2), request above response, the status bar; every existing e2e journey still passes | next | `workspace-shell` |
-| 7 | Responses to this request | Send the same method and path three times and the response panel shows three response chips, newest selected; pick one to view it; the call record lists the other responses of its request | later | — |
+| 6 | Workspace shell in the design | The app looks like screens 01 and 02: the logo in the title bar, the environment selector in the title bar, a sidebar with Saved and History tabs (Templates appears in M2), request above response, the status bar; every existing e2e journey still passes | done | `workspace-shell` |
+| 7 | Responses to this request | Send the same method and path three times and the response panel shows three response chips, newest selected; pick one to view it; the call record lists the other responses of its request | next | `responses-strip` |
 | 8 | Delete with undo | Delete one response from the strip, the history list or the call record; it disappears, an Undo toast restores it for a few seconds, then it is gone permanently along with its stored bodies and file copies | later | — |
 | 9 | Search, filter, resend | Screen 04: search text plus method, environment, `Authorization` header and date facets with counts, results table, resend one or a selection, delete a selection; an empty result says so and offers to clear filters | later | — |
 
@@ -178,6 +178,12 @@ was added on 2026-11-11 by the author's decision, ahead of slice 6.
     fixed, 2 deferred (token hardening, "Not ordered yet")
 
   Platform moves cost about twice a feature slice. Slices 6–9 return to renderer work, now on a browser host.
+- **Slice 6, `workspace-shell`** (2026-11-21): one day. The time went on:
+  - porting 43 e2e journeys to tabs and views, through scripted edits and then hand fixes
+  - a Monaco and scrollbar resize loop
+  - 10 code-review findings, all fixed, 4 of them with new e2e scenarios
+
+  Renderer-only slices are faster than slices that touch undici or storage.
 - **Merged:** slices 1, 2 and 3a reached `main` together on 2026-11-07, at `15c97c9`, with no pull request (author's
   instruction). "Done" here now means closed, archived and merged. Slice 3b reached `main` through PR #3 on
   2026-11-08. Slice 4 reached `main` at `7ab1f65` on 2026-11-09, fast-forwarded with no pull request (author's

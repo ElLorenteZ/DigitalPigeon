@@ -1,11 +1,11 @@
 ---
 change_id: delete-with-undo
 title: Delete one call from anywhere it shows, with Undo for eight seconds
-status: new
+status: closed
 ticket: null
 created: 2026-11-21
 updated: 2026-11-21
-closed: null
+closed: 2026-11-21
 produced-by: lz-change
 ---
 
@@ -32,3 +32,8 @@ inside the window.
 - Bulk delete of a selection (slice 9, with the results table).
 - Retention rules (not in M1).
 - Deleting saved requests or environments; that already exists.
+
+## Notes
+
+- Outcome (2026-11-21): closed as done. Both phases are verified, the review verdict is merge, and all 10 code-review
+  findings are fixed, one of them a data-loss blocker. PR #7, stacked on #6.

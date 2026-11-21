@@ -62,6 +62,8 @@ test.afterAll(async () => {
 test.beforeEach(async () => {
   await showRequest(testApp.window);
   await showSidebarTab(testApp.window, 'History');
+  const clearAll = button('Clear all');
+  if (await clearAll.isVisible()) await clearAll.click();
 });
 
 test('text and a method narrow the results, each option shows its count, and Clear all returns to the request', async () => {
@@ -70,23 +72,13 @@ test('text and a method narrow the results, each option shows its count, and Cle
   await expect(results()).toContainText('4 calls match');
   await expect(resultRows()).toHaveCount(4);
   await expect(facet('Method', 'POST')).toBeVisible();
-  await expect(
-    window
-      .getByRole('group', { name: 'Method' })
-      .getByText('POST')
-      .locator('..'),
-  ).toContainText('2');
+  await expect(facet('Method', 'POST')).toHaveAccessibleName(/^POST\s*2$/);
 
   await facet('Method', 'POST').check();
   await expect(results()).toContainText('2 calls match');
   await expect(resultRows()).toHaveCount(2);
   // Method counts ignore the method filter: GET still counts its 1 match.
-  await expect(
-    window
-      .getByRole('group', { name: 'Method' })
-      .getByText('GET')
-      .locator('..'),
-  ).toContainText('1');
+  await expect(facet('Method', 'GET')).toHaveAccessibleName(/^GET\s*1$/);
 
   await button('Clear all').click();
   await expect(results()).toBeHidden();

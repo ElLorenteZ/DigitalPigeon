@@ -45,9 +45,7 @@ export function parseOpenApi(source: string): ParsedSpec {
   try {
     doc = JSON.parse(source);
   } catch (error) {
-    throw new SpecError(
-      `The file is not valid JSON: ${(error as Error).message}`,
-    );
+    throw new SpecError(jsonErrorText(source, (error as Error).message));
   }
   if (!isObject(doc) || !text(doc.openapi).startsWith('3.')) {
     throw new SpecError(
@@ -66,11 +64,19 @@ export function parseOpenApi(source: string): ParsedSpec {
 
   const operations: SpecOperation[] = [];
   for (const [path, item] of Object.entries(doc.paths)) {
-    if (!isObject(item)) continue;
+    // Where an invalid document failed, by its path (slice 11).
+    if (!isObject(item)) {
+      throw new SpecError(`paths[${JSON.stringify(path)}] is not an object`);
+    }
     const shared = parametersOf(item.parameters);
     for (const method of METHODS) {
       const op = item[method];
-      if (!isObject(op)) continue;
+      if (op === undefined) continue;
+      if (!isObject(op)) {
+        throw new SpecError(
+          `paths[${JSON.stringify(path)}].${method} is not an object`,
+        );
+      }
       const params = mergeParameters(shared, parametersOf(op.parameters));
       const upper = method.toUpperCase();
       operations.push({
@@ -91,6 +97,17 @@ export function parseOpenApi(source: string): ParsedSpec {
     servers,
     operations,
   };
+}
+
+// "line L, column C" from the parser's character position, when it gives one (slice 11).
+function jsonErrorText(source: string, message: string): string {
+  const position = /position (\d+)/.exec(message)?.[1];
+  if (position === undefined) return `The file is not valid JSON: ${message}`;
+  const before = source.slice(0, Number(position));
+  const line = before.split('\n').length;
+  const column = Number(position) - before.lastIndexOf('\n');
+  const reason = message.replace(/ in JSON at position \d+.*$/, '');
+  return `The file is not valid JSON at line ${line}, column ${column}: ${reason}`;
 }
 
 interface Parameter {

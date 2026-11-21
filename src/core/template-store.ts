@@ -41,6 +41,16 @@ export interface TemplateSourceListing {
   templates: TemplateListing[];
 }
 
+export interface ImportOutcome {
+  sourceId: string;
+  count: number;
+  /** True when a source with the same kind and title existed and was updated in place (slice 11). */
+  reimported: boolean;
+  added: number;
+  updated: number;
+  removed: number;
+}
+
 export interface ImportInput {
   text: string;
   filename: string;
@@ -72,22 +82,17 @@ export function createTemplateStore(db: Db) {
 
   return {
     /** Parses and stores; a spec that does not parse throws SpecError and stores nothing. */
-    importOpenApi: async (
-      input: ImportInput,
-    ): Promise<{ sourceId: string; count: number }> => {
+    importOpenApi: async (input: ImportInput): Promise<ImportOutcome> => {
       const spec = parseOpenApi(input.text);
       const server = sendableServer(spec.servers[0]);
-      const sourceId = randomUUID();
-      const docs: TemplateDoc[] = [];
+      const planned: Omit<TemplateDoc, '_id' | 'sourceId'>[] = [];
       let order = 0;
       for (const [directory, ops] of groupOperations(
         spec.operations,
         input.grouping,
       )) {
         for (const op of ops) {
-          docs.push({
-            _id: randomUUID(),
-            sourceId,
+          planned.push({
             order: order++,
             directory,
             name: op.name,
@@ -104,6 +109,68 @@ export function createTemplateStore(db: Db) {
           });
         }
       }
+
+      // The same spec is the same kind and title: it is updated in place (slice 11).
+      const existing = await sources.findOne({
+        kind: 'openapi',
+        name: spec.title,
+      });
+      if (existing) {
+        const keyOf = (t: { request: WireInput }) =>
+          `${t.request.method} ${pathOf(t.request.url)}`;
+        const current = await templates
+          .find({ sourceId: existing._id })
+          .toArray();
+        const byKey = new Map(current.map((t) => [keyOf(t), t]));
+        let added = 0;
+        let updated = 0;
+        const kept = new Set<string>();
+        for (const doc of planned) {
+          const match = byKey.get(keyOf(doc));
+          if (match && !kept.has(match._id)) {
+            kept.add(match._id);
+            await templates.replaceOne(
+              { _id: match._id },
+              { ...doc, sourceId: existing._id },
+            );
+            updated += 1;
+          } else {
+            await templates.insertOne({
+              ...doc,
+              _id: randomUUID(),
+              sourceId: existing._id,
+            });
+            added += 1;
+          }
+        }
+        const gone = current.filter((t) => !kept.has(t._id)).map((t) => t._id);
+        if (gone.length > 0) await templates.deleteMany({ _id: { $in: gone } });
+        await sources.updateOne(
+          { _id: existing._id },
+          {
+            $set: {
+              filename: input.filename,
+              grouping: input.grouping,
+              importedAt: new Date(),
+            },
+          },
+        );
+        return {
+          sourceId: existing._id,
+          count: planned.length,
+          reimported: true,
+          added,
+          updated,
+          removed: gone.length,
+        };
+      }
+
+      const sourceId = randomUUID();
+      const docs = planned.map((doc) => ({
+        ...doc,
+        _id: randomUUID(),
+        sourceId,
+      }));
       // Templates first, then their source: a failure part-way leaves nothing listed (code review of
       // openapi-import, 4).
       if (docs.length > 0) await templates.insertMany(docs);
@@ -120,7 +187,14 @@ export function createTemplateStore(db: Db) {
         await templates.deleteMany({ sourceId }).catch(() => undefined);
         throw error;
       }
-      return { sourceId, count: docs.length };
+      return {
+        sourceId,
+        count: docs.length,
+        reimported: false,
+        added: docs.length,
+        updated: 0,
+        removed: 0,
+      };
     },
 
     /** Every source with its templates, in import order then spec order; no request bodies. */

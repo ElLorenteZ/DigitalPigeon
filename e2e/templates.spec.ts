@@ -119,3 +119,66 @@ test('a template opens into the form and sends to the active environment', async
     rowName(window.getByTestId('history').getByRole('listitem').first()),
   ).toHaveAccessibleName(new RegExp(`^POST ${capture.url}/orders — 201`));
 });
+
+// Slice 11 (reimport-and-errors).
+test('re-importing a changed spec updates the tree in place and leaves History alone', async () => {
+  const { window } = testApp;
+  await showSidebarTab(window, 'History');
+  const historyCount = await window
+    .getByTestId('history')
+    .getByRole('listitem')
+    .count();
+  const changed = {
+    ...spec,
+    paths: {
+      '/orders': spec.paths['/orders'],
+      '/orders/{id}': spec.paths['/orders/{id}'],
+      '/invoices': { get: { tags: ['invoices'] } },
+    },
+  };
+  await window.getByRole('tab', { name: 'Templates', exact: true }).click();
+  await button('Import OpenAPI / WSDL').click();
+  await dialog()
+    .getByLabel('Spec file')
+    .setInputFiles({
+      name: 'orders-api-v2.json',
+      mimeType: 'application/json',
+      buffer: Buffer.from(JSON.stringify(changed)),
+    });
+  await expect(dialog()).toContainText('Re-imports “Orders API”');
+  await dialog().getByRole('button', { name: 'Update 4 templates' }).click();
+  await expect(dialog()).toBeHidden();
+  await expect(testApp.window.getByTestId('import-outcome')).toContainText(
+    '1 added · 3 updated · 1 removed',
+  );
+  await expect(
+    tree().getByRole('button', { name: /^GET \/invoices\b/ }),
+  ).toBeVisible();
+  await expect(
+    tree().getByRole('button', { name: /^GET \/customers\b/ }),
+  ).toHaveCount(0);
+  await expect(tree().getByText('Orders API')).toHaveCount(1);
+  await showSidebarTab(window, 'History');
+  await expect(window.getByTestId('history').getByRole('listitem')).toHaveCount(
+    historyCount,
+  );
+});
+
+test('an invalid file says where it failed and cannot be generated', async () => {
+  const { window } = testApp;
+  await window.getByRole('tab', { name: 'Templates', exact: true }).click();
+  await button('Import OpenAPI / WSDL').click();
+  await dialog()
+    .getByLabel('Spec file')
+    .setInputFiles({
+      name: 'broken.json',
+      mimeType: 'application/json',
+      buffer: Buffer.from('{\n  "openapi": "3.0.0",\n  "paths": {,}\n}'),
+    });
+  await expect(dialog().getByRole('alert')).toContainText('line 3, column 13');
+  await expect(
+    dialog().getByRole('button', { name: /^(Generate|Update) / }),
+  ).toBeDisabled();
+  await dialog().getByRole('button', { name: 'Cancel' }).click();
+  await expect(dialog()).toBeHidden();
+});

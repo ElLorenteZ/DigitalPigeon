@@ -156,3 +156,23 @@ describe('parseOpenApi: what the app cannot send, and examples that are not stri
     ]);
   });
 });
+
+// Slice 11 (reimport-and-errors): an invalid file says where it failed.
+describe('parseOpenApi: where an invalid file failed', () => {
+  it('gives the line and column of a JSON error', () => {
+    expect(() =>
+      parseOpenApi('{\n  "openapi": "3.0.0",\n  "paths": {,}\n}'),
+    ).toThrow(/line 3, column 13/);
+  });
+
+  it('names a path item or an operation that is not an object', () => {
+    expect(() =>
+      parseOpenApi(JSON.stringify({ openapi: '3.0.0', paths: { '/x': 5 } })),
+    ).toThrow('paths["/x"] is not an object');
+    expect(() =>
+      parseOpenApi(
+        JSON.stringify({ openapi: '3.0.0', paths: { '/x': { get: 'nope' } } }),
+      ),
+    ).toThrow('paths["/x"].get is not an object');
+  });
+});

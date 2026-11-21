@@ -63,14 +63,17 @@ describe('template store', () => {
 
   test('with the environment, a template URL is the path; without, the spec server joined to it', async () => {
     const store = createTemplateStore(testDb.db);
+    // Two titles: the same title would be a re-import (slice 11).
+    const titled = (title: string) =>
+      JSON.stringify({ ...JSON.parse(spec), info: { title, version: '1' } });
     const withEnv = await store.importOpenApi({
-      text: spec,
+      text: titled('Env API'),
       filename: 'a.json',
       grouping: 'path',
       useEnvironment: true,
     });
     const withServer = await store.importOpenApi({
-      text: spec,
+      text: titled('Server API'),
       filename: 'b.json',
       grouping: 'path',
       useEnvironment: false,
@@ -127,6 +130,68 @@ describe('template store', () => {
       const template = await store.get(listed?.templates[0]?.id ?? '');
       expect(template?.request.url).toBe('/pets');
     }
+  });
+
+  // Slice 11: the same spec (kind and title) re-imported updates in place: ids kept, new added, gone removed.
+  test('re-importing the same spec updates its templates in place, and History is untouched', async () => {
+    const store = createTemplateStore(testDb.db);
+    const v1 = JSON.stringify({
+      openapi: '3.0.0',
+      info: { title: 'Reimport API' },
+      paths: {
+        '/a': { get: { summary: 'A one' } },
+        '/b': { get: {} },
+      },
+    });
+    const v2 = JSON.stringify({
+      openapi: '3.0.0',
+      info: { title: 'Reimport API' },
+      paths: {
+        '/a': { get: { summary: 'A two' } },
+        '/c': { post: {} },
+      },
+    });
+    const first = await store.importOpenApi({
+      text: v1,
+      filename: 'v1.json',
+      grouping: 'tag',
+      useEnvironment: true,
+    });
+    const before = (await store.list()).find((s) => s.id === first.sourceId);
+    const aId = before?.templates.find((t) => t.path === '/a')?.id;
+    const sends = await testDb.db.collection('sends').countDocuments();
+    const completions = await testDb.db
+      .collection('completions')
+      .countDocuments();
+
+    const second = await store.importOpenApi({
+      text: v2,
+      filename: 'v2.json',
+      grouping: 'tag',
+      useEnvironment: true,
+    });
+    expect(second).toMatchObject({
+      sourceId: first.sourceId,
+      reimported: true,
+      added: 1,
+      updated: 1,
+      removed: 1,
+    });
+    const sources = (await store.list()).filter(
+      (s) => s.name === 'Reimport API',
+    );
+    expect(sources).toHaveLength(1);
+    expect(
+      sources[0]?.templates.map((t) => [t.method, t.path, t.name]),
+    ).toEqual([
+      ['GET', '/a', 'A two'],
+      ['POST', '/c', 'POST /c'],
+    ]);
+    expect(sources[0]?.templates[0]?.id).toBe(aId);
+    expect(await testDb.db.collection('sends').countDocuments()).toBe(sends);
+    expect(await testDb.db.collection('completions').countDocuments()).toBe(
+      completions,
+    );
   });
 
   test('an unknown template is null', async () => {

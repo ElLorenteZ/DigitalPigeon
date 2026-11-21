@@ -326,6 +326,10 @@ export const ImportResultSchema = z.discriminatedUnion('ok', [
     ok: z.literal(true),
     sourceId: z.string(),
     count: z.number().int().nonnegative(),
+    reimported: z.boolean(),
+    added: z.number().int().nonnegative(),
+    updated: z.number().int().nonnegative(),
+    removed: z.number().int().nonnegative(),
   }),
   z.strictObject({ ok: z.literal(false), message: z.string() }),
 ]);

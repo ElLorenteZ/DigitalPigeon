@@ -29,15 +29,15 @@ was added on 2026-11-11 by the author's decision, ahead of slice 6.
 - [x] Sending the same unchanged request twice produces two call records, each with its own timestamp. *(slice 1: `call-store.int.test.ts`, `send.int.test.ts` T1.1, e2e journey shows two rows)*
 - [x] A call record's content does not change after it is written; edit-and-send creates a new record and the original is unchanged when viewed again. *(slice 1: insert-only store, no update or delete; slice 2: `replay.int.test.ts` T1.1, `e2e/edit-and-export.spec.ts`)*
 - [x] An exact replay sends the same method, URL, headers and body as the recorded request, and creates a new record. *(slices 2 and 3a: holds for no body and for JSON, XML, text and form bodies, `replay.int.test.ts` T1.3; multipart is slice 4; slice 4: multipart, inline and stored, `send.int.test.ts`, `replay.int.test.ts`)*
-- [ ] A call record disappears only after the user deletes it, one at a time or in bulk. *(slice 8: one at a time; bulk is slice 9)*
+- [x] A call record disappears only after the user deletes it, one at a time or in bulk. *(slice 8: one at a time, `e2e/delete.spec.ts`; slice 9: a selection, `e2e/search.spec.ts`; T1.7)*
 - [x] A call record shows the request as sent, response status, response headers, full response body and timing. *(slice 2: the panel shows all of these; slice 3a: a body over 16 MB is stored in full, T1.5, and read to its end with Load more, `e2e/bodies.spec.ts`; slice 3b: shown in a read-only Monaco editor. Renderer memory limits how far a very large body can be paged, T3.10)*
 - [x] JSON and XML request and response bodies are shown pretty-printed. *(slice 3b: Pretty by default with a Raw switch, chosen from the recorded `Content-Type`; formatted page by page up to 17 MiB with stored bytes unchanged, `src/core/body-format.ts` unit tests, `e2e/bodies.spec.ts`; T1.8 guarded by `e2e/body-safety.spec.ts`)*
 - [x] JSON, XML, plain-text, form-urlencoded and multipart requests can each be sent and are recorded. *(slice 3a: all but multipart, `send.int.test.ts` T1.2, T1.3; multipart is slice 4; slice 4: multipart on 6 methods, `send.int.test.ts`, `e2e/multipart.spec.ts`)*
 - [x] A recorded multipart call can be replayed after the uploaded file is deleted from its original location. *(slice 4: T1.4, `replay.int.test.ts` inline and GridFS, `e2e/multipart.spec.ts`)*
-- [ ] History can be narrowed by environment, by saved request, by date range, and by a search term in URL or body.
-- [ ] History can be narrowed by HTTP method (one or several) and by the `Authorization` header value sent; filters combine, and each option shows its count.
+- [x] History can be narrowed by environment, by saved request, by date range, and by a search term in URL or body. *(slice 9: `src/core/search.int.test.ts`, `e2e/search.spec.ts`; bodies stored as files, over 1 MiB, are not searched)*
+- [x] History can be narrowed by HTTP method (one or several) and by the `Authorization` header value sent; filters combine, and each option shows its count. *(slice 9: `search.int.test.ts` faceted counts, `e2e/search.spec.ts`)*
 - [x] A request shows every response it has received, newest first, and any one of them can be deleted without affecting the others. *(slice 7: `e2e/responses.spec.ts`; slice 8: delete from a chip, `e2e/delete.spec.ts`; only the target is removed, T1.7)*
-- [ ] A call can be resent from History, one at a time or as a selection; each resend creates a new record.
+- [x] A call can be resent from History, one at a time or as a selection; each resend creates a new record. *(slice 9: `e2e/search.spec.ts`, originals deep-equal after)*
 - [x] A deleted call can be restored with Undo for a few seconds, then it is gone permanently. *(slice 8: `e2e/delete.spec.ts`; `call-store.int.test.ts` `deleteCall`, T1.7)*
 - [x] The app shows the target design's shell: the circuit-trace pigeon logo, title bar with the active environment, sidebar tabs, and the status bar. *(slice 6: `e2e/shell.spec.ts`; screenshots compared with screens 01 and 02, `archive/workspace-shell`)*
 - [x] Switching the active environment changes the `baseUrl` a saved request is sent to. *(slice 5: `e2e/saved-requests.spec.ts` outcome scenario, `e2e/environments.spec.ts`, `send.int.test.ts`, `url.test.ts` T2.5)*
@@ -57,7 +57,7 @@ was added on 2026-11-11 by the author's decision, ahead of slice 6.
 | 6 | Workspace shell in the design | The app looks like screens 01 and 02: the logo in the title bar, the environment selector in the title bar, a sidebar with Saved and History tabs (Templates appears in M2), request above response, the status bar; every existing e2e journey still passes | done | `workspace-shell` |
 | 7 | Responses to this request | Send the same method and path three times and the response panel shows three response chips, newest selected; pick one to view it; the call record lists the other responses of its request | done | `responses-strip` |
 | 8 | Delete with undo | Delete one response from the strip, the history list or the call record; it disappears, an Undo toast restores it for a few seconds, then it is gone permanently along with its stored bodies and file copies | done | `delete-with-undo` |
-| 9 | Search, filter, resend | Screen 04: search text plus method, environment, `Authorization` header and date facets with counts, results table, resend one or a selection, delete a selection; an empty result says so and offers to clear filters | next | `history-search` |
+| 9 | Search, filter, resend | Screen 04: search text plus method, environment, `Authorization` header and date facets with counts, results table, resend one or a selection, delete a selection; an empty result says so and offers to clear filters | done | `history-search` |
 
 **Order rationale:**
 - Slice 1 goes first because it is both the thinnest end-to-end path and the riskiest. Recording the request exactly as it went over the wire through `undici` (T1.2, T1.3) underpins every later slice. It also carries the groundwork that has no visible outcome of its own:
@@ -184,6 +184,11 @@ was added on 2026-11-11 by the author's decision, ahead of slice 6.
   - 10 code-review findings, all fixed, 4 of them with new e2e scenarios
 
   Renderer-only slices are faster than slices that touch undici or storage.
+- **Slices 7–9** (2026-11-21), the same day: renderer and query work, with no new undici shapes. Each code review still
+  found 9–10 issues. One was a data-loss blocker: the orphan sweep would have deleted saved requests' bodies.
+- **M1 status (2026-11-21):** all 11 slices are built. Every exit criterion is met except the author's own judgement
+  (two weeks without Postman/Insomnia). M1 closes when the author says so. Slices 6–9 are PRs #5–#8, stacked on one
+  another and waiting for the author to merge them.
 - **Merged:** slices 1, 2 and 3a reached `main` together on 2026-11-07, at `15c97c9`, with no pull request (author's
   instruction). "Done" here now means closed, archived and merged. Slice 3b reached `main` through PR #3 on
   2026-11-08. Slice 4 reached `main` at `7ab1f65` on 2026-11-09, fast-forwarded with no pull request (author's

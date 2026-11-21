@@ -1,11 +1,11 @@
 ---
 change_id: history-search
 title: Search and filter History, and resend or delete a selection
-status: new
+status: closed
 ticket: null
 created: 2026-11-21
 updated: 2026-11-21
-closed: null
+closed: 2026-11-21
 produced-by: lz-change
 ---
 
@@ -37,3 +37,8 @@ PRD success criteria this slice closes:
 - Searching bodies stored as files (over 1 MiB). The search reads inline bodies only.
 - Saved searches.
 - Retention rules.
+
+## Notes
+
+- Outcome (2026-11-21): closed as done. Both phases are verified, the review verdict is merge, and 9 of 10 code-review
+  findings are fixed; search performance is fix later. PR #8, stacked on #7.

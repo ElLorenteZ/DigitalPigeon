@@ -47,6 +47,7 @@ import {
   groupOperations,
   parseOpenApi,
 } from '../core/openapi';
+import { type ParsedWsdl, groupPorts, parseWsdl } from '../core/wsdl';
 import { composeUrl } from '../core/url';
 import { type BodyInput, buildWireRequest } from '../core/wire';
 import {
@@ -1140,7 +1141,9 @@ export function App() {
       </div>
       {importOpen ? (
         <ImportDialog
-          existingNames={templateSources.map((source) => source.name)}
+          existingNames={templateSources.map(
+            (source) => `${source.kind}:${source.name}`,
+          )}
           onRefresh={refreshTemplates}
           onCancel={() => setImportOpen(false)}
           onImported={async (outcome) => {
@@ -3634,10 +3637,10 @@ function TemplatesTree({
                               <button
                                 type="button"
                                 className="template-row"
-                                aria-label={`${t.method} ${t.path} — ${t.name}`}
+                                aria-label={`${t.badge} ${t.path} — ${t.name}`}
                                 onClick={() => onOpen(t.id)}
                               >
-                                <MethodBadge method={t.method} />
+                                <MethodBadge method={t.badge} />
                                 <span className="path">{t.path}</span>
                               </button>
                             </li>
@@ -3669,24 +3672,34 @@ function ImportDialog({
   onImported: (outcome: string) => Promise<void>;
   onRefresh: () => Promise<void>;
 }) {
+  // Slice 12: the dialog reads OpenAPI JSON or WSDL.
+  const [kind, setKind] = useState<'openapi' | 'wsdl'>('openapi');
   const [file, setFile] = useState<{
     name: string;
     text: string;
     spec: ParsedSpec | null;
+    wsdl: ParsedWsdl | null;
     error: string | null;
   } | null>(null);
   const [grouping, setGrouping] = useState<'tag' | 'path'>('tag');
   const [useEnvironment, setUseEnvironment] = useState(true);
   const [busy, setBusy] = useState(false);
   const [importError, setImportError] = useState<string | null>(null);
-  const groups = file?.spec
+  const groups: Map<string, { method: string }[]> | null = file?.spec
     ? groupOperations(file.spec.operations, grouping)
-    : null;
-  const count = file?.spec?.operations.length ?? 0;
+    : file?.wsdl
+      ? wsdlGroups(file.wsdl)
+      : null;
+  const count = groups
+    ? [...groups.values()].reduce((n, ops) => n + ops.length, 0)
+    : 0;
+  const parsedTitle = file?.spec?.titled
+    ? file.spec.title
+    : file?.wsdl?.titled
+      ? file.wsdl.title
+      : null;
   const reimport =
-    file?.spec !== null &&
-    file?.spec !== undefined &&
-    existingNames.includes(file.spec.title);
+    parsedTitle !== null && existingNames.includes(`${kind}:${parsedTitle}`);
 
   // The latest file picked wins, whichever read finishes last (code review of openapi-import, 6).
   const latestPick = useRef(0);
@@ -3701,37 +3714,58 @@ function ImportDialog({
         name: picked.name,
         text: '',
         spec: null,
+        wsdl: null,
         error: 'The file could not be read',
       });
       return;
     }
     try {
+      setFile(
+        kind === 'wsdl'
+          ? {
+              name: picked.name,
+              text,
+              spec: null,
+              wsdl: parseWsdl(text),
+              error: null,
+            }
+          : {
+              name: picked.name,
+              text,
+              spec: parseOpenApi(text),
+              wsdl: null,
+              error: null,
+            },
+      );
+    } catch (error) {
       setFile({
         name: picked.name,
         text,
-        spec: parseOpenApi(text),
-        error: null,
+        spec: null,
+        wsdl: null,
+        error: errorText(error),
       });
-    } catch (error) {
-      setFile({ name: picked.name, text, spec: null, error: errorText(error) });
     }
   };
 
   const generate = async () => {
-    if (!file?.spec || busy) return;
+    if ((!file?.spec && !file?.wsdl) || busy) return;
     setBusy(true);
-    const done = await pigeon
-      .importOpenApi({
-        text: file.text,
-        filename: file.name,
-        grouping,
-        useEnvironment,
-        mode: reimport ? 'reimport' : 'new',
-      })
-      .catch((error: unknown) => ({
-        ok: false as const,
-        message: errorText(error),
-      }));
+    const mode = reimport ? ('reimport' as const) : ('new' as const);
+    const done = await (
+      file.wsdl
+        ? pigeon.importWsdl({ text: file.text, filename: file.name, mode })
+        : pigeon.importOpenApi({
+            text: file.text,
+            filename: file.name,
+            grouping,
+            useEnvironment,
+            mode,
+          })
+    ).catch((error: unknown) => ({
+      ok: false as const,
+      message: errorText(error),
+    }));
     setBusy(false);
     if (!done.ok) {
       setImportError(done.message);
@@ -3761,15 +3795,31 @@ function ImportDialog({
         </p>
         <p className="label">Source</p>
         <div className="segment" role="group" aria-label="Source">
-          <button type="button" aria-pressed="true">
-            OpenAPI JSON
-          </button>
-          <button type="button" aria-pressed="false" disabled title="Slice 12">
-            WSDL
-          </button>
+          {(
+            [
+              ['openapi', 'OpenAPI JSON'],
+              ['wsdl', 'WSDL'],
+            ] as const
+          ).map(([value, label]) => (
+            <button
+              key={value}
+              type="button"
+              aria-pressed={kind === value}
+              onClick={() => {
+                if (kind === value) return;
+                // A read still in flight belongs to the other kind (code review of wsdl-import, 6).
+                latestPick.current += 1;
+                setKind(value);
+                setFile(null);
+                setImportError(null);
+              }}
+            >
+              {label}
+            </button>
+          ))}
         </div>
         <p className="label">File</p>
-        <div className={`file-box${file?.spec ? ' chosen' : ''}`}>
+        <div className={`file-box${file?.spec || file?.wsdl ? ' chosen' : ''}`}>
           <div className="file-info">
             <span className="mono">{file?.name ?? 'No file chosen'}</span>
             {file?.spec ? (
@@ -3780,6 +3830,12 @@ function ImportDialog({
                 {file.spec.servers[0]
                   ? ` · servers: ${file.spec.servers[0]}`
                   : ''}
+              </span>
+            ) : null}
+            {file?.wsdl ? (
+              <span className="muted">
+                WSDL · {file.wsdl.title} · {file.wsdl.ports.length} ports ·{' '}
+                {count} operations
               </span>
             ) : null}
             {file?.error ? (
@@ -3793,40 +3849,54 @@ function ImportDialog({
             <input
               type="file"
               aria-label="Spec file"
-              accept=".json,application/json"
+              accept={
+                kind === 'wsdl'
+                  ? '.wsdl,.xml,text/xml,application/xml'
+                  : '.json,application/json'
+              }
               onChange={(e) => void choose(e.target.files?.[0])}
             />
           </label>
         </div>
-        <p className="label">Group into directories by</p>
-        <div
-          className="segment"
-          role="group"
-          aria-label="Group into directories by"
-        >
-          <button
-            type="button"
-            aria-pressed={grouping === 'tag'}
-            onClick={() => setGrouping('tag')}
-          >
-            Tag
-          </button>
-          <button
-            type="button"
-            aria-pressed={grouping === 'path'}
-            onClick={() => setGrouping('path')}
-          >
-            Path segment
-          </button>
-        </div>
-        <label className="checkbox-row">
-          <input
-            type="checkbox"
-            checked={useEnvironment}
-            onChange={(e) => setUseEnvironment(e.target.checked)}
-          />
-          Use the active environment's baseUrl instead of the spec's server URL
-        </label>
+        {kind === 'openapi' ? (
+          <>
+            <p className="label">Group into directories by</p>
+            <div
+              className="segment"
+              role="group"
+              aria-label="Group into directories by"
+            >
+              <button
+                type="button"
+                aria-pressed={grouping === 'tag'}
+                onClick={() => setGrouping('tag')}
+              >
+                Tag
+              </button>
+              <button
+                type="button"
+                aria-pressed={grouping === 'path'}
+                onClick={() => setGrouping('path')}
+              >
+                Path segment
+              </button>
+            </div>
+            <label className="checkbox-row">
+              <input
+                type="checkbox"
+                checked={useEnvironment}
+                onChange={(e) => setUseEnvironment(e.target.checked)}
+              />
+              Use the active environment's baseUrl instead of the spec's server
+              URL
+            </label>
+          </>
+        ) : (
+          <p className="muted">
+            Filed by port. Each template is a POST to its port's address, with
+            the SOAP headers and an envelope.
+          </p>
+        )}
         {groups ? (
           <>
             <p className="label">
@@ -3850,9 +3920,8 @@ function ImportDialog({
         ) : null}
         {reimport ? (
           <p className="reimport-note">
-            Re-imports “{file?.spec?.title}”: its templates are updated in
-            place, new operations are added and gone ones removed. History is
-            not touched.
+            Re-imports “{parsedTitle}”: its templates are updated in place, new
+            operations are added and gone ones removed. History is not touched.
           </p>
         ) : null}
         {importError ? (
@@ -3871,7 +3940,7 @@ function ImportDialog({
           <button
             type="button"
             className="primary"
-            disabled={!file?.spec || count === 0 || busy}
+            disabled={(!file?.spec && !file?.wsdl) || count === 0 || busy}
             onClick={() => void generate()}
           >
             {reimport ? 'Update' : 'Generate'} {count} templates
@@ -3879,5 +3948,15 @@ function ImportDialog({
         </div>
       </div>
     </div>
+  );
+}
+
+// WSDL operations by port, by the store's rule (groupPorts in src/core/wsdl.ts).
+function wsdlGroups(wsdl: ParsedWsdl): Map<string, { method: string }[]> {
+  return new Map(
+    [...groupPorts(wsdl)].map(([directory, port]) => [
+      directory,
+      port.operations.map(() => ({ method: 'SOAP' })),
+    ]),
   );
 }

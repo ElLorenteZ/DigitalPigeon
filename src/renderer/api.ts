@@ -30,6 +30,7 @@ export const pigeon: PigeonApi = {
   deleteCall: call(channels.deleteCall),
   searchCalls: call(channels.searchCalls),
   importOpenApi: call(channels.importOpenApi),
+  importWsdl: call(channels.importWsdl),
   listTemplates: call(channels.listTemplates),
   getTemplate: call(channels.getTemplate),
   dbStatus: call(channels.dbStatus),

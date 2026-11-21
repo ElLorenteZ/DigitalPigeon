@@ -34,6 +34,7 @@
     "vitest": "^5.0.5"
   },
   "dependencies": {
+    "fast-xml-parser": "^4.5.7",
     "monaco-editor": "0.57.0",
     "mongodb": "^7.8.0",
     "react": "^19.3.1",

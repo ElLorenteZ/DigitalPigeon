@@ -228,8 +228,9 @@ real-world shapes the spike's fixture did not have.
 the import dialog. Re-import and errors come second, on a store that already exists. WSDL comes last, because it is
 the riskiest (`tech-stack.md`: weaker JS tooling) and is spiked before planning.
 
-**Decision for the author to confirm (PRD open question):** a template opens into the form unlinked, as Edit of a call
-does. Save then makes a saved request from it. Templates are not edited in place; re-import replaces them.
+**Decision (PRD open question), confirmed by the author on 2026-11-22:** a template opens into the form unlinked, as
+Edit of a call does. Save then makes a saved request from it. Templates are not edited in place; re-import replaces
+them. Built that way in slice 10 (`archive/openapi-import`).
 
 ### Not ordered yet
 

@@ -1,7 +1,7 @@
 ---
 produced-by: lz-roadmap
 current-milestone: M1
-updated: 2026-11-11
+updated: 2026-11-21
 target: ~/Documents/digital-pigeon.pen
 ---
 
@@ -42,7 +42,7 @@ was added on 2026-11-11 by the author's decision, ahead of slice 6.
 - [ ] The app shows the target design's shell: the circuit-trace pigeon logo, title bar with the active environment, sidebar tabs, and the status bar.
 - [x] Switching the active environment changes the `baseUrl` a saved request is sent to. *(slice 5: `e2e/saved-requests.spec.ts` outcome scenario, `e2e/environments.spec.ts`, `send.int.test.ts`, `url.test.ts` T2.5)*
 - [x] A request exported as curl, run in a terminal, sends the same method, URL, headers and body. *(slices 2 and 3a: holds for no body and for JSON, XML, text and form bodies with a command up to 900 KiB, on macOS, `curl.int.test.ts` T2.4; a longer command is refused with the reason; multipart is slice 4; slice 4: a text-only multipart body, `curl.int.test.ts`; a binary file part is refused with the reason, as a command over 900 KiB is)*
-- [x] The app runs as a local install on the personal machine with no account. *(slice 1: the author ran the packaged app from `npm run package` and sent a request with only `config.json`; no installer from `make` yet. Slice 5b must hold it again for the local web app: started on the personal machine, opened in a browser, no account)*
+- [x] The app runs as a local install on the personal machine with no account. *(slice 1: the author ran the packaged app from `npm run package` and sent a request with only `config.json`; no installer from `make` yet. Slice 5b held it again for the local web app: the author started `npm start` on the personal machine, used the app in Chrome with no account, and attested the phase 3 walkthrough on 2026-11-13, `archive/local-web-app`)*
 - [ ] *(Author's judgement)* Postman/Insomnia goes unopened for REST work for two weeks, and finding and replaying a past call is faster than in Postman.
 
 | # | Slice | Observable outcome | Status | Change |
@@ -53,8 +53,8 @@ was added on 2026-11-11 by the author's decision, ahead of slice 6.
 | 3b | Editor and formatting | JSON and XML request and response bodies shown pretty-printed in the editor, with what is stored and sent unchanged; a response body cannot run as script | done | `editor-and-formatting` |
 | 4 | Multipart with file copies | Send a multipart request with a file; delete the file from disk; replay the call and the server receives the same bytes | done | `multipart-with-file-copies` |
 | 5 | Saved requests and environments | Save a request and edit it later; define environments (name + `baseUrl`), switch the active one, and the same saved request goes to the other `baseUrl`; calls link back to their saved request | done | `saved-requests-and-environments` |
-| 5b | Desktop to local web app | One command starts a Node server bound to `127.0.0.1`; opening its address in a browser shows the app working as it does today (send, history, preview, replay, curl export, bodies, multipart, saved requests, environments); the Electron shell is gone; every existing e2e journey passes in a plain browser; a request to the server from another origin, or without the per-launch token, is refused and nothing is sent or recorded | next | `local-web-app` |
-| 6 | Workspace shell in the design | The app looks like screens 01 and 02: the logo in the title bar, the environment selector in the title bar, a sidebar with Saved and History tabs (Templates appears in M2), request above response, the status bar; every existing e2e journey still passes | later | — |
+| 5b | Desktop to local web app | One command starts a Node server bound to `127.0.0.1`; opening its address in a browser shows the app working as it does today (send, history, preview, replay, curl export, bodies, multipart, saved requests, environments); the Electron shell is gone; every existing e2e journey passes in a plain browser; a request to the server from another origin, or without the per-launch token, is refused and nothing is sent or recorded | done | `local-web-app` |
+| 6 | Workspace shell in the design | The app looks like screens 01 and 02: the logo in the title bar, the environment selector in the title bar, a sidebar with Saved and History tabs (Templates appears in M2), request above response, the status bar; every existing e2e journey still passes | next | `workspace-shell` |
 | 7 | Responses to this request | Send the same method and path three times and the response panel shows three response chips, newest selected; pick one to view it; the call record lists the other responses of its request | later | — |
 | 8 | Delete with undo | Delete one response from the strip, the history list or the call record; it disappears, an Undo toast restores it for a few seconds, then it is gone permanently along with its stored bodies and file copies | later | — |
 | 9 | Search, filter, resend | Screen 04: search text plus method, environment, `Authorization` header and date facets with counts, results table, resend one or a selection, delete a selection; an empty result says so and offers to clear filters | later | — |
@@ -169,10 +169,20 @@ was added on 2026-11-11 by the author's decision, ahead of slice 6.
   appetite with no margin. Slice 5b adds a ninth change, about 2 more days: about 16 in all, over the appetite. Its
   unknowns are the e2e harness port (Playwright on Electron to a plain browser) and the localhost security model;
   neither has earlier calibration.
+- **Slice 5b, `local-web-app`** (2026-11-11 → 2026-11-21): about four days of work across ten calendar days, against
+  the two predicted. The time went on:
+  - a spike (Chrome 157: workers, `Origin`, cookies) with four surprises, including zod's JIT probe tripping the CSP
+  - three plan revisions, and a plan review that merged two phases to keep the gates green between commits
+  - porting 13 main-process handler swaps to `page.route` stubs, and every e2e journey to Chrome
+  - two review passes: `lz-review` found the `Origin` rule narrower than ADR 0002; `/code-review` found 10 issues, 7
+    fixed, 2 deferred (token hardening, "Not ordered yet")
+
+  Platform moves cost about twice a feature slice. Slices 6–9 return to renderer work, now on a browser host.
 - **Merged:** slices 1, 2 and 3a reached `main` together on 2026-11-07, at `15c97c9`, with no pull request (author's
   instruction). "Done" here now means closed, archived and merged. Slice 3b reached `main` through PR #3 on
   2026-11-08. Slice 4 reached `main` at `7ab1f65` on 2026-11-09, fast-forwarded with no pull request (author's
-  instruction), and was closed and archived on 2026-11-10.
+  instruction), and was closed and archived on 2026-11-10. Slice 5b reached `main` through PR #4 on 2026-11-21 (`7635278`), closed
+  before merge and archived after.
 
 ## Later milestones
 

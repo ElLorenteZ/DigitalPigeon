@@ -156,3 +156,50 @@ describe('parseOpenApi: what the app cannot send, and examples that are not stri
     ]);
   });
 });
+
+// Slice 11 (reimport-and-errors): an invalid file says where it failed.
+describe('parseOpenApi: where an invalid file failed', () => {
+  it('gives the line and column of a JSON error', () => {
+    expect(() =>
+      parseOpenApi('{\n  "openapi": "3.0.0",\n  "paths": {,}\n}'),
+    ).toThrow(/line 3, column 13/);
+  });
+
+  it('names a path item or an operation that is not an object', () => {
+    expect(() =>
+      parseOpenApi(JSON.stringify({ openapi: '3.0.0', paths: { '/x': 5 } })),
+    ).toThrow('paths["/x"] is not an object');
+    expect(() =>
+      parseOpenApi(
+        JSON.stringify({ openapi: '3.0.0', paths: { '/x': { get: 'nope' } } }),
+      ),
+    ).toThrow('paths["/x"].get is not an object');
+  });
+});
+
+// Code review of reimport-and-errors, 4 and 8.
+describe('parseOpenApi: extensions, and CRLF locations', () => {
+  it('skips x-* extension keys in paths and null operations', () => {
+    const ops = parseOpenApi(
+      JSON.stringify({
+        openapi: '3.0.0',
+        paths: { 'x-internal': true, '/a': { get: {}, post: null } },
+      }),
+    ).operations;
+    expect(ops.map((o) => `${o.method} ${o.path}`)).toEqual(['GET /a']);
+  });
+
+  it('counts columns without the carriage return of a CRLF file', () => {
+    expect(() =>
+      parseOpenApi('{\r\n  "openapi": "3.0.0",\r\n  "paths": {,}\r\n}'),
+    ).toThrow(/line 3, column 13/);
+  });
+
+  it('says whether the spec named itself', () => {
+    expect(parseOpenApi('{"openapi":"3.0.0","paths":{}}').titled).toBe(false);
+    expect(
+      parseOpenApi('{"openapi":"3.0.0","info":{"title":"T"},"paths":{}}')
+        .titled,
+    ).toBe(true);
+  });
+});

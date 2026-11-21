@@ -318,6 +318,8 @@ export const ImportOpenApiInputSchema = z.strictObject({
   filename: z.string().max(1024),
   grouping: z.enum(['tag', 'path']),
   useEnvironment: z.boolean(),
+  /** What the dialog showed: 'new' never overwrites a source with the same title (slice 11 code review, 7). */
+  mode: z.enum(['new', 'reimport']),
 });
 export type ImportOpenApiInput = z.infer<typeof ImportOpenApiInputSchema>;
 
@@ -326,6 +328,10 @@ export const ImportResultSchema = z.discriminatedUnion('ok', [
     ok: z.literal(true),
     sourceId: z.string(),
     count: z.number().int().nonnegative(),
+    reimported: z.boolean(),
+    added: z.number().int().nonnegative(),
+    updated: z.number().int().nonnegative(),
+    removed: z.number().int().nonnegative(),
   }),
   z.strictObject({ ok: z.literal(false), message: z.string() }),
 ]);

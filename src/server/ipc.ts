@@ -36,6 +36,9 @@ import {
   type ListCallsResult,
   ListCallsResultSchema,
   ListResponsesInputSchema,
+  type SearchResult,
+  SearchQuerySchema,
+  SearchResultSchema,
   BODY_PAGE_BYTES,
   ActiveEnvironmentInputSchema,
   type GetSavedRequestResult,
@@ -558,6 +561,33 @@ export function registerIpc({ ipcMain, db, dbStatus }: IpcDeps): void {
             .catch(() => undefined);
         }
         return { ok: true };
+      } catch (error) {
+        return { ok: false, message: message(error) };
+      }
+    },
+  );
+
+  ipcMain.handle(
+    channels.searchCalls,
+    async (_event, raw: unknown): Promise<SearchResult> => {
+      const query = SearchQuerySchema.safeParse(raw ?? {});
+      if (!query.success) {
+        return { ok: false, message: z.prettifyError(query.error) };
+      }
+      const database = db();
+      if (!database || dbStatus().status !== 'up') {
+        return { ok: false, message: 'Database not running' };
+      }
+      try {
+        const found = await storeFor(database).searchCalls(
+          query.data,
+          inFlightSendIds,
+        );
+        return SearchResultSchema.parse({
+          ok: true,
+          ...found,
+          calls: found.calls.map(toView),
+        });
       } catch (error) {
         return { ok: false, message: message(error) };
       }

@@ -288,6 +288,7 @@ test('the store offers no way to update a call; deleting one is deleteCall (slic
     'insertSend',
     'listCalls',
     'listResponses',
+    'searchCalls',
     'sweepOrphanBodies',
   ]);
   expect(Object.keys(callStoreModule).sort()).toEqual(['createCallStore']);

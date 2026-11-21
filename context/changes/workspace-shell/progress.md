@@ -151,3 +151,49 @@ Phase 1's long-history replay failure did not recur. The run took 51 s, against 
 **Drift:**
 - decision: phases 2 and 3 were verified together and committed as one commit. Phase 3's source was written while
   phase 2's e2e run was in progress.
+
+## Code-review fixes: /code-review findings 1–10
+
+- **Executor:** lz-e2e (findings 1, 3, 4 and 8); lz-build (the rest)
+- **Status:** done
+- **Started:** 2026-11-21
+- **Finished:** 2026-11-21
+
+**Changed**
+- 1: `environments-error` renders under the title bar, outside the editor. A failed choice made in the title-bar select
+  now shows with the editor closed.
+- 2: `showRequest` triggers a `useLayoutEffect` that scrolls after the view change commits. Before, it scrolled a
+  `display:none` workspace.
+- 3: when opening or deleting a saved request fails, the view switches to the workspace, where the saved bar shows the
+  error.
+- 4: the body type is a `group` of `aria-pressed` buttons (`data-type`), not radios. An arrow key no longer changes the
+  type or throws the body away. `e2e/support.ts` has `bodyTypeButton` in place of `bodyTypeRadio`, and `chooseBodyType`
+  presses the button.
+- 5 and 9: history groups by day across the whole list, in order of first appearance, with today computed once per
+  render.
+- 6: `outcomeClass` reuses `statusClass`.
+- 7: the dead `.sidebar-panel h2 .count` rule and the second `.sidebar-panel` block are removed.
+- 8: `CompletionView` is keyed by the completion id, so each call or result opens on Body.
+- 10: `statusLabel` gives `418`, not `418 ` with a trailing space, when no reason phrase is known.
+- `e2e/shell.spec.ts`: 4 new scenarios, one each for findings 1, 3, 4 and 8.
+
+**Verification**
+
+```
+$ npx playwright test e2e/shell.spec.ts          # before the fixes
+  ✘ the request opens on Body… / arrow keys… / each call opened…   (no body-type buttons yet)
+  ✘ a failed environment choice is shown…        (environments-error not visible)
+  ✘ a saved request that cannot be opened…       (saved-requests-error not visible)
+  5 failed, 4 passed
+$ npx playwright test e2e/shell.spec.ts --repeat-each=3
+  27 passed (8.1s)
+$ npx playwright test
+  64 passed (50.5s)
+$ npm run typecheck → 0 errors · npm run lint → clean · npm run test:unit → 371 passed
+```
+
+The first red run of findings 4 and 8 failed because the button control did not exist yet. That is a different reason
+from the defect itself. The defect, arrow keys changing the type, comes from the radio element and was not reproduced
+on its own.
+
+**Drift:** none. Each fix is the one its finding names.

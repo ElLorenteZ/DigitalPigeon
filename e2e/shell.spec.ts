@@ -6,7 +6,16 @@ import {
   type CaptureServer,
   startCaptureServer,
 } from '../test-support/capture-server';
-import { type TestApp, launchWithTestDatabase } from './support';
+import { channels } from '../src/shared/ipc-contract';
+import {
+  type TestApp,
+  bodyTypeButton,
+  chooseBodyType,
+  launchWithTestDatabase,
+  openEnvironments,
+  showRequestTab,
+  stubOperation,
+} from './support';
 
 let testApp: TestApp;
 let capture: CaptureServer;
@@ -106,9 +115,7 @@ test('a call opened from History takes the place of the request, and Back to the
 test('the request opens on Body, Headers shows the header rows, and each tab counts its rows', async () => {
   const { window } = testApp;
   await expect(requestTab('Body')).toHaveAttribute('aria-selected', 'true');
-  await expect(
-    window.getByRole('radiogroup', { name: 'Body type' }),
-  ).toBeVisible();
+  await expect(window.getByRole('group', { name: 'Body type' })).toBeVisible();
   await expect(button('Add header')).toBeHidden();
 
   await requestTab('Headers').click();
@@ -116,12 +123,115 @@ test('the request opens on Body, Headers shows the header rows, and each tab cou
   await button('Add header').click();
   await window.getByLabel('Header name 1').fill('X-Shell');
   await expect(requestTab('Headers')).toHaveText(/^Headers\s*1$/);
-  await expect(
-    window.getByRole('radiogroup', { name: 'Body type' }),
-  ).toBeHidden();
+  await expect(window.getByRole('group', { name: 'Body type' })).toBeHidden();
 
   await requestTab('Body').click();
   await expect(window.getByLabel('Header name 1')).toBeHidden();
   await requestTab('Headers').click();
   await expect(window.getByLabel('Header name 1')).toHaveValue('X-Shell');
+});
+
+// Code review of workspace-shell (2026-11-21), findings 1, 3, 4 and 8.
+test('a failed environment choice is shown while the environments editor is closed', async () => {
+  const { window } = testApp;
+  await openEnvironments(window);
+  await window.getByLabel('New environment name').fill('shell-env');
+  await window.getByLabel('New environment base address').fill(capture.url);
+  await button('Add environment').click();
+  await button('Environments').click();
+  await expect(window.getByLabel('New environment name')).toBeHidden();
+
+  const stub = await stubOperation(
+    window,
+    channels.setActiveEnvironment,
+    () => {
+      throw new Error('not stored');
+    },
+  );
+  await window
+    .getByLabel('Environment', { exact: true })
+    .selectOption({ label: `shell-env — ${capture.url}/` });
+  await expect(window.getByTestId('environments-error')).toBeVisible();
+  await expect(window.getByTestId('environments-error')).toContainText(
+    'not stored',
+  );
+  await stub.restore();
+});
+
+test('a saved request that cannot be opened while a call is shown says why', async () => {
+  const { window } = testApp;
+  await window.getByLabel('URL').fill(`${capture.url}/saved-fail`);
+  await window.getByLabel('Saved request name').fill('Will fail');
+  await button('Save').click();
+  await button('Send').click();
+  await expect(window.getByTestId('result')).toContainText('200');
+  await window
+    .getByTestId('history')
+    .getByRole('button', { name: /\/saved-fail/ })
+    .first()
+    .click();
+  await expect(window.getByTestId('call-panel')).toBeVisible();
+
+  const stub = await stubOperation(window, channels.getSavedRequest, () => ({
+    ok: false,
+    message: 'gone meanwhile',
+  }));
+  await tab('Saved').click();
+  await window
+    .getByTestId('saved-requests')
+    .getByRole('button', { name: /^Will fail/ })
+    .click();
+  await expect(window.getByTestId('saved-requests-error')).toBeVisible();
+  await expect(window.getByTestId('saved-requests-error')).toContainText(
+    'gone meanwhile',
+  );
+  await stub.restore();
+  await tab('History').click();
+});
+
+test('arrow keys on the body type do not throw away what was typed', async () => {
+  const { window } = testApp;
+  await showRequestTab(window, 'Body');
+  await chooseBodyType(window, 'json');
+  await window.getByLabel('Body text').fill('{"kept":true}');
+  await bodyTypeButton(window, 'json').focus();
+  await window.keyboard.press('ArrowRight');
+  await window.keyboard.press('ArrowRight');
+  await window.keyboard.press('ArrowRight');
+  await expect(bodyTypeButton(window, 'json')).toHaveAttribute(
+    'aria-pressed',
+    'true',
+  );
+  await expect(window.getByLabel('Body text')).toHaveValue('{"kept":true}');
+});
+
+test('each call opened shows its response body first, whichever tab the last one was left on', async () => {
+  const { window } = testApp;
+  await chooseBodyType(window, 'none');
+  await window.getByLabel('URL').fill(`${capture.url}/tab-a`);
+  await button('Send').click();
+  await expect(window.getByTestId('result')).toContainText('200');
+  await window.getByLabel('URL').fill(`${capture.url}/tab-b`);
+  await button('Send').click();
+  await expect(window.getByTestId('result')).toContainText('200');
+
+  const rows = window.getByTestId('history');
+  await rows
+    .getByRole('button', { name: /\/tab-a/ })
+    .first()
+    .click();
+  const responseTabs = window
+    .getByTestId('call-panel')
+    .getByRole('tablist', { name: 'Response' });
+  await responseTabs.getByRole('tab', { name: /^Headers/ }).click();
+  await rows
+    .getByRole('button', { name: /\/tab-b/ })
+    .first()
+    .click();
+  await expect(
+    window.getByTestId('call-panel').getByTestId('call-request-line'),
+  ).toContainText('/tab-b');
+  await expect(
+    responseTabs.getByRole('tab', { name: 'Body', exact: true }),
+  ).toHaveAttribute('aria-selected', 'true');
 });

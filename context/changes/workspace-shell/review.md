@@ -75,3 +75,21 @@ is delegated to `/code-review`; its results are recorded below.
 - The e2e helpers (`showRequestTab`, `showSidebarTab`, `showRequest`, `showCall`, `openEnvironments`,
   `chooseBodyType`, `rowName`, `containing`) are how journeys move around the shell. New journeys should use them.
 - Monaco's automatic layout and a pane scrollbar can resize each other in a loop. `scrollbar-gutter: stable` stops it.
+
+## Host code review
+
+`/code-review main...workspace-shell` ran on 2026-11-21. It reported 10 findings and did not verify them itself. All
+10 are fixed; `progress.md` records them under "Code-review fixes".
+
+| # | Finding | Disposition |
+|---|---|---|
+| 1 | A failed environment choice was hidden while the editor was closed | fixed, e2e |
+| 2 | `showRequest` scrolled a hidden workspace | fixed |
+| 3 | Saved-request errors were hidden while a call was shown | fixed, e2e |
+| 4 | Arrow keys on the body-type radios threw the body away | fixed, e2e (buttons, not radios) |
+| 5 | Day groups split by an unreadable record repeated a React key | fixed |
+| 6 | Status colour thresholds were written twice | fixed |
+| 7 | A dead CSS selector and a split rule | fixed |
+| 8 | The response tab carried over from one call to the next | fixed, e2e |
+| 9 | Today was recomputed for every row | fixed |
+| 10 | A trailing space when no reason phrase is known | fixed |

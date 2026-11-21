@@ -8,7 +8,7 @@ import {
 import {
   bodyEdge,
   bodyLines,
-  bodyTypeRadio,
+  bodyTypeButton,
   callOperation,
   chooseBodyType,
   expectBodyText,
@@ -118,7 +118,10 @@ test('T2.7 — a call with a body can be opened, replayed and edited, and the or
   await button('Edit').click();
   const bodyText = window.getByLabel('Body text');
   await expect(bodyText).toHaveValue('{"item":"é"}');
-  await expect(bodyTypeRadio(window, 'json')).toBeChecked();
+  await expect(bodyTypeButton(window, 'json')).toHaveAttribute(
+    'aria-pressed',
+    'true',
+  );
   await expect(bodyText).toBeInViewport();
 
   await bodyText.fill('{"item":"changed"}');

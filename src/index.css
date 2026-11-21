@@ -86,6 +86,7 @@ body {
   flex: 1;
   min-height: 0;
   overflow: auto;
+  padding: 0 10px 12px;
 }
 
 .main {
@@ -362,21 +363,6 @@ pre {
   color: var(--text);
 }
 
-.sidebar-panel {
-  padding: 0 10px 12px;
-}
-
-.sidebar-panel h2 {
-  padding: 0 6px 4px;
-}
-
-.sidebar-panel h2 .count {
-  font-family: var(--sans);
-  font-size: 12px;
-  color: var(--faint);
-  margin-left: 6px;
-}
-
 .history-list .day {
   color: var(--faint);
   font-size: 10px;
@@ -593,31 +579,20 @@ pre {
   margin-bottom: 10px;
 }
 
-.segment label {
+.segment button {
+  background: transparent;
+  border: none;
   border-radius: 5px;
   color: var(--muted);
-  cursor: pointer;
   font-size: 12px;
   font-weight: 500;
-  padding: 4px 10px;
+  min-height: 24px;
+  padding: 0 10px;
 }
 
-.segment label.on {
+.segment button[aria-pressed='true'] {
   background: var(--raised);
   color: var(--text);
-}
-
-.segment input {
-  position: absolute;
-  opacity: 0;
-  width: 1px;
-  height: 1px;
-  min-height: 0;
-  pointer-events: none;
-}
-
-.segment label:has(input:focus-visible) {
-  outline: 2px solid var(--accent-soft);
 }
 
 .row input {
@@ -1015,4 +990,12 @@ textarea {
 .call-column .response-header {
   gap: 10px;
   margin-bottom: 4px;
+}
+
+.environments-error {
+  flex-shrink: 0;
+  margin: 0;
+  padding: 6px 16px;
+  background: #f871711a;
+  border-bottom: 1px solid var(--border);
 }

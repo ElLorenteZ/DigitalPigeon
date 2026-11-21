@@ -16,6 +16,7 @@ import {
   type ReactNode,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -386,6 +387,8 @@ export function App() {
       setSavedError(
         got.ok ? 'That saved request no longer exists' : got.message,
       );
+      // The error shows in the workspace's saved bar (code review of workspace-shell, 3).
+      setView('workspace');
       return;
     }
     const { savedRequest } = got;
@@ -439,6 +442,7 @@ export function App() {
         message: errorText(error),
       }));
     setSavedError(done.ok ? null : done.message);
+    if (!done.ok) setView('workspace');
     // The form no longer edits a saved request that is gone.
     if (done.ok) {
       setFormLink((current) => (current?.id === id ? null : current));
@@ -485,10 +489,18 @@ export function App() {
 
   // The panel's Replay and Edit act on the form and the result, which sit above the history list.
   const requestRegion = useRef<HTMLDivElement>(null);
+  // The workspace is display:none until the view change commits, so the scroll waits for it (code review of
+  // workspace-shell, 2).
+  const [requestScroll, setRequestScroll] = useState(0);
   const showRequest = () => {
     setView('workspace');
-    requestRegion.current?.scrollIntoView({ block: 'start' });
+    setRequestScroll((n) => n + 1);
   };
+  useLayoutEffect(() => {
+    if (requestScroll > 0) {
+      requestRegion.current?.scrollIntoView({ block: 'start' });
+    }
+  }, [requestScroll]);
   const resultRegion = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (result) resultRegion.current?.scrollIntoView({ block: 'nearest' });
@@ -541,11 +553,21 @@ export function App() {
           Environments
         </button>
       </header>
+      {environmentsError ? (
+        // Outside the editor, so a failed choice in the title bar shows with the editor closed (code review of
+        // workspace-shell, 1).
+        <p
+          data-testid="environments-error"
+          role="alert"
+          className="error environments-error"
+        >
+          {environmentsError}
+        </p>
+      ) : null}
       {environmentsOpen ? (
         <div className="environments-panel">
           <EnvironmentsEditor
             environments={environments}
-            error={environmentsError}
             onSave={(input) =>
               afterEnvironmentChange(pigeon.saveEnvironment(input))
             }
@@ -865,18 +887,21 @@ function BodyEditor({
   return (
     <fieldset className="body-editor-fields">
       <legend>Body</legend>
-      <div role="radiogroup" aria-label="Body type" className="segment">
+      {/* Pressed buttons, not radios: an arrow key on a radio changes the type, and the body with it (code review of
+          workspace-shell, 4). */}
+      <div role="group" aria-label="Body type" className="segment">
         {BODY_TYPES.map(([type, label]) => (
-          <label key={type} className={body.type === type ? 'on' : undefined}>
-            <input
-              type="radio"
-              name="body-type"
-              value={type}
-              checked={body.type === type}
-              onChange={() => onChange(bodyOfType(type, body))}
-            />
+          <button
+            key={type}
+            type="button"
+            data-type={type}
+            aria-pressed={body.type === type}
+            onClick={() => {
+              if (body.type !== type) onChange(bodyOfType(type, body));
+            }}
+          >
             {label}
-          </label>
+          </button>
         ))}
       </div>
       {'text' in body ? (
@@ -1150,12 +1175,10 @@ function SavedRequestList({
 // Saved environments, editable in place, and a row to add one (slice 5). Rows are listed by name; names may repeat.
 function EnvironmentsEditor({
   environments,
-  error,
   onSave,
   onDelete,
 }: {
   environments: EnvironmentView[];
-  error: string | null;
   /** Resolves true when saved; on false the reason is shown and the fields keep what was typed. */
   onSave: (input: SaveEnvironmentInput) => Promise<boolean>;
   onDelete: (id: string) => Promise<boolean>;
@@ -1174,11 +1197,6 @@ function EnvironmentsEditor({
   return (
     <section data-testid="environments">
       <h2>Environments</h2>
-      {error ? (
-        <p data-testid="environments-error" role="alert" className="error">
-          {error}
-        </p>
-      ) : null}
       <ol>
         {environments.map((e, index) => {
           const n = index + 1;
@@ -1588,7 +1606,7 @@ function CallPanel({
       <div className="chips">
         {response ? (
           <span className={`status-pill ${statusClass(response.status)}`}>
-            {response.status} {STATUS_TEXT[response.status] ?? ''}
+            {statusLabel(response.status)}
           </span>
         ) : null}
         <span className="chip" data-testid="call-state">
@@ -1670,7 +1688,11 @@ function CallPanel({
                   completed {call.completion.completedAt.toLocaleString()}
                 </span>
               </div>
-              <CompletionView completion={call.completion} heading={false} />
+              <CompletionView
+                key={call.completion._id}
+                completion={call.completion}
+                heading={false}
+              />
             </>
           ) : (
             <p className="empty">No response was recorded</p>
@@ -1706,14 +1728,20 @@ function ResultView({ result }: { result: SendResult | null }) {
           : {result.error.message}
         </p>
         {result.completion ? (
-          <CompletionView completion={result.completion} />
+          <CompletionView
+            key={result.completion._id}
+            completion={result.completion}
+          />
         ) : null}
       </section>
     );
   }
   return (
     <section data-testid="result">
-      <CompletionView completion={result.completion} />
+      <CompletionView
+        key={result.completion._id}
+        completion={result.completion}
+      />
     </section>
   );
 }
@@ -1752,7 +1780,7 @@ function CompletionView({
           data-testid="response-status"
           className={`status-pill ${statusClass(status)}`}
         >
-          {status} {STATUS_TEXT[status] ?? ''}
+          {statusLabel(status)}
           <span className="sr-only"> · {duration}</span>
         </span>
         <span className="meta">{duration}</span>
@@ -1802,6 +1830,9 @@ const statusClass = (status: number) =>
       : status >= 300
         ? 'info'
         : 'ok';
+
+const statusLabel = (status: number) =>
+  STATUS_TEXT[status] ? `${status} ${STATUS_TEXT[status]}` : String(status);
 
 const STATUS_TEXT: Record<number, string> = {
   200: 'OK',
@@ -2306,13 +2337,16 @@ function HistoryList({
   error: string | null;
   onOpen: (sendId: string) => void;
 }) {
-  const groups: { day: string; calls: CallView[] }[] = [];
+  // One group per day, in the order days first appear; today is computed once per render (code review of
+  // workspace-shell, 5 and 9).
+  const today = startOfDay(new Date());
+  const groups = new Map<string, CallView[]>();
   for (const call of calls) {
     const day =
-      call.state === 'unreadable' ? 'Unreadable' : dayLabel(call.send.sentAt);
-    const last = groups.at(-1);
-    if (last?.day === day) last.calls.push(call);
-    else groups.push({ day, calls: [call] });
+      call.state === 'unreadable'
+        ? 'Unreadable'
+        : dayLabel(call.send.sentAt, today);
+    groups.set(day, [...(groups.get(day) ?? []), call]);
   }
   return (
     <section className="history">
@@ -2326,11 +2360,11 @@ function HistoryList({
         </p>
       ) : null}
       <ol data-testid="history" className="history-list">
-        {groups.map((group) => [
-          <li key={`day-${group.day}`} className="day" aria-hidden="true">
-            {group.day}
+        {[...groups].map(([day, dayCalls]) => [
+          <li key={`day-${day}`} className="day" aria-hidden="true">
+            {day}
           </li>,
-          ...group.calls.map((call) =>
+          ...dayCalls.map((call) =>
             call.state === 'unreadable' ? (
               <li key={call.id} data-state="unreadable">
                 Unreadable record {call.id}: {call.error}
@@ -2379,10 +2413,11 @@ function MethodBadge({ method }: { method: string }) {
   );
 }
 
-const dayLabel = (date: Date) => {
-  const start = (d: Date) =>
-    new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
-  const days = Math.round((start(new Date()) - start(date)) / 86_400_000);
+const startOfDay = (d: Date) =>
+  new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+
+const dayLabel = (date: Date, today: number) => {
+  const days = Math.round((today - startOfDay(date)) / 86_400_000);
   if (days === 0) return 'Today';
   if (days === 1) return 'Yesterday';
   return date.toLocaleDateString();
@@ -2412,14 +2447,7 @@ function codeText(call: ReadableCall): string {
 function outcomeClass(call: ReadableCall): string {
   if (call.state !== 'completed' || !call.completion) return 'faint';
   if ('error' in call.completion) return 'err';
-  const status = call.completion.response.status;
-  return status >= 500
-    ? 'err'
-    : status >= 400
-      ? 'warn'
-      : status >= 300
-        ? 'info'
-        : 'ok';
+  return statusClass(call.completion.response.status);
 }
 
 const durationText = (call: ReadableCall) => {

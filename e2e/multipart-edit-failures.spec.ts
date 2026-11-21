@@ -13,7 +13,7 @@ import {
   startCaptureServer,
 } from '../test-support/capture-server';
 import {
-  bodyTypeRadio,
+  bodyTypeButton,
   callOperation,
   chooseBodyType,
   gate,
@@ -169,7 +169,10 @@ test('a failed read during Edit shows the reason and leaves the form as it was',
   );
   await expect(panel.getByTestId('call-edit-error')).toBeInViewport();
   await expect(window.getByLabel('URL')).toHaveValue('http://untouched.test/');
-  await expect(bodyTypeRadio(window, 'json')).toBeChecked();
+  await expect(bodyTypeButton(window, 'json')).toHaveAttribute(
+    'aria-pressed',
+    'true',
+  );
 });
 
 // Code review, 2: while Edit reads a stored body the panel says so, and a change to the form ends the pending Edit.

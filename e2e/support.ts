@@ -303,21 +303,24 @@ const BODY_TYPE_LABELS: Record<string, string> = {
   multipart: 'Multipart',
 };
 
-// A CSS locator, not a role query: it still finds the radio while the form is hidden behind an opened call.
-export const bodyTypeRadio = (page: Page, type: string): Locator =>
+// The body type is a group of pressed buttons (code review of workspace-shell, 4: radios changed the type, and threw
+// the body away, on every arrow key). A CSS locator, not a role query: it still finds the button while the form is
+// hidden behind an opened call.
+export const bodyTypeButton = (page: Page, type: string): Locator =>
   page.locator(
-    `[role="radiogroup"][aria-label="Body type"] input[type="radio"][value="${type}"]`,
+    `[role="group"][aria-label="Body type"] button[data-type="${type}"]`,
   );
 
 export async function chooseBodyType(page: Page, type: string): Promise<void> {
   await showRequestTab(page, 'Body');
-  // The segment's radios are visually hidden; a person presses the label, as here.
   await page
-    .getByRole('radiogroup', { name: 'Body type' })
-    .locator('label')
-    .filter({ hasText: new RegExp(`^${BODY_TYPE_LABELS[type] ?? type}$`) })
+    .getByRole('group', { name: 'Body type' })
+    .getByRole('button', { name: BODY_TYPE_LABELS[type] ?? type, exact: true })
     .click();
-  await expect(bodyTypeRadio(page, type)).toBeChecked();
+  await expect(bodyTypeButton(page, type)).toHaveAttribute(
+    'aria-pressed',
+    'true',
+  );
 }
 
 /** A history row's whole call (method, URL, outcome, time) is its button's accessible name. */

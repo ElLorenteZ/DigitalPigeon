@@ -1346,3 +1346,189 @@ button.link {
 .results-scroll {
   overflow-x: auto;
 }
+
+/* Templates (slice 10, screen 05). */
+.templates-actions {
+  display: flex;
+  gap: 8px;
+  padding: 0 6px 10px;
+}
+
+.templates-actions button {
+  flex: 1;
+  min-height: 34px;
+}
+
+.tree,
+.tree ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.tree ul {
+  padding-left: 14px;
+}
+
+.tree summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 6px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.tree summary:hover {
+  background: var(--hover);
+}
+
+.tree summary .count {
+  margin-left: auto;
+}
+
+.source-name {
+  font-weight: 600;
+}
+
+.template-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  min-height: 28px;
+  padding: 2px 6px;
+  text-align: left;
+}
+
+.template-row .path {
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+.dialog-backdrop {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #0d0f12cc;
+  z-index: 20;
+}
+
+.dialog {
+  width: min(760px, calc(100vw - 32px));
+  max-height: calc(100vh - 48px);
+  overflow: auto;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: 12px;
+  padding: 24px 28px;
+}
+
+.dialog h2 {
+  font-size: 20px;
+}
+
+.dialog .label {
+  color: var(--faint);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.8px;
+  text-transform: uppercase;
+  margin: 18px 0 8px;
+}
+
+.file-box {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg);
+}
+
+.file-box.chosen {
+  border-color: var(--accent);
+}
+
+.file-info {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.file-button {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  min-height: 32px;
+  padding: 0 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: 7px;
+  background: var(--raised);
+  cursor: pointer;
+}
+
+.file-button input {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.checkbox-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.checkbox-row input {
+  min-height: 0;
+  accent-color: var(--accent);
+}
+
+.import-preview {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg);
+}
+
+.preview-dir {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.preview-dir .badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.preview-dir .method-badge {
+  width: auto;
+  font-size: 9px;
+}
+
+.dialog-footer {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 20px -28px -24px;
+  padding: 14px 28px;
+  border-top: 1px solid var(--border);
+  background: var(--bg);
+  border-radius: 0 0 12px 12px;
+}

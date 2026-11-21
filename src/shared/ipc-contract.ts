@@ -268,11 +268,13 @@ export type ListCallsResult = z.infer<typeof ListCallsResultSchema>;
 
 /** Slice 9: the History search. `""` in a list means "none" (no environment, no Authorization header, …). */
 const IdList = z.array(z.string().max(4096)).max(500).optional();
+// Authorization values can be long JWTs (code review of history-search, 8).
+const AuthList = z.array(z.string().max(65536)).max(500).optional();
 export const SearchQuerySchema = z.strictObject({
   text: z.string().max(1024).optional(),
   methods: z.array(z.enum(METHODS)).max(METHODS.length).optional(),
   environmentIds: IdList,
-  auths: IdList,
+  auths: AuthList,
   savedRequestIds: IdList,
   from: z.iso.datetime().optional(),
   to: z.iso.datetime().optional(),

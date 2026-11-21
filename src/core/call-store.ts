@@ -5,6 +5,7 @@
 import { type Db, type Filter, ObjectId } from 'mongodb';
 import { z } from 'zod';
 import { createBodyStore } from './body-store';
+import { authorizationOf } from './headers';
 import {
   type CompletionDoc,
   CompletionDocSchema,
@@ -384,10 +385,7 @@ function factsOf(call: Exclude<Call, { state: 'unreadable' }>): CallFacts {
     environmentId: send.environment?.id ?? '',
     environmentName: send.environment?.name ?? '',
     environmentBaseUrl: send.environment?.baseUrl ?? '',
-    auth:
-      send.request.headers.find(
-        ([name]) => name.toLowerCase() === 'authorization',
-      )?.[1] ?? '',
+    auth: authorizationOf(send.request.headers) ?? '',
     savedRequestId: send.savedRequestId ?? '',
     sentAt: send.sentAt.getTime(),
   };

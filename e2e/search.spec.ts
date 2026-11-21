@@ -13,6 +13,7 @@ import {
   launchWithTestDatabase,
   showRequest,
   showSidebarTab,
+  stubOperation,
 } from './support';
 
 let capture: CaptureServer;
@@ -149,4 +150,40 @@ test('a selection of two is deleted with Undo, and after the window only those t
     total: number;
   };
   expect(remaining.total).toBeGreaterThanOrEqual(5);
+});
+
+// Code review of history-search (2026-11-21), findings 2 and 5.
+test('deleting a call opened from the results keeps the results on screen', async () => {
+  const { window } = testApp;
+  await searchBox().fill('/customers');
+  await expect(resultRows()).toHaveCount(1);
+  await resultRows()
+    .first()
+    .getByRole('button', { name: /^\S+\/customers$/ })
+    .click();
+  await expect(window.getByTestId('call-panel')).toBeVisible();
+  await button('Back to the results').click();
+  await resultRows()
+    .first()
+    .getByRole('button', { name: /^Delete / })
+    .click();
+  await expect(results()).toBeVisible();
+  await expect(results()).toContainText('No calls match');
+  await window
+    .getByRole('status', { name: 'Deleted' })
+    .getByRole('button', { name: 'Undo' })
+    .click();
+  await expect(resultRows()).toHaveCount(1);
+});
+
+test('a resend that fails says so', async () => {
+  const stub = await stubOperation(testApp.window, channels.replay, () => ({
+    ok: false,
+    error: { kind: 'unexpected', message: 'replay refused' },
+  }));
+  await searchBox().fill('/customers');
+  await expect(resultRows()).toHaveCount(1);
+  await resultRows().first().getByRole('button', { name: 'Resend' }).click();
+  await expect(results()).toContainText('replay refused');
+  await stub.restore();
 });

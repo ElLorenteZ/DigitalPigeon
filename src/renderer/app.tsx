@@ -41,6 +41,7 @@ import {
   createPartScanner,
   multipartBoundary,
 } from '../core/multipart';
+import { authorizationOf } from '../core/headers';
 import { composeUrl } from '../core/url';
 import { type BodyInput, buildWireRequest } from '../core/wire';
 import {
@@ -204,6 +205,13 @@ export function App() {
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [searchResult, setSearchResult] = useState<SearchResult | null>(null);
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
+  // Bumped when a delete or a resend lands, so lists that History's newest rows do not change are fetched again (code
+  // review of history-search, 1).
+  const [dataVersion, setDataVersion] = useState(0);
+  const [resendState, setResendState] = useState<{
+    busy: boolean;
+    error: string | null;
+  }>({ busy: false, error: null });
   const searchActive =
     filtersOpen || searchText.trim() !== '' || hasFilters(filters);
   const [environmentsOpen, setEnvironmentsOpen] = useState(false);
@@ -489,7 +497,10 @@ export function App() {
   const openCall = async (sendId: string) => {
     const thisOpen = ++latestOpen.current;
     endPendingEdit();
-    setCallReturn(view === 'results' ? 'results' : 'workspace');
+    // From the call view the way back stays as it was (code review of history-search, 3).
+    if (view !== 'call') {
+      setCallReturn(view === 'results' ? 'results' : 'workspace');
+    }
     setView('call');
     setOpenedCurl(null);
     setEditError(null);
@@ -544,7 +555,7 @@ export function App() {
   const shownHistory = history.filter(notHeld);
 
   // The strips refresh when History changes: a send, a replay or a completion lands there first (slice 7).
-  const historyMark = `${history.length}:${history[0]?.state === 'unreadable' ? history[0].id : (history[0]?.send._id ?? '')}:${history.filter((c) => c.state === 'in-flight').length}`;
+  const historyMark = `${dataVersion}:${history.length}:${history[0]?.state === 'unreadable' ? history[0].id : (history[0]?.send._id ?? '')}:${history.filter((c) => c.state === 'in-flight').length}`;
   const resultKey = result?.ok
     ? requestKeyOf(result.send.request.method, result.send.request.url)
     : null;
@@ -583,7 +594,8 @@ export function App() {
     ]);
     if (opened?.send._id === sendId) {
       setOpened(null);
-      setView('workspace');
+      // Only the call view leaves; the results stay (code review of history-search, 2).
+      if (view === 'call') setView(callReturn);
     }
     if (pickedFor?.sendId === sendId) setPickedFor(null);
     const timer = window.setTimeout(() => {
@@ -606,6 +618,7 @@ export function App() {
           return;
         }
         await refreshHistory();
+        setDataVersion((v) => v + 1);
         unhold(sendId);
       })();
     }, UNDO_WINDOW_MS);
@@ -661,14 +674,32 @@ export function App() {
   };
   // Resend is a replay: each creates a new record, one after the other (slice 9).
   const resendCalls = async (sendIds: string[]) => {
+    if (resendState.busy) return;
+    setResendState({ busy: true, error: null });
+    const failures: string[] = [];
     for (const sendId of sendIds) {
-      await pigeon
-        .replay({ clientRequestId: crypto.randomUUID(), sendId })
-        .catch(() => undefined);
+      try {
+        const done = await pigeon.replay({
+          clientRequestId: crypto.randomUUID(),
+          sendId,
+        });
+        if (!done.ok) failures.push(done.error.message);
+      } catch (error) {
+        failures.push(errorText(error));
+      }
     }
     setSelected(new Set());
+    setResendState({
+      busy: false,
+      error:
+        failures.length === 0
+          ? null
+          : `${failures.length} of ${sendIds.length} could not be resent: ${failures[0]}`,
+    });
     await refreshHistory();
+    setDataVersion((v) => v + 1);
   };
+
   const editFromResults = async (sendId: string) => {
     const got = await pigeon.getCall(sendId).catch(() => null);
     if (got?.ok && got.call && got.call.state !== 'unreadable') {
@@ -955,6 +986,8 @@ export function App() {
               onSelect={setSelected}
               onOpen={(sendId) => void openCall(sendId)}
               onResend={(ids) => void resendCalls(ids)}
+              resendBusy={resendState.busy}
+              resendError={resendState.error}
               onEdit={(sendId) => void editFromResults(sendId)}
               onDelete={(calls) => {
                 for (const call of calls) deleteLater(call);
@@ -1892,7 +1925,11 @@ function CallPanel({
     call.completion && 'response' in call.completion
       ? call.completion.response
       : null;
-  const auth = headers.find(([n]) => n.toLowerCase() === 'authorization');
+  const authValue = authorizationOf(headers);
+  const auth =
+    authValue === undefined
+      ? undefined
+      : (['authorization', authValue] as const);
   return (
     <section
       data-testid="call-panel"
@@ -3037,9 +3074,20 @@ function queryOf(text: string, f: Filters): SearchQuery {
     ...(f.auths.length ? { auths: f.auths } : {}),
     ...(f.savedRequestIds.length ? { savedRequestIds: f.savedRequestIds } : {}),
     // Whole local days, inclusive.
-    ...(f.from ? { from: new Date(`${f.from}T00:00:00`).toISOString() } : {}),
-    ...(f.to ? { to: new Date(`${f.to}T23:59:59.999`).toISOString() } : {}),
+    // A date the input holds but Date cannot represent is left out (code review of history-search, 7).
+    ...isoOrNothing('from', `${f.from}T00:00:00`, f.from),
+    ...isoOrNothing('to', `${f.to}T23:59:59.999`, f.to),
   };
+}
+
+function isoOrNothing(
+  key: 'from' | 'to',
+  local: string,
+  raw: string,
+): Partial<Record<'from' | 'to', string>> {
+  if (!raw) return {};
+  const date = new Date(local);
+  return Number.isNaN(date.getTime()) ? {} : { [key]: date.toISOString() };
 }
 
 type FacetKey = 'methods' | 'environmentIds' | 'auths' | 'savedRequestIds';
@@ -3198,6 +3246,8 @@ function SearchResults({
   onSelect,
   onOpen,
   onResend,
+  resendBusy,
+  resendError,
   onEdit,
   onDelete,
   onClear,
@@ -3210,6 +3260,8 @@ function SearchResults({
   onSelect: (ids: ReadonlySet<string>) => void;
   onOpen: (sendId: string) => void;
   onResend: (sendIds: string[]) => void;
+  resendBusy: boolean;
+  resendError: string | null;
   onEdit: (sendId: string) => void;
   onDelete: (calls: ReadableCall[]) => void;
   onClear: () => void;
@@ -3218,9 +3270,33 @@ function SearchResults({
     (c): c is ReadableCall =>
       c.state !== 'unreadable' && !hidden.has(c.send._id),
   );
-  const chosen = calls.filter((c) => selected.has(c.send._id));
+  // In-flight calls cannot be resent or deleted, as their row buttons say (code review of history-search, 4).
+  const chosen = calls.filter(
+    (c) => selected.has(c.send._id) && c.state !== 'in-flight',
+  );
+  const facetLabel = (
+    key: 'environment' | 'auth' | 'savedRequest',
+    value: string,
+  ) =>
+    (result?.ok
+      ? result.facets[key].find((o) => o.value === value)?.label
+      : undefined) ?? value;
   const summary = [
     filters.methods.join(' or '),
+    filters.environmentIds
+      .map((v) => facetLabel('environment', v))
+      .join(' or '),
+    filters.auths
+      .map((v) =>
+        v === '' ? 'no Authorization' : `Authorization: ${shortAuth(v)}`,
+      )
+      .join(' or '),
+    filters.savedRequestIds.length
+      ? `${filters.savedRequestIds.length} saved request(s)`
+      : '',
+    filters.from || filters.to
+      ? `sent ${filters.from || '…'} – ${filters.to || '…'}`
+      : '',
     text.trim() ? `contains “${text.trim()}”` : '',
   ]
     .filter(Boolean)
@@ -3255,6 +3331,12 @@ function SearchResults({
             ) : (
               summary
             )}
+            {resendError ? (
+              <span className="error" role="alert">
+                {' '}
+                {resendError}
+              </span>
+            ) : null}
           </p>
         </div>
         <span className="spacer" />
@@ -3264,6 +3346,7 @@ function SearchResults({
             <button
               type="button"
               className="secondary"
+              disabled={resendBusy}
               onClick={() => onResend(chosen.map((c) => c.send._id))}
             >
               Resend {chosen.length}
@@ -3304,9 +3387,7 @@ function SearchResults({
             <tbody>
               {calls.map((call) => {
                 const { method, url, headers } = call.send.request;
-                const auth = headers.find(
-                  ([n]) => n.toLowerCase() === 'authorization',
-                )?.[1];
+                const auth = authorizationOf(headers);
                 const id = call.send._id;
                 return (
                   <tr

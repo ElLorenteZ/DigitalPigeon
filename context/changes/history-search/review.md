@@ -39,3 +39,20 @@ Covers plan drift, conventions, lessons and verification. Does **not** cover gen
 
 - Search runs in Node over call summaries. It reads bodies only for calls not already matched by the URL or headers.
 - Facet counts are standard faceted counts, each excluding its own filter.
+
+## Host code review
+
+`/code-review delete-with-undo...history-search` ran on 2026-11-21 and reported 10 findings.
+
+| # | Finding | Disposition |
+|---|---|---|
+| 1 | A deleted call came back in the results past 200 calls | fixed |
+| 2 | Deleting the opened call left the results | fixed, e2e |
+| 3 | Opening a call from a call lost the way back | fixed |
+| 4 | Bulk actions included calls in flight | fixed |
+| 5 | Resend failures were silent, and a double click resent twice | fixed, e2e |
+| 6 | Search loads every summary on each query | fix later: roadmap "Not ordered yet", search performance |
+| 7 | An unrepresentable date left the search stuck | fixed |
+| 8 | Long Authorization values failed the query schema | fixed |
+| 9 | The summary omitted most filters | fixed |
+| 10 | The Authorization lookup was written three times | fixed (`src/core/headers.ts`) |

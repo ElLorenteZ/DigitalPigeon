@@ -89,3 +89,40 @@ $ screenshot: context/changes/history-search/shot-search.png, compared with g0TM
 **Drift:**
 - decision: the carried item "stored, indexed `request.path`" moves to "Not ordered yet". Search runs in memory, so the
   index gains nothing here.
+
+## Code-review fixes: /code-review findings 1–5 and 7–10
+
+- **Executor:** lz-e2e (findings 2 and 5); lz-build (the rest)
+- **Status:** done
+- **Started:** 2026-11-21
+- **Finished:** 2026-11-21
+
+**Changed**
+- 1: `dataVersion` is bumped when a delete or a resend lands, and it is part of `historyMark`. The search and the
+  strips refetch even when History's newest 200 rows are unchanged.
+- 2: deleting the opened call leaves only the call view, back to where it came from. The results stay.
+- 3: opening a call from the call view keeps the way back.
+- 4: "Resend N" and "Delete N" count only calls not in flight.
+- 5: resend has a busy state, so a double click does not resend twice, and failures are shown as "k of n could not be
+  resent: …".
+- 7: a date the browser cannot represent is left out of the query.
+- 8: Authorization filter values can be up to 64 KiB.
+- 9: the results summary names every active filter.
+- 10: `authorizationOf` in `src/core/headers.ts` is the one rule, used by the store's facet, the table and the call
+  record's chip.
+- `e2e/search.spec.ts`: 2 new scenarios, for findings 2 and 5.
+
+**Verification**
+
+```
+$ npx playwright test e2e/search.spec.ts          # before the fixes
+  ✘ deleting a call opened from the results keeps the results on screen
+  ✘ a resend that fails says so
+$ npx playwright test e2e/search.spec.ts --repeat-each=3 → 18 passed (42.6s)
+$ npx playwright test → 80 passed (1.3m)
+$ npm run test:integration → 358 passed · npm run test:unit → 371 passed · typecheck 0 · lint clean
+```
+
+Finding 1 (History over 200 calls) has no e2e scenario; the fix is a refetch trigger.
+
+**Drift:** none.

@@ -6,12 +6,16 @@ import {
   type CaptureServer,
   startCaptureServer,
 } from '../test-support/capture-server';
+import { channels } from '../src/shared/ipc-contract';
 import {
   type TestApp,
   expectBodyText,
+  gate,
   launchWithTestDatabase,
+  settle,
   showRequest,
   showSidebarTab,
+  stubOperation,
 } from './support';
 
 let capture: CaptureServer;
@@ -95,4 +99,54 @@ test('a call opened from History lists the other responses of its request, and o
   );
   await expect(others.getByRole('button')).toHaveCount(2);
   await expect(others.getByRole('button', { name: /500/ })).toBeVisible();
+});
+
+// Code review of responses-strip (2026-11-21), findings 2 and 7.
+test("while a call's other responses load, the previous call's are not shown under its name", async () => {
+  const { window } = testApp;
+  const history = window.getByTestId('history');
+  await history
+    .getByRole('button', { name: /^GET .*\/orders\?n=2 — 500/ })
+    .click();
+  const others = window
+    .getByTestId('call-panel')
+    .getByTestId('other-responses');
+  await expect(others.getByRole('button')).toHaveCount(2);
+
+  const held = gate();
+  const stub = await stubOperation(
+    window,
+    channels.listResponses,
+    async (_input, real) => {
+      const answer = await real();
+      await held.wait();
+      return answer;
+    },
+  );
+  await history
+    .getByRole('button', { name: /^GET .*\/elsewhere — 204/ })
+    .click();
+  await expect(
+    window.getByTestId('call-panel').getByTestId('call-request-line'),
+  ).toContainText('/elsewhere');
+  await expect(others).toHaveCount(0);
+  held.release();
+  await settle(window);
+  await stub.restore();
+});
+
+test('responses that cannot be listed say so', async () => {
+  const stub = await stubOperation(
+    testApp.window,
+    channels.listResponses,
+    () => ({
+      ok: false,
+      message: 'listing failed',
+    }),
+  );
+  await sendWith(`${capture.url}/fails-to-list`, 200, 'x');
+  await expect(testApp.window.getByTestId('responses-error')).toContainText(
+    'listing failed',
+  );
+  await stub.restore();
 });

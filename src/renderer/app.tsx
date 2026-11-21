@@ -154,16 +154,9 @@ export function App() {
   const [history, setHistory] = useState<CallView[]>([]);
   const [result, setResult] = useState<SendResult | null>(null);
   // Slice 7: the responses to the request of the result shown, and the one picked from them (null: the latest).
-  // Tagged with the request they answer, so a list for the previous request is never shown for the next one.
-  const [responsesFor, setResponsesFor] = useState<{
-    key: string;
-    calls: CallView[];
-  }>({ key: '', calls: [] });
-  const [picked, setPicked] = useState<{
-    sendId: string;
-    completion: CompletionDoc | null;
-  } | null>(null);
-  const [otherResponses, setOtherResponses] = useState<CallView[]>([]);
+  // A response picked from the strip, tagged with the result it was picked under: a pick never outlives its result
+  // (code review of responses-strip, 1 and 4).
+  const [pickedFor, setPickedFor] = useState<Picked | null>(null);
   const [inFlightId, setInFlightId] = useState<string | null>(null);
   const [historyError, setHistoryError] = useState<string | null>(null);
   const [form, setForm] = useState<Form>(EMPTY_FORM);
@@ -521,76 +514,66 @@ export function App() {
   const resultKey = result?.ok
     ? requestKeyOf(result.send.request.method, result.send.request.url)
     : null;
-  useEffect(() => {
-    setPicked(null);
-  }, [result]);
-  const resultKeyText = resultKey
-    ? `${resultKey.method} ${resultKey.path}`
-    : '';
-  const responses =
-    responsesFor.key === resultKeyText ? responsesFor.calls : [];
+  const responsesList = useResponses(resultKey, historyMark);
+  const responses = responsesList.calls;
   // Again when the responses strip first appears: it loads after the result and pushes the body down (slice 7).
   const hasResponses = responses.length > 0;
   useEffect(() => {
     if (result) resultRegion.current?.scrollIntoView({ block: 'nearest' });
   }, [result, hasResponses]);
-  useEffect(() => {
-    if (!resultKey) return;
-    let active = true;
-    void pigeon
-      .listResponses(resultKey)
-      .then((listed) => {
-        if (active && listed.ok) {
-          setResponsesFor({ key: resultKeyText, calls: listed.calls });
-        }
-      })
-      .catch(() => undefined);
-    return () => {
-      active = false;
-    };
-  }, [resultKey?.method, resultKey?.path, historyMark]);
   const openedKey = opened
     ? requestKeyOf(opened.send.request.method, opened.send.request.url)
     : null;
-  useEffect(() => {
-    if (!openedKey) {
-      setOtherResponses([]);
-      return;
-    }
-    let active = true;
-    void pigeon
-      .listResponses(openedKey)
-      .then((listed) => {
-        if (active && listed.ok) setOtherResponses(listed.calls);
-      })
-      .catch(() => undefined);
-    return () => {
-      active = false;
-    };
-  }, [openedKey?.method, openedKey?.path, historyMark]);
+  const otherList = useResponses(openedKey, historyMark);
+  const picked =
+    result?.ok && pickedFor?.resultId === result.send._id ? pickedFor : null;
 
   // Picking a response loads its completion; the latest is the result itself.
   const latestPick = useRef(0);
   const pickResponse = async (sendId: string) => {
+    if (!result?.ok) return;
+    const resultId = result.send._id;
     const thisPick = ++latestPick.current;
-    if (result?.ok && sendId === result.send._id) {
-      setPicked(null);
+    if (sendId === resultId) {
+      setPickedFor(null);
       return;
     }
-    setPicked({ sendId, completion: null });
+    setPickedFor({ resultId, sendId, completion: null, state: 'loading' });
+    let next: Picked;
     try {
       const got = await pigeon.getCall(sendId);
-      if (thisPick !== latestPick.current) return;
-      const completion =
-        got.ok && got.call && got.call.state !== 'unreadable'
-          ? (got.call.completion ?? null)
-          : null;
-      setPicked({ sendId, completion });
-    } catch {
-      if (thisPick === latestPick.current)
-        setPicked({ sendId, completion: null });
+      const call = got.ok ? got.call : null;
+      next =
+        call && call.state !== 'unreadable'
+          ? {
+              resultId,
+              sendId,
+              completion: call.completion ?? null,
+              state: call.state,
+            }
+          : {
+              resultId,
+              sendId,
+              completion: null,
+              state: 'failed',
+              message: !got.ok
+                ? got.message
+                : call
+                  ? call.error
+                  : 'Call not found',
+            };
+    } catch (error) {
+      next = {
+        resultId,
+        sendId,
+        completion: null,
+        state: 'failed',
+        message: errorText(error),
+      };
     }
+    if (thisPick === latestPick.current) setPickedFor(next);
   };
+
   const inFlight = inFlightId !== null;
 
   const chooseEnvironment = (id: string | null) => {
@@ -769,7 +752,12 @@ export function App() {
                 result={result}
                 picked={picked}
                 strip={
-                  result?.ok && responses.length > 0 ? (
+                  responsesList.error ? (
+                    <p data-testid="responses-error" className="error">
+                      Responses to this request could not be loaded:{' '}
+                      {responsesList.error}
+                    </p>
+                  ) : result?.ok && responses.length > 0 ? (
                     <ResponsesStrip
                       calls={responses}
                       selectedId={picked?.sendId ?? result.send._id}
@@ -803,9 +791,9 @@ export function App() {
                   editLoading={editLoading}
                   savedRequests={savedRequests}
                   savedListLoaded={savedListLoaded}
-                  otherResponses={otherResponses.filter(
-                    (c) =>
-                      c.state === 'unreadable' ||
+                  otherResponses={otherList.calls.filter(
+                    (c): c is ReadableCall =>
+                      c.state !== 'unreadable' &&
                       c.send._id !== opened.send._id,
                   )}
                   onOpenResponse={(id) => void openCall(id)}
@@ -1655,7 +1643,7 @@ function CallPanel({
   editLoading: boolean;
   savedRequests: SavedRequestListing[];
   savedListLoaded: boolean;
-  otherResponses: CallView[];
+  otherResponses: ReadableCall[];
   onOpenResponse: (sendId: string) => void;
   onReplay: () => void;
   onEdit: () => void;
@@ -1753,15 +1741,13 @@ function CallPanel({
           <span className="label">
             Other responses to {method} {requestKeyOf(method, url).path}
           </span>
-          {otherResponses.map((other) =>
-            other.state === 'unreadable' ? null : (
-              <ResponseChip
-                key={other.send._id}
-                call={other}
-                onClick={() => onOpenResponse(other.send._id)}
-              />
-            ),
-          )}
+          {otherResponses.map((other) => (
+            <ResponseChip
+              key={other.send._id}
+              call={other}
+              onClick={() => onOpenResponse(other.send._id)}
+            />
+          ))}
         </div>
       ) : null}
       {editLoading ? (
@@ -1844,8 +1830,8 @@ function ResultView({
   strip,
 }: {
   result: SendResult | null;
-  /** A response picked from the strip; its completion is null while it loads or if it has none. */
-  picked: { sendId: string; completion: CompletionDoc | null } | null;
+  /** A response picked from the strip, while it loads and after. */
+  picked: Picked | null;
   strip: ReactNode;
 }) {
   if (!result) return null;
@@ -1875,9 +1861,11 @@ function ResultView({
       ) : (
         <>
           {strip}
-          <p className="empty">
-            {picked ? 'No response was recorded for this call' : null}
-          </p>
+          {picked ? (
+            <p className="empty" data-testid="picked-state">
+              {pickedText(picked)}
+            </p>
+          ) : null}
         </>
       )}
     </section>
@@ -1892,7 +1880,66 @@ function requestKeyOf(method: string, url: string) {
   } catch {
     path = url.split(/[?#]/)[0] || '/';
   }
-  return { method: method as Method, path };
+  return {
+    method: method as Method,
+    path: path.startsWith('/') ? path : `/${path}`,
+  };
+}
+
+type Picked = {
+  resultId: string;
+  sendId: string;
+  completion: CompletionDoc | null;
+  state: 'loading' | 'failed' | ReadableCall['state'];
+  message?: string;
+};
+
+// What the response area says for a picked call with no completion to show (code review of responses-strip, 3).
+function pickedText(picked: Picked): string {
+  if (picked.state === 'loading') return 'Loading the response…';
+  if (picked.state === 'in-flight') return 'In flight: no response yet';
+  if (picked.state === 'failed') {
+    return `The response could not be loaded: ${picked.message ?? ''}`;
+  }
+  return 'No response was recorded for this call';
+}
+
+// The responses to one request, tagged with it: a list for another request, or for an earlier failure, is never
+// returned for this one (code review of responses-strip, 2 and 7).
+function useResponses(
+  key: { method: Method; path: string } | null,
+  refresh: string,
+): { calls: CallView[]; error: string | null } {
+  const text = key ? `${key.method} ${key.path}` : '';
+  const [state, setState] = useState<{
+    key: string;
+    calls: CallView[];
+    error: string | null;
+  }>({ key: '', calls: [], error: null });
+  useEffect(() => {
+    if (!key) return;
+    let active = true;
+    pigeon
+      .listResponses(key)
+      .then((listed) => {
+        if (!active) return;
+        setState(
+          listed.ok
+            ? { key: text, calls: listed.calls, error: null }
+            : { key: text, calls: [], error: listed.message },
+        );
+      })
+      .catch((error: unknown) => {
+        if (active) setState({ key: text, calls: [], error: errorText(error) });
+      });
+    return () => {
+      active = false;
+    };
+    // `key` is a new object on each render; its text identifies it.
+  }, [text, refresh]);
+  return state.key === text && key
+    ? { calls: state.calls, error: state.error }
+    : { calls: [], error: null };
 }
 
 // "Responses to this request" (screen 01): one chip per response, newest first, the one shown pressed.

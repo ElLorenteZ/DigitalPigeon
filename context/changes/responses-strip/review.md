@@ -44,3 +44,19 @@ is delegated to `/code-review`.
 - "The same request" is the method plus the URL pathname, with the query, fragment and host left out. Screen 01 is the
   evidence for this decision.
 - One query serves both strips. It covers every call up to 500, not only History's newest 200.
+
+## Host code review
+
+`/code-review workspace-shell...responses-strip` ran on 2026-11-21 and reported 9 findings.
+
+| # | Finding | Disposition |
+|---|---|---|
+| 1 | A loading pick lands on a newer result | fixed |
+| 2 | Other responses not keyed: the previous call's chips under the new call | fixed, e2e |
+| 3 | "No response was recorded" while loading or in flight | fixed |
+| 4 | A stale pick flashes on a new result | fixed (same as 1) |
+| 5 | `$regex` path query scans `sends` | fix later: roadmap slice 9 (indexes), as F1 |
+| 6 | The request key is derived twice, by a server regex and a renderer URL parse | fix later: same ticket. Store a normalized `request.path` with an index on method, path and `sentAt` |
+| 7 | A failed listing is swallowed | fixed, e2e |
+| 8 | The "Other responses" label shows with no chips | fixed |
+| 9 | Up to 500 chips wrap above the body | fixed (strip scrolls sideways) |

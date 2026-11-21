@@ -1004,7 +1004,8 @@ textarea {
 .responses-strip,
 .other-responses {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
+  overflow-x: auto;
   align-items: center;
   gap: 8px;
   margin: 10px 0 2px;
@@ -1067,4 +1068,10 @@ textarea {
 .response-chip .duration {
   color: var(--faint);
   font-size: 10px;
+}
+
+.response-chip,
+.strip-label,
+.other-responses .label {
+  flex-shrink: 0;
 }

@@ -88,6 +88,10 @@ was added on 2026-11-11 by the author's decision, ahead of slice 6.
 - Monaco editor arrives in slice 3b, where formatting first needs it; slices 1, 2 and 3a show bodies as plain text.
 - Slice 3 was cut in two, bodies first (author, 2026-11-06). Slice 3b must carry T1.8 and T2.6 from its first phase: it is the first time a body renders as anything but text. It also has to show a body held in a file, which is read a page at a time.
 
+**Carried into later slices** from `archive/responses-strip`:
+- Slice 9: store a normalized `request.path` on each send and index `{request.method, request.path, sentAt}`. This
+  replaces `listResponses`'s `$regex` scan, and with it the second derivation of the request key (code review 5 and 6).
+
 **Carried into later slices** from `archive/request-bodies-and-storage`:
 - ~~Slice 4: recheck undici's headers timer with file bodies, and T1.5 for uploaded files.~~ Done in slice 4 (`send.test.ts`, `large-bodies.int.test.ts`).
 - Slice 8 (was 7): delete must find chunks with no file document and finished files no call refers to (T3.9), and recheck the error when a file is removed during a read.

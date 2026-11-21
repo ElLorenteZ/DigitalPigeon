@@ -94,3 +94,35 @@ PASS.
 - decision: the strip is placed under the response header, inside `CompletionView`. The design puts it in the same
   place.
 - decision: the "delete any you don't need" hint and the × on chips are left out. Delete is slice 8.
+
+## Code-review fixes: /code-review findings 1–4, 7, 8 and 9
+
+- **Executor:** lz-e2e (findings 2 and 7); lz-build (the rest)
+- **Status:** done
+- **Started:** 2026-11-21
+- **Finished:** 2026-11-21
+
+**Changed** (`src/renderer/app.tsx`, `src/index.css`)
+- 1 and 4: a pick is tagged with the result it was made under (`Picked.resultId`). A pick from an earlier result is
+  never shown, including on the first render of a new one. The reset effect is removed.
+- 2 and 7: `useResponses(key, refresh)` serves both lists, tagged with the request key. A list for another request is
+  never returned. A failure returns its message, which the strip area shows as `responses-error`.
+- 3: a picked call without a completion shows "Loading the response…", "In flight: no response yet", "The response
+  could not be loaded: …" or "No response was recorded for this call".
+- 8: unreadable calls are filtered out before "Other responses" decides to render.
+- 9: the strips scroll sideways (`nowrap`, `overflow-x: auto`), so many chips do not push the body down.
+- `requestKeyOf` always returns a path starting with `/`.
+- `e2e/responses.spec.ts`: 2 new scenarios, for findings 2 and 7.
+
+**Verification**
+
+```
+$ npx playwright test e2e/responses.spec.ts       # before the fixes
+  ✘ while a call's other responses load, the previous call's are not shown under its name (toHaveCount)
+  ✘ responses that cannot be listed say so (Expected substring: "listing failed")
+$ npx playwright test e2e/responses.spec.ts --repeat-each=3 → 15 passed (5.9s)
+$ npx playwright test → 69 passed (53.0s)
+$ npm run typecheck → 0 · npm run lint → clean · npm run test:unit → 371 passed
+```
+
+**Drift:** none.

@@ -29,8 +29,14 @@ const button = (name: string) =>
   testApp.window.getByRole('button', { name, exact: true });
 const panel = (name: string) =>
   testApp.window.getByRole('tabpanel', { name, exact: true });
+const requestTab = (name: string) =>
+  testApp.window
+    .getByRole('tablist', { name: 'Request' })
+    .getByRole('tab', { name: new RegExp(`^${name}`) });
 const tab = (name: string) =>
-  testApp.window.getByRole('tab', { name: new RegExp(`^${name}`) });
+  testApp.window
+    .getByRole('tablist', { name: 'Sidebar' })
+    .getByRole('tab', { name: new RegExp(`^${name}`) });
 
 test('the title bar shows the logo, the name and the environment select', async () => {
   const titleBar = testApp.window.getByRole('banner');
@@ -99,23 +105,23 @@ test('a call opened from History takes the place of the request, and Back to the
 
 test('the request opens on Body, Headers shows the header rows, and each tab counts its rows', async () => {
   const { window } = testApp;
-  await expect(tab('Body')).toHaveAttribute('aria-selected', 'true');
+  await expect(requestTab('Body')).toHaveAttribute('aria-selected', 'true');
   await expect(
     window.getByRole('radiogroup', { name: 'Body type' }),
   ).toBeVisible();
   await expect(button('Add header')).toBeHidden();
 
-  await tab('Headers').click();
-  await expect(tab('Headers')).toHaveText(/^Headers\s*0$/);
+  await requestTab('Headers').click();
+  await expect(requestTab('Headers')).toHaveText(/^Headers\s*0$/);
   await button('Add header').click();
   await window.getByLabel('Header name 1').fill('X-Shell');
-  await expect(tab('Headers')).toHaveText(/^Headers\s*1$/);
+  await expect(requestTab('Headers')).toHaveText(/^Headers\s*1$/);
   await expect(
     window.getByRole('radiogroup', { name: 'Body type' }),
   ).toBeHidden();
 
-  await tab('Body').click();
+  await requestTab('Body').click();
   await expect(window.getByLabel('Header name 1')).toBeHidden();
-  await tab('Headers').click();
+  await requestTab('Headers').click();
   await expect(window.getByLabel('Header name 1')).toHaveValue('X-Shell');
 });

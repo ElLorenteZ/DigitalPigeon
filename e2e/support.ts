@@ -311,10 +311,13 @@ export const bodyTypeRadio = (page: Page, type: string): Locator =>
 
 export async function chooseBodyType(page: Page, type: string): Promise<void> {
   await showRequestTab(page, 'Body');
+  // The segment's radios are visually hidden; a person presses the label, as here.
   await page
     .getByRole('radiogroup', { name: 'Body type' })
-    .getByRole('radio', { name: BODY_TYPE_LABELS[type] ?? type, exact: true })
-    .check();
+    .locator('label')
+    .filter({ hasText: new RegExp(`^${BODY_TYPE_LABELS[type] ?? type}$`) })
+    .click();
+  await expect(bodyTypeRadio(page, type)).toBeChecked();
 }
 
 /** A history row's whole call (method, URL, outcome, time) is its button's accessible name. */

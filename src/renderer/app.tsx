@@ -1085,7 +1085,7 @@ function SavedRequestBar({
   onNew: () => void;
 }) {
   return (
-    <div className="row">
+    <div className="saved-bar">
       <input
         aria-label="Saved request name"
         placeholder="Name"
@@ -1126,9 +1126,12 @@ function SavedRequestList({
   onDelete: (id: string) => void;
 }) {
   return (
-    <section>
-      <h2>Saved requests</h2>
-      <ol data-testid="saved-requests">
+    <section className="saved">
+      <div className="title-row">
+        <h2>Saved requests</h2>
+        <span className="count">{savedRequests.length} saved</span>
+      </div>
+      <ol data-testid="saved-requests" className="saved-list">
         {savedRequests.map((s) => (
           <li key={s.id} className="row">
             <button type="button" onClick={() => onOpen(s.id)}>
@@ -1535,19 +1538,91 @@ function CallPanel({
   onCopyCurl: () => void;
 }) {
   const { method, url, headers, body } = call.send.request;
+  const response =
+    call.completion && 'response' in call.completion
+      ? call.completion.response
+      : null;
+  const auth = headers.find(([n]) => n.toLowerCase() === 'authorization');
   return (
-    <section data-testid="call-panel" data-state={call.state}>
-      <h2>Call</h2>
-      <div className="row">
-        <button type="button" onClick={onReplay} disabled={!canReplay}>
-          Replay
-        </button>
-        <button type="button" onClick={onEdit}>
-          Edit
-        </button>
-        <button type="button" onClick={onCopyCurl}>
-          Copy call as curl
-        </button>
+    <section
+      data-testid="call-panel"
+      data-state={call.state}
+      className="call-record"
+    >
+      <div className="call-top">
+        <div className="call-title">
+          <nav className="breadcrumb" aria-label="Breadcrumb">
+            <span>History</span>
+            <span aria-hidden="true">›</span>
+            <h2>Call</h2>
+            <code>#{shortId(call.send._id)}</code>
+          </nav>
+          <p data-testid="call-request-line" className="call-request-line">
+            <span className={`method-text method-${method.toLowerCase()}`}>
+              {method}
+            </span>{' '}
+            <span className="call-url">{url}</span>
+            <span className="call-sent">
+              {' '}
+              · sent {call.send.sentAt.toLocaleString()}
+            </span>
+          </p>
+        </div>
+        <div className="call-actions">
+          <button type="button" className="secondary" onClick={onCopyCurl}>
+            Copy call as curl
+          </button>
+          <button type="button" className="secondary" onClick={onEdit}>
+            Edit
+          </button>
+          <button
+            type="button"
+            className="primary"
+            onClick={onReplay}
+            disabled={!canReplay}
+          >
+            Replay
+          </button>
+        </div>
+      </div>
+      <div className="chips">
+        {response ? (
+          <span className={`status-pill ${statusClass(response.status)}`}>
+            {response.status} {STATUS_TEXT[response.status] ?? ''}
+          </span>
+        ) : null}
+        <span className="chip" data-testid="call-state">
+          {stateText(call.state)}
+        </span>
+        {call.completion ? (
+          <span className="chip mono">
+            {Math.round(call.completion.durationMs)} ms
+          </span>
+        ) : null}
+        {call.send.environment ? (
+          <span className="chip" data-testid="call-environment">
+            Environment: {call.send.environment.name} —{' '}
+            {call.send.environment.baseUrl}
+          </span>
+        ) : null}
+        {call.send.savedRequestId ? (
+          <span className="chip" data-testid="call-saved-request">
+            {(() => {
+              const source = savedRequests.find(
+                (s) => s.id === call.send.savedRequestId,
+              );
+              if (source) return `From saved request: ${source.name}`;
+              return savedListLoaded
+                ? 'From a deleted saved request'
+                : 'From a saved request';
+            })()}
+          </span>
+        ) : null}
+        {auth ? (
+          <span className="chip mono">
+            Authorization: {abbreviate(auth[1])}
+          </span>
+        ) : null}
       </div>
       {editLoading ? (
         <p data-testid="call-edit-status">Loading the call into the form…</p>
@@ -1558,51 +1633,60 @@ function CallPanel({
         </p>
       ) : null}
       <CurlView testId="call-curl" outcome={curl} />
-      <p data-testid="call-state">{stateText(call.state)}</p>
-      <h3>Request as sent</h3>
-      <p data-testid="call-request-line">
-        {method} {url} · sent {call.send.sentAt.toLocaleString()}
+      <p className="immutable-note">
+        Replaying or editing never changes this record — each send creates a new
+        entry in History.
       </p>
-      {call.send.savedRequestId ? (
-        <p data-testid="call-saved-request">
-          {(() => {
-            const source = savedRequests.find(
-              (s) => s.id === call.send.savedRequestId,
-            );
-            if (source) return `From saved request: ${source.name}`;
-            return savedListLoaded
-              ? 'From a deleted saved request'
-              : 'From a saved request';
-          })()}
-        </p>
-      ) : null}
-      {call.send.environment ? (
-        <p data-testid="call-environment">
-          Environment: {call.send.environment.name} —{' '}
-          {call.send.environment.baseUrl}
-        </p>
-      ) : null}
-      <pre data-testid="call-request-headers">
-        {headers.map(([n, v]) => `${n}: ${v}`).join('\n')}
-      </pre>
-      {body && isMultipart(headers) ? (
-        <PartsList body={body} headers={headers} />
-      ) : null}
-      {body ? (
-        <BodyText testId="call-request-body" body={body} headers={headers} />
-      ) : null}
-      {call.completion ? (
-        <>
-          <h3>Response</h3>
-          <p data-testid="call-completed-at">
-            completed {call.completion.completedAt.toLocaleString()}
-          </p>
-          <CompletionView completion={call.completion} />
-        </>
-      ) : null}
+      <div className="call-columns">
+        <div className="call-column">
+          <div className="column-head">
+            <h3>Request as sent</h3>
+            <span className="mono faint">
+              sent {call.send.sentAt.toLocaleTimeString()}
+            </span>
+          </div>
+          <p className="label">Headers · {headers.length}</p>
+          <HeaderTable testId="call-request-headers" headers={headers} />
+          <p className="label">Body</p>
+          {body && isMultipart(headers) ? (
+            <PartsList body={body} headers={headers} />
+          ) : null}
+          {body ? (
+            <BodyText
+              testId="call-request-body"
+              body={body}
+              headers={headers}
+            />
+          ) : (
+            <p className="empty">No body was sent with this request</p>
+          )}
+        </div>
+        <div className="call-column">
+          {call.completion ? (
+            <>
+              <div className="column-head">
+                <h3>Response</h3>
+                <span className="mono faint" data-testid="call-completed-at">
+                  completed {call.completion.completedAt.toLocaleString()}
+                </span>
+              </div>
+              <CompletionView completion={call.completion} heading={false} />
+            </>
+          ) : (
+            <p className="empty">No response was recorded</p>
+          )}
+        </div>
+      </div>
     </section>
   );
 }
+
+const shortId = (id: string) =>
+  id.length > 12 ? `${id.slice(0, 6)}…${id.slice(-4)}` : id;
+
+// A long header value shown as its start and end, as the design's Authorization chip does.
+const abbreviate = (value: string) =>
+  value.length > 24 ? `${value.slice(0, 12)}…${value.slice(-4)}` : value;
 
 function stateText(state: Opened['state']): string {
   if (state === 'in-flight') return 'In flight';
@@ -1634,26 +1718,132 @@ function ResultView({ result }: { result: SendResult | null }) {
   );
 }
 
-function CompletionView({ completion }: { completion: CompletionDoc }) {
+// The response as screen 01 shows it: a header row with the status pill, duration, size and when it was recorded, then
+// Body and Headers tabs. Panels stay mounted, so the body editor keeps its place across a switch.
+function CompletionView({
+  completion,
+  heading = true,
+}: {
+  completion: CompletionDoc;
+  /** The call record names the column itself, so it leaves this heading out. */
+  heading?: boolean;
+}) {
+  const [tab, setTab] = useState<'body' | 'headers'>('body');
   const duration = `${Math.round(completion.durationMs)} ms`;
   if ('error' in completion) {
     return (
-      <p data-testid="response-error">
-        {completion.error.code}: {completion.error.message} ({duration})
-      </p>
+      <div className="response">
+        <div className="response-header">
+          {heading ? <h2>Response</h2> : null}
+          <span className="status-pill err">{completion.error.code}</span>
+        </div>
+        <p data-testid="response-error">
+          {completion.error.code}: {completion.error.message} ({duration})
+        </p>
+      </div>
     );
   }
   const { status, headers, body } = completion.response;
   return (
-    <div>
-      <p data-testid="response-status">
-        {status} · {duration}
-      </p>
-      <pre data-testid="response-headers">
-        {headers.map(([n, v]) => `${n}: ${v}`).join('\n')}
-      </pre>
-      <BodyText testId="response-body" body={body} headers={headers} />
+    <div className="response">
+      <div className="response-header">
+        {heading ? <h2>Response</h2> : null}
+        <span
+          data-testid="response-status"
+          className={`status-pill ${statusClass(status)}`}
+        >
+          {status} {STATUS_TEXT[status] ?? ''}
+          <span className="sr-only"> · {duration}</span>
+        </span>
+        <span className="meta">{duration}</span>
+        <span className="meta">{sizeText(body.length)}</span>
+        <span className="spacer" />
+        <span className="recorded-chip">
+          Recorded · {completion.completedAt.toLocaleString()}
+        </span>
+      </div>
+      <div role="tablist" aria-label="Response" className="tabs">
+        <button
+          type="button"
+          role="tab"
+          aria-selected={tab === 'body'}
+          onClick={() => setTab('body')}
+        >
+          Body
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={tab === 'headers'}
+          onClick={() => setTab('headers')}
+        >
+          Headers <span className="count">{headers.length}</span>
+        </button>
+      </div>
+      <div
+        role="tabpanel"
+        aria-label="Response headers"
+        hidden={tab !== 'headers'}
+      >
+        <HeaderTable testId="response-headers" headers={headers} />
+      </div>
+      <div role="tabpanel" aria-label="Response body" hidden={tab !== 'body'}>
+        <BodyText testId="response-body" body={body} headers={headers} />
+      </div>
     </div>
+  );
+}
+
+const statusClass = (status: number) =>
+  status >= 500
+    ? 'err'
+    : status >= 400
+      ? 'warn'
+      : status >= 300
+        ? 'info'
+        : 'ok';
+
+const STATUS_TEXT: Record<number, string> = {
+  200: 'OK',
+  201: 'Created',
+  202: 'Accepted',
+  204: 'No Content',
+  301: 'Moved Permanently',
+  302: 'Found',
+  304: 'Not Modified',
+  400: 'Bad Request',
+  401: 'Unauthorized',
+  403: 'Forbidden',
+  404: 'Not Found',
+  409: 'Conflict',
+  422: 'Unprocessable Content',
+  429: 'Too Many Requests',
+  500: 'Internal Server Error',
+  502: 'Bad Gateway',
+  503: 'Service Unavailable',
+  504: 'Gateway Timeout',
+};
+
+// Headers as the design's key/value table: names in the accent colour, values beside them, in mono.
+function HeaderTable({
+  testId,
+  headers,
+}: {
+  testId: string;
+  headers: [string, string][];
+}) {
+  return (
+    <dl data-testid={testId} className="header-table">
+      {headers.map(([name, value], index) => (
+        <div key={index}>
+          <dt>
+            {name}
+            <span className="sr-only">: </span>
+          </dt>
+          <dd>{value}</dd>
+        </div>
+      ))}
+    </dl>
   );
 }
 
@@ -1834,6 +2024,10 @@ function useBodyEditor(
   created.current = onCreate;
   useEffect(() => {
     const instance = monaco.editor.create(host.current as HTMLDivElement, {
+      theme: definePigeonTheme(),
+      fontFamily:
+        "'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace",
+      fontSize: 12,
       model: null,
       readOnly: true,
       links: false,
@@ -1862,6 +2056,37 @@ function setModel(
   const previous = editor.getModel();
   editor.setModel(monaco.editor.createModel(text, language));
   previous?.dispose();
+}
+
+// The editor in the design's colours (slice 6): surface background, muted gutter, accent-tinted strings.
+let pigeonThemeDefined = false;
+function definePigeonTheme(): string {
+  if (!pigeonThemeDefined) {
+    monaco.editor.defineTheme('pigeon', {
+      base: 'vs-dark',
+      inherit: true,
+      rules: [
+        { token: 'string', foreground: 'E3C27A' },
+        { token: 'string.key.json', foreground: '60A5FA' },
+        { token: 'string.value.json', foreground: '3DD6B5' },
+        { token: 'number', foreground: 'E7E9EC' },
+        { token: 'keyword', foreground: 'A78BFA' },
+        { token: 'tag', foreground: '60A5FA' },
+        { token: 'attribute.name', foreground: 'A78BFA' },
+      ],
+      colors: {
+        'editor.background': '#13161B',
+        'editor.foreground': '#E7E9EC',
+        'editorLineNumber.foreground': '#5B626D',
+        'editorLineNumber.activeForeground': '#8B929D',
+        'editor.lineHighlightBackground': '#1A1E25',
+        'editor.selectionBackground': '#3DD6B533',
+        'editorWidget.background': '#1A1E25',
+      },
+    });
+    pigeonThemeDefined = true;
+  }
+  return 'pigeon';
 }
 
 function MonacoBody({
@@ -2119,7 +2344,7 @@ function HistoryList({
                   onClick={() => onOpen(call.send._id)}
                 >
                   <MethodBadge method={call.send.request.method} />
-                  <span className="info">
+                  <span className="row-info">
                     <span className="path">
                       {pathOf(call.send.request.url)}
                     </span>

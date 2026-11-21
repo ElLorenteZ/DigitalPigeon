@@ -229,6 +229,10 @@ describe('operations over HTTP', () => {
       [channels.send]: sent,
       [channels.cancel]: await call(channels.cancel, 'nothing-in-flight'),
       [channels.listCalls]: await call(channels.listCalls),
+      [channels.listResponses]: await call(channels.listResponses, {
+        method: 'POST',
+        path: '/',
+      }),
       [channels.dbStatus]: await call(channels.dbStatus),
       [channels.getCall]: await call(channels.getCall, sent.send._id),
       [channels.replay]: await call(channels.replay, {
@@ -267,6 +271,14 @@ describe('operations over HTTP', () => {
     };
 
     expect(Object.keys(answers).sort()).toEqual(Object.values(channels).sort());
+    // The send above went to POST <capture>/ and is one of its own responses (slice 7).
+    expect(
+      (
+        answers[channels.listResponses] as {
+          calls: { send: { _id: string } }[];
+        }
+      ).calls.map((c) => c.send._id),
+    ).toContain(sent.send._id);
     expect(answers[channels.dbStatus]).toEqual({
       status: 'up',
       configPath: '',

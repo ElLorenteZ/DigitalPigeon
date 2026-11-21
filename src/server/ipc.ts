@@ -35,6 +35,7 @@ import {
   GetCallResultSchema,
   type ListCallsResult,
   ListCallsResultSchema,
+  ListResponsesInputSchema,
   BODY_PAGE_BYTES,
   ActiveEnvironmentInputSchema,
   type GetSavedRequestResult,
@@ -524,6 +525,33 @@ export function registerIpc({ ipcMain, db, dbStatus }: IpcDeps): void {
       return { ok: false, message: message(error) };
     }
   });
+
+  ipcMain.handle(
+    channels.listResponses,
+    async (_event, raw: unknown): Promise<ListCallsResult> => {
+      const input = ListResponsesInputSchema.safeParse(raw);
+      if (!input.success) {
+        return { ok: false, message: z.prettifyError(input.error) };
+      }
+      const database = db();
+      if (!database || dbStatus().status !== 'up') {
+        return { ok: true, calls: [] };
+      }
+      try {
+        const calls = await storeFor(database).listResponses(
+          input.data.method,
+          input.data.path,
+          inFlightSendIds,
+        );
+        return ListCallsResultSchema.parse({
+          ok: true,
+          calls: calls.map(toView),
+        });
+      } catch (error) {
+        return { ok: false, message: message(error) };
+      }
+    },
+  );
 
   ipcMain.handle(
     channels.dbStatus,

@@ -999,3 +999,79 @@ textarea {
   background: #f871711a;
   border-bottom: 1px solid var(--border);
 }
+
+/* Responses to this request (slice 7, screen 01 "Responses Strip"; screen 02 "Other responses"). */
+.responses-strip,
+.other-responses {
+  display: flex;
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  align-items: center;
+  gap: 8px;
+  margin: 10px 0 2px;
+}
+
+.strip-label {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-right: 8px;
+  font-size: 11px;
+  color: var(--faint);
+}
+
+.strip-label strong {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.other-responses .label {
+  color: var(--muted);
+  font-size: 12px;
+  padding-right: 4px;
+}
+
+.response-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+  padding: 0 10px;
+  border-radius: 8px;
+  background: var(--raised);
+  border: 1px solid var(--border);
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+.response-chip[aria-pressed='true'] {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+}
+
+.response-chip .dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.response-chip .code {
+  font-weight: 600;
+}
+
+.response-chip .time {
+  color: var(--text);
+}
+
+.response-chip .duration {
+  color: var(--faint);
+  font-size: 10px;
+}
+
+.response-chip,
+.strip-label,
+.other-responses .label {
+  flex-shrink: 0;
+}

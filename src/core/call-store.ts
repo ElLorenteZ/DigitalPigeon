@@ -1,6 +1,6 @@
 // Insert-only store for call documents. There is deliberately no update or delete function:
 // a call record does not change after it is written (PRD; test-strategy.md T1.1).
-import type { Db } from 'mongodb';
+import type { Db, Filter } from 'mongodb';
 import { z } from 'zod';
 import { createBodyStore } from './body-store';
 import {
@@ -77,47 +77,82 @@ export function createCallStore(db: Db) {
     },
 
     /** Newest first. Sends whose ids are in `inFlight` are still running in this process. */
-    listCalls: async (
+    listCalls: (
       limit: number,
       inFlight: ReadonlySet<string>,
       { includeBodies = false }: { includeBodies?: boolean } = {},
-    ): Promise<Call[]> => {
-      const rawSends = await sends
-        .find(
-          {},
-          {
-            promoteBuffers: true,
-            ...(includeBodies ? {} : { projection: { 'request.body': 0 } }),
-          },
-        )
-        .sort({ sentAt: -1 })
-        .limit(limit)
-        .toArray();
-      const ids = rawSends.map((s) => String(s._id));
-      const rawCompletions = await completions
-        .find(
-          { sendId: { $in: ids } },
-          {
-            promoteBuffers: true,
-            ...(includeBodies ? {} : { projection: { 'response.body': 0 } }),
-          },
-        )
-        .toArray();
-      const completionBySend = new Map(
-        rawCompletions.map((c) => [String(c.sendId), c]),
-      );
+    ): Promise<Call[]> => list({}, limit, inFlight, includeBodies),
 
-      return rawSends.map((rawSend) =>
-        toCall(
-          rawSend,
-          completionBySend.get(String(rawSend._id)),
-          inFlight,
-          includeBodies ? SendDocSchema : SendSummarySchema,
-          includeBodies ? CompletionDocSchema : CompletionSummarySchema,
-        ),
-      );
-    },
+    /**
+     * The responses to one request: every call with this method and URL path, newest first, without bodies (slice 7).
+     * The query string, fragment and host are not part of the key. At most RESPONSES_LIMIT calls.
+     */
+    listResponses: (
+      method: string,
+      path: string,
+      inFlight: ReadonlySet<string>,
+    ): Promise<Call[]> =>
+      list(
+        {
+          'request.method': method,
+          'request.url': { $regex: pathPattern(path) },
+        },
+        RESPONSES_LIMIT,
+        inFlight,
+        false,
+      ),
   };
+
+  async function list(
+    filter: Filter<SendDoc>,
+    limit: number,
+    inFlight: ReadonlySet<string>,
+    includeBodies: boolean,
+  ): Promise<Call[]> {
+    const rawSends = await sends
+      .find(filter, {
+        promoteBuffers: true,
+        ...(includeBodies ? {} : { projection: { 'request.body': 0 } }),
+      })
+      .sort({ sentAt: -1 })
+      .limit(limit)
+      .toArray();
+    const ids = rawSends.map((s) => String(s._id));
+    const rawCompletions = await completions
+      .find(
+        { sendId: { $in: ids } },
+        {
+          promoteBuffers: true,
+          ...(includeBodies ? {} : { projection: { 'response.body': 0 } }),
+        },
+      )
+      .toArray();
+    const completionBySend = new Map(
+      rawCompletions.map((c) => [String(c.sendId), c]),
+    );
+
+    return rawSends.map((rawSend) =>
+      toCall(
+        rawSend,
+        completionBySend.get(String(rawSend._id)),
+        inFlight,
+        includeBodies ? SendDocSchema : SendSummarySchema,
+        includeBodies ? CompletionDocSchema : CompletionSummarySchema,
+      ),
+    );
+  }
+}
+
+const RESPONSES_LIMIT = 500;
+
+const escapeRegExp = (text: string) =>
+  text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+/** Matches an absolute URL whose path is exactly `path`; `/` also matches a URL with no path. */
+function pathPattern(path: string): string {
+  const root = path === '' || path === '/';
+  const pathPart = root ? '/?' : escapeRegExp(path);
+  return `^[A-Za-z][A-Za-z0-9+.-]*://[^/?#]*${pathPart}(?:[?#]|$)`;
 }
 
 function toCall<Send extends SendDoc | SendSummary>(

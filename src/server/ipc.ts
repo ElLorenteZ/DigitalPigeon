@@ -40,6 +40,7 @@ import {
   type SearchResult,
   type ImportResult,
   ImportOpenApiInputSchema,
+  ImportWsdlInputSchema,
   type ListTemplatesResult,
   ListTemplatesResultSchema,
   type GetTemplateResult,
@@ -591,6 +592,26 @@ export function registerIpc({ ipcMain, db, dbStatus }: IpcDeps): void {
         const done = await createTemplateStore(database).importOpenApi(
           input.data,
         );
+        return { ok: true, ...done };
+      } catch (error) {
+        return { ok: false, message: message(error) };
+      }
+    },
+  );
+
+  ipcMain.handle(
+    channels.importWsdl,
+    async (_event, raw: unknown): Promise<ImportResult> => {
+      const input = ImportWsdlInputSchema.safeParse(raw);
+      if (!input.success) {
+        return { ok: false, message: z.prettifyError(input.error) };
+      }
+      const database = db();
+      if (!database || dbStatus().status !== 'up') {
+        return { ok: false, message: 'Database not running' };
+      }
+      try {
+        const done = await createTemplateStore(database).importWsdl(input.data);
         return { ok: true, ...done };
       } catch (error) {
         return { ok: false, message: message(error) };

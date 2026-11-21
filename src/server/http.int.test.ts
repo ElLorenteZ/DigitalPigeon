@@ -23,6 +23,7 @@ import {
 import { type TestDb, openTestDb } from '../../test-support/test-db';
 import { channels } from '../shared/ipc-contract';
 import { decode, encode } from '../shared/wire-codec';
+import { BILLING } from '../../test-support/wsdl-fixture';
 import { type PigeonServer, createServer } from './http';
 
 const TOKEN = 'f'.repeat(64);
@@ -245,6 +246,11 @@ describe('operations over HTTP', () => {
       [channels.cancel]: await call(channels.cancel, 'nothing-in-flight'),
       [channels.listCalls]: await call(channels.listCalls),
       [channels.importOpenApi]: imported,
+      [channels.importWsdl]: await call(channels.importWsdl, {
+        text: BILLING,
+        filename: 'billing.wsdl',
+        mode: 'new',
+      }),
       [channels.listTemplates]: listedTemplates,
       [channels.getTemplate]: await call(
         channels.getTemplate,
@@ -299,6 +305,7 @@ describe('operations over HTTP', () => {
     expect(
       (answers[channels.searchCalls] as { ok: boolean; total: number }).total,
     ).toBeGreaterThanOrEqual(1);
+    expect(answers[channels.importWsdl]).toMatchObject({ ok: true, count: 4 });
     // Slice 10: the imported template lists and opens.
     expect(answers[channels.getTemplate]).toMatchObject({
       ok: true,

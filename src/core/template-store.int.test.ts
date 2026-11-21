@@ -3,6 +3,7 @@
 import { afterAll, beforeAll, describe, expect, test } from 'vitest';
 import { type TestDb, openTestDb } from '../../test-support/test-db';
 import { SpecError } from './openapi';
+import { BILLING } from '../../test-support/wsdl-fixture';
 import { createTemplateStore } from './template-store';
 
 let testDb: TestDb;
@@ -297,6 +298,71 @@ describe('template store', () => {
       );
       expect(again.sourceId).toBe(old.sourceId);
       expect(await sources.countDocuments({ name: 'Dup API' })).toBe(1);
+    });
+  });
+
+  // Slice 12: a WSDL file is a source of SOAP templates, filed by port, re-imported in place like OpenAPI.
+  describe('WSDL', () => {
+    test('an import files one SOAP template per operation by port', async () => {
+      const store = createTemplateStore(testDb.db);
+      const imported = await store.importWsdl({
+        text: BILLING,
+        filename: 'billing.wsdl',
+        mode: 'new',
+      });
+      expect(imported).toMatchObject({ count: 4, reimported: false });
+      const source = (await store.list()).find(
+        (s) => s.id === imported.sourceId,
+      );
+      expect(source?.kind).toBe('wsdl');
+      expect(source?.name).toBe('BillingService');
+      expect(
+        source?.templates.map((t) => [t.directory, t.method, t.path]),
+      ).toEqual([
+        ['BillingPort', 'POST', 'CreateInvoice'],
+        ['BillingPort', 'POST', 'GetInvoice'],
+        ['BillingPort12', 'POST', 'CreateInvoice'],
+        ['BillingPort12', 'POST', 'GetInvoice'],
+      ]);
+      const first = await store.get(source?.templates[0]?.id ?? '');
+      expect(first?.request.url).toBe('http://localhost:8080/billing');
+      expect(first?.request.headerRows).toContainEqual([
+        'SOAPAction',
+        '"urn:CreateInvoice"',
+      ]);
+    });
+
+    test('re-importing the same WSDL updates in place', async () => {
+      const store = createTemplateStore(testDb.db);
+      const again = await store.importWsdl({
+        text: BILLING.replace(
+          /<operation name="GetInvoice">[\s\S]*?<\/operation>/g,
+          '',
+        ),
+        filename: 'billing-v2.wsdl',
+        mode: 'reimport',
+      });
+      expect(again).toMatchObject({
+        reimported: true,
+        updated: 2,
+        added: 0,
+        removed: 2,
+      });
+    });
+
+    test('an invalid WSDL imports nothing', async () => {
+      const store = createTemplateStore(testDb.db);
+      const before = await testDb.db.collection('templates').countDocuments();
+      await expect(
+        store.importWsdl({
+          text: '<definitions><oops></definitions>',
+          filename: 'x.wsdl',
+          mode: 'new',
+        }),
+      ).rejects.toThrow(SpecError);
+      expect(await testDb.db.collection('templates').countDocuments()).toBe(
+        before,
+      );
     });
   });
 

@@ -18,6 +18,7 @@ export const channels = {
   deleteCall: 'pigeon:delete-call',
   searchCalls: 'pigeon:search-calls',
   importOpenApi: 'pigeon:import-openapi',
+  importWsdl: 'pigeon:import-wsdl',
   listTemplates: 'pigeon:list-templates',
   getTemplate: 'pigeon:get-template',
   dbStatus: 'pigeon:db-status',
@@ -323,6 +324,14 @@ export const ImportOpenApiInputSchema = z.strictObject({
 });
 export type ImportOpenApiInput = z.infer<typeof ImportOpenApiInputSchema>;
 
+/** Slice 12: importing a WSDL file as SOAP templates, filed by port. */
+export const ImportWsdlInputSchema = z.strictObject({
+  text: z.string().max(20 * 1024 * 1024),
+  filename: z.string().max(1024),
+  mode: z.enum(['new', 'reimport']),
+});
+export type ImportWsdlInput = z.infer<typeof ImportWsdlInputSchema>;
+
 export const ImportResultSchema = z.discriminatedUnion('ok', [
   z.strictObject({
     ok: z.literal(true),
@@ -349,7 +358,7 @@ export type TemplateListing = z.infer<typeof TemplateListingSchema>;
 const TemplateSourceSchema = z.strictObject({
   id: z.string(),
   name: z.string(),
-  kind: z.enum(['openapi']),
+  kind: z.enum(['openapi', 'wsdl']),
   importedAt: z.date(),
   templates: z.array(TemplateListingSchema),
 });
@@ -445,6 +454,7 @@ export interface PigeonApi {
   deleteCall: (sendId: string) => Promise<MutationResult>;
   searchCalls: (query: SearchQuery) => Promise<SearchResult>;
   importOpenApi: (input: ImportOpenApiInput) => Promise<ImportResult>;
+  importWsdl: (input: ImportWsdlInput) => Promise<ImportResult>;
   listTemplates: () => Promise<ListTemplatesResult>;
   getTemplate: (id: string) => Promise<GetTemplateResult>;
   replay: (input: ReplayInput) => Promise<SendResult>;

@@ -17,6 +17,9 @@ export const channels = {
   listResponses: 'pigeon:list-responses',
   deleteCall: 'pigeon:delete-call',
   searchCalls: 'pigeon:search-calls',
+  importOpenApi: 'pigeon:import-openapi',
+  listTemplates: 'pigeon:list-templates',
+  getTemplate: 'pigeon:get-template',
   dbStatus: 'pigeon:db-status',
   getCall: 'pigeon:get-call',
   replay: 'pigeon:replay',
@@ -306,6 +309,67 @@ export const SearchResultSchema = z.discriminatedUnion('ok', [
 ]);
 export type SearchResult = z.infer<typeof SearchResultSchema>;
 
+/** Slice 10: importing an OpenAPI JSON file as request templates. The server parses it again. */
+export const ImportOpenApiInputSchema = z.strictObject({
+  text: z.string().max(20 * 1024 * 1024),
+  filename: z.string().max(1024),
+  grouping: z.enum(['tag', 'path']),
+  useEnvironment: z.boolean(),
+});
+export type ImportOpenApiInput = z.infer<typeof ImportOpenApiInputSchema>;
+
+export const ImportResultSchema = z.discriminatedUnion('ok', [
+  z.strictObject({
+    ok: z.literal(true),
+    sourceId: z.string(),
+    count: z.number().int().nonnegative(),
+  }),
+  z.strictObject({ ok: z.literal(false), message: z.string() }),
+]);
+export type ImportResult = z.infer<typeof ImportResultSchema>;
+
+const TemplateListingSchema = z.strictObject({
+  id: z.string(),
+  directory: z.string(),
+  name: z.string(),
+  method: z.string(),
+  path: z.string(),
+});
+export type TemplateListing = z.infer<typeof TemplateListingSchema>;
+
+const TemplateSourceSchema = z.strictObject({
+  id: z.string(),
+  name: z.string(),
+  kind: z.enum(['openapi']),
+  importedAt: z.date(),
+  templates: z.array(TemplateListingSchema),
+});
+export type TemplateSource = z.infer<typeof TemplateSourceSchema>;
+
+export const ListTemplatesResultSchema = z.discriminatedUnion('ok', [
+  z.strictObject({
+    ok: z.literal(true),
+    sources: z.array(TemplateSourceSchema),
+  }),
+  z.strictObject({ ok: z.literal(false), message: z.string() }),
+]);
+export type ListTemplatesResult = z.infer<typeof ListTemplatesResultSchema>;
+
+export const GetTemplateResultSchema = z.discriminatedUnion('ok', [
+  z.strictObject({
+    ok: z.literal(true),
+    template: z
+      .strictObject({
+        id: z.string(),
+        name: z.string(),
+        request: RequestFormSchema,
+      })
+      .nullable(),
+  }),
+  z.strictObject({ ok: z.literal(false), message: z.string() }),
+]);
+export type GetTemplateResult = z.infer<typeof GetTemplateResultSchema>;
+
 /** One opened call, with the full completion including the response body. */
 export const CallDetailSchema = z.discriminatedUnion('state', [
   z.strictObject({
@@ -371,6 +435,9 @@ export interface PigeonApi {
   /** Deletes one call for good, with its body files (slice 8). The UI holds it for Undo before calling this. */
   deleteCall: (sendId: string) => Promise<MutationResult>;
   searchCalls: (query: SearchQuery) => Promise<SearchResult>;
+  importOpenApi: (input: ImportOpenApiInput) => Promise<ImportResult>;
+  listTemplates: () => Promise<ListTemplatesResult>;
+  getTemplate: (id: string) => Promise<GetTemplateResult>;
   replay: (input: ReplayInput) => Promise<SendResult>;
   readBody: (input: ReadBodyInput) => Promise<ReadBodyResult>;
   describeBody: (input: DescribeBodyInput) => Promise<DescribeBodyResult>;

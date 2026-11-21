@@ -5,6 +5,7 @@ import type { Db } from 'mongodb';
 import { z } from 'zod';
 import type { CompletionDoc, SendDoc, StoredBody } from '../core/call-schema';
 import { type Call, createCallStore } from '../core/call-store';
+import { createTemplateStore } from '../core/template-store';
 import {
   CallNotReplayableError,
   DatabaseUnavailableError,
@@ -37,6 +38,12 @@ import {
   ListCallsResultSchema,
   ListResponsesInputSchema,
   type SearchResult,
+  type ImportResult,
+  ImportOpenApiInputSchema,
+  type ListTemplatesResult,
+  ListTemplatesResultSchema,
+  type GetTemplateResult,
+  GetTemplateResultSchema,
   SearchQuerySchema,
   SearchResultSchema,
   BODY_PAGE_BYTES,
@@ -561,6 +568,69 @@ export function registerIpc({ ipcMain, db, dbStatus }: IpcDeps): void {
             .catch(() => undefined);
         }
         return { ok: true };
+      } catch (error) {
+        return { ok: false, message: message(error) };
+      }
+    },
+  );
+
+  // Slice 10: request templates from imported specs. An invalid spec stores nothing and says why.
+  ipcMain.handle(
+    channels.importOpenApi,
+    async (_event, raw: unknown): Promise<ImportResult> => {
+      const input = ImportOpenApiInputSchema.safeParse(raw);
+      if (!input.success) {
+        return { ok: false, message: z.prettifyError(input.error) };
+      }
+      const database = db();
+      if (!database || dbStatus().status !== 'up') {
+        return { ok: false, message: 'Database not running' };
+      }
+      try {
+        const done = await createTemplateStore(database).importOpenApi(
+          input.data,
+        );
+        return { ok: true, ...done };
+      } catch (error) {
+        return { ok: false, message: message(error) };
+      }
+    },
+  );
+
+  ipcMain.handle(
+    channels.listTemplates,
+    async (): Promise<ListTemplatesResult> => {
+      const database = db();
+      if (!database || dbStatus().status !== 'up') {
+        return { ok: true, sources: [] };
+      }
+      try {
+        return ListTemplatesResultSchema.parse({
+          ok: true,
+          sources: await createTemplateStore(database).list(),
+        });
+      } catch (error) {
+        return { ok: false, message: message(error) };
+      }
+    },
+  );
+
+  ipcMain.handle(
+    channels.getTemplate,
+    async (_event, raw: unknown): Promise<GetTemplateResult> => {
+      const id = GetCallInputSchema.safeParse(raw);
+      if (!id.success) {
+        return { ok: false, message: z.prettifyError(id.error) };
+      }
+      const database = db();
+      if (!database || dbStatus().status !== 'up') {
+        return { ok: false, message: 'Database not running' };
+      }
+      try {
+        return GetTemplateResultSchema.parse({
+          ok: true,
+          template: await createTemplateStore(database).get(id.data),
+        });
       } catch (error) {
         return { ok: false, message: message(error) };
       }

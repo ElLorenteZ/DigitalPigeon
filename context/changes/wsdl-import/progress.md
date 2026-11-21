@@ -95,3 +95,39 @@ $ npm run test:unit → 390 passed · npm run test:integration → 374 passed ·
 ```
 
 **Drift:** none.
+
+## Code-review fixes: /code-review findings 1–10
+
+- **Executor:** lz-tdd (findings 1–5, 7 and 8); lz-build (findings 6, 9 and 10)
+- **Status:** done
+- **Started:** 2026-11-21
+- **Finished:** 2026-11-21
+
+**Changed**
+- `src/core/wsdl.ts` rewritten around `normalize`. Every element carries the namespaces in scope, its children are keyed
+  by `{uri}local`, and QName attributes resolve with their element's scope. This covers prefixes declared on nested
+  elements and one namespace under two prefixes (2 and 3).
+- 1: children are qualified only under `elementFormDefault="qualified"`; otherwise `<name>` has no prefix.
+- 4: children of a named complexType (`type="tns:X"`) are read.
+- 5: an RPC operation is wrapped in an element named after it, in the `soap:body` namespace, with its parts as
+  children.
+- 7: overloads are matched by input name. Their template name and key carry it: `find (one)`.
+- 8: `groupPorts` is shared by the store and the dialog's preview.
+- 9: the listing carries `badge`, so the tree has no kind checks.
+- 6: switching the source kind invalidates a read in flight.
+- 10: a parsed WSDL styles the file box as chosen.
+- Tests: `test-support/wsdl-fixture.ts` gains `GENERATED`, a generator-style WSDL. `wsdl.test.ts` gains 5 cases. The
+  BillingService expectations are now unqualified (its schema has no `elementFormDefault`), and the e2e body assertion
+  follows.
+
+**Verification**
+
+```
+$ npx vitest run --project unit src/core/wsdl.test.ts      # before: module had no groupPorts, file failed to load
+$ npx vitest run --project unit src/core/wsdl.test.ts → 9 passed
+$ npm run test:unit → 395 passed · npm run test:integration → 374 passed
+$ npx playwright test e2e/templates.spec.ts --repeat-each=3 → 15 passed · npx playwright test → 85 passed
+$ typecheck 0 · lint clean
+```
+
+**Drift:** none.

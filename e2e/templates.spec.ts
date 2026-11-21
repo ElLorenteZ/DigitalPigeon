@@ -224,7 +224,5 @@ test('a WSDL is previewed by port, generated as SOAP templates, and one sends an
   const soapAction =
     raw[raw.findIndex((h) => h.toLowerCase() === 'soapaction') + 1];
   expect(soapAction).toBe('"urn:CreateInvoice"');
-  expect(received?.body.toString()).toContain(
-    '<tns:customerId></tns:customerId>',
-  );
+  expect(received?.body.toString()).toContain('<customerId></customerId>');
 });

@@ -47,7 +47,7 @@ import {
   groupOperations,
   parseOpenApi,
 } from '../core/openapi';
-import { type ParsedWsdl, parseWsdl } from '../core/wsdl';
+import { type ParsedWsdl, groupPorts, parseWsdl } from '../core/wsdl';
 import { composeUrl } from '../core/url';
 import { type BodyInput, buildWireRequest } from '../core/wire';
 import {
@@ -3637,14 +3637,10 @@ function TemplatesTree({
                               <button
                                 type="button"
                                 className="template-row"
-                                aria-label={`${source.kind === 'wsdl' ? 'SOAP' : t.method} ${t.path} — ${t.name}`}
+                                aria-label={`${t.badge} ${t.path} — ${t.name}`}
                                 onClick={() => onOpen(t.id)}
                               >
-                                <MethodBadge
-                                  method={
-                                    source.kind === 'wsdl' ? 'SOAP' : t.method
-                                  }
-                                />
+                                <MethodBadge method={t.badge} />
                                 <span className="path">{t.path}</span>
                               </button>
                             </li>
@@ -3811,6 +3807,8 @@ function ImportDialog({
               aria-pressed={kind === value}
               onClick={() => {
                 if (kind === value) return;
+                // A read still in flight belongs to the other kind (code review of wsdl-import, 6).
+                latestPick.current += 1;
                 setKind(value);
                 setFile(null);
                 setImportError(null);
@@ -3821,7 +3819,7 @@ function ImportDialog({
           ))}
         </div>
         <p className="label">File</p>
-        <div className={`file-box${file?.spec ? ' chosen' : ''}`}>
+        <div className={`file-box${file?.spec || file?.wsdl ? ' chosen' : ''}`}>
           <div className="file-info">
             <span className="mono">{file?.name ?? 'No file chosen'}</span>
             {file?.spec ? (
@@ -3953,15 +3951,12 @@ function ImportDialog({
   );
 }
 
-// WSDL operations by port, as the store files them: the service is named only when there are several (slice 12).
+// WSDL operations by port, by the store's rule (groupPorts in src/core/wsdl.ts).
 function wsdlGroups(wsdl: ParsedWsdl): Map<string, { method: string }[]> {
-  const services = new Set(wsdl.ports.map((p) => p.service));
-  const groups = new Map<string, { method: string }[]>();
-  for (const port of wsdl.ports) {
-    groups.set(
-      services.size > 1 ? `${port.service}.${port.port}` : port.port,
+  return new Map(
+    [...groupPorts(wsdl)].map(([directory, port]) => [
+      directory,
       port.operations.map(() => ({ method: 'SOAP' })),
-    );
-  }
-  return groups;
+    ]),
+  );
 }

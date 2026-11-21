@@ -1,11 +1,11 @@
 ---
 change_id: wsdl-import
 title: Import a WSDL file as SOAP templates, and send them like any call
-status: new
+status: closed
 ticket: null
 created: 2026-11-21
 updated: 2026-11-21
-closed: null
+closed: 2026-11-21
 produced-by: lz-change
 ---
 
@@ -29,3 +29,8 @@ service and port; a SOAP template sends a `POST` with `SOAPAction` and an envelo
 - RPC style with several parts.
 - Deep element expansion; the envelope has first-level children only.
 - WS-Security.
+
+## Notes
+
+- Outcome (2026-11-21): closed as done. All 3 phases are verified, the review verdict is merge, and all 10
+  code-review findings are fixed. Stacked PR on #10.

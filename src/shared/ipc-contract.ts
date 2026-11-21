@@ -352,6 +352,7 @@ const TemplateListingSchema = z.strictObject({
   name: z.string(),
   method: z.string(),
   path: z.string(),
+  badge: z.string(),
 });
 export type TemplateListing = z.infer<typeof TemplateListingSchema>;
 

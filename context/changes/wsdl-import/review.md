@@ -31,3 +31,9 @@ Covers plan drift, conventions, lessons and verification. Does **not** cover gen
 ## For the archive record
 
 - WSDL names are resolved by namespace URI, never by stripping prefixes.
+
+## Host code review
+
+`/code-review reimport-and-errors...wsdl-import` ran on 2026-11-21 and reported 10 findings. All are fixed; see the
+ledger. Five of them (1–5) came from WSDL as generators write it, which the spike's single fixture did not cover; the
+spike record's "Not tried" list named two of them.

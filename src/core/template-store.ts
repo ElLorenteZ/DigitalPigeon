@@ -4,7 +4,7 @@
 import { randomUUID } from 'node:crypto';
 import type { AnyBulkWriteOperation, Db } from 'mongodb';
 import { groupOperations, parseOpenApi } from './openapi';
-import { parseWsdl, soapTemplate } from './wsdl';
+import { groupPorts, parseWsdl, soapTemplate } from './wsdl';
 import type { WireInput } from './wire';
 
 export interface TemplateSourceDoc {
@@ -38,6 +38,8 @@ export interface TemplateListing {
   name: string;
   method: string;
   path: string;
+  /** What the tree's badge says: the method, or SOAP for a WSDL operation (code review of wsdl-import, 9). */
+  badge: string;
 }
 
 export interface TemplateSourceListing {
@@ -268,19 +270,19 @@ export function createTemplateStore(db: Db) {
       mode?: 'new' | 'reimport';
     }): Promise<ImportOutcome> => {
       const wsdl = parseWsdl(input.text);
-      const services = new Set(wsdl.ports.map((p) => p.service));
       const planned: Planned[] = [];
       let order = 0;
-      for (const port of wsdl.ports) {
-        const directory =
-          services.size > 1 ? `${port.service}.${port.port}` : port.port;
+      // One directory rule with the dialog's preview (code review of wsdl-import, 8).
+      for (const [directory, port] of groupPorts(wsdl)) {
         for (const op of port.operations) {
+          // An overload is told apart by its input name (code review, 7).
+          const label = op.inputName ? `${op.name} (${op.inputName})` : op.name;
           planned.push({
             order: order++,
             directory,
-            name: op.name,
-            key: `${directory} ${op.name}`,
-            label: op.name,
+            name: label,
+            key: `${directory} ${label}`,
+            label,
             request: soapTemplate(port, op),
           });
         }
@@ -325,6 +327,7 @@ export function createTemplateStore(db: Db) {
           name: t.name,
           method: t.request.method,
           path: t.label ?? pathOf(t.request.url),
+          badge: source.kind === 'wsdl' ? 'SOAP' : t.request.method,
         })),
       }));
     },

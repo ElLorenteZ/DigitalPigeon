@@ -268,9 +268,15 @@ describe('operations over HTTP', () => {
         channels.deleteSavedRequest,
         saved.id,
       ),
+      [channels.deleteCall]: await call(channels.deleteCall, sent.send._id),
     };
 
     expect(Object.keys(answers).sort()).toEqual(Object.values(channels).sort());
+    // Deleted last: the send is gone, and its replay is not (slice 8).
+    expect(answers[channels.deleteCall]).toEqual({ ok: true });
+    expect(
+      ((await call(channels.getCall, sent.send._id)) as { call: unknown }).call,
+    ).toBeNull();
     // The send above went to POST <capture>/ and is one of its own responses (slice 7).
     expect(
       (

@@ -4,6 +4,7 @@ import type { CompletionDoc, SendDoc } from './call-schema';
 import type { Call } from './call-store';
 import * as callStoreModule from './call-store';
 import { createCallStore } from './call-store';
+import { createSavedRequestStore } from './saved-request-store';
 
 let testDb: TestDb;
 
@@ -276,16 +277,18 @@ describe('getCall', () => {
   });
 });
 
-test('the store offers no way to update or delete a call', () => {
+test('the store offers no way to update a call; deleting one is deleteCall (slice 8)', () => {
   const store = createCallStore(testDb.db);
 
   expect(Object.keys(store).sort()).toEqual([
     'bodies',
+    'deleteCall',
     'getCall',
     'insertCompletion',
     'insertSend',
     'listCalls',
     'listResponses',
+    'sweepOrphanBodies',
   ]);
   expect(Object.keys(callStoreModule).sort()).toEqual(['createCallStore']);
 });
@@ -388,5 +391,185 @@ describe('listResponses', () => {
     expect(
       await store.listResponses('PUT', '/rs4/many', new Set()),
     ).toHaveLength(230);
+  });
+});
+
+// Slice 8 (delete-with-undo), T1.7: a delete removes exactly one call, its completion and its body files.
+describe('deleteCall', () => {
+  const files = () => testDb.db.collection('bodies.files');
+  const chunks = () => testDb.db.collection('bodies.chunks');
+
+  test('removes the send, its completion and its stored bodies, and nothing else', async () => {
+    const store = createCallStore(testDb.db);
+    const reqFile = await store.bodies.writeBytes(new Uint8Array(1500).fill(1));
+    const resFile = await store.bodies.writeBytes(new Uint8Array(1600).fill(2));
+    const keptFile = await store.bodies.writeBytes(
+      new Uint8Array(1700).fill(3),
+    );
+    const target: SendDoc = {
+      ...send('del-1', '2026-11-21T10:00:00Z'),
+      request: { ...request, url: 'http://a.test/del', body: reqFile },
+    };
+    const neighbour: SendDoc = {
+      ...send('del-2', '2026-11-21T10:00:01Z'),
+      request: { ...request, url: 'http://a.test/del', body: keptFile },
+    };
+    await store.insertSend(target);
+    await store.insertSend(neighbour);
+    await store.insertCompletion({
+      ...completion('del-c1', 'del-1', []),
+      response: { status: 200, headers: [], body: resFile },
+    });
+    await store.insertCompletion(completion('del-c2', 'del-2', [9]));
+    const neighbourBefore = await store.getCall('del-2', new Set());
+
+    expect(await store.deleteCall('del-1')).toEqual({ deleted: true });
+
+    expect(await store.getCall('del-1', new Set())).toBeNull();
+    expect(
+      await testDb.db
+        .collection('completions')
+        .countDocuments({ sendId: 'del-1' }),
+    ).toBe(0);
+    for (const fileId of [reqFile.fileId, resFile.fileId]) {
+      expect(await files().countDocuments({ _id: fileId as never })).toBe(0);
+      expect(await chunks().countDocuments({ files_id: fileId })).toBe(0);
+    }
+    expect(await store.getCall('del-2', new Set())).toEqual(neighbourBefore);
+    expect(
+      await files().countDocuments({ _id: keptFile.fileId as never }),
+    ).toBe(1);
+  });
+
+  test('a call with inline bodies and no completion is deleted too', async () => {
+    const store = createCallStore(testDb.db);
+    await store.insertSend(send('del-3', '2026-11-21T10:00:02Z'));
+    expect(await store.deleteCall('del-3')).toEqual({ deleted: true });
+    expect(await store.getCall('del-3', new Set())).toBeNull();
+  });
+
+  test('an unknown id deletes nothing', async () => {
+    const store = createCallStore(testDb.db);
+    const before = await testDb.db.collection('sends').countDocuments();
+    expect(await store.deleteCall('no-such-call')).toEqual({ deleted: false });
+    expect(await testDb.db.collection('sends').countDocuments()).toBe(before);
+  });
+});
+
+// T3.9: body files and chunks no call refers to are swept, but only when older than the cutoff, so an upload in
+// progress (chunks before its file document) is never touched.
+describe('sweepOrphanBodies', () => {
+  const files = () => testDb.db.collection('bodies.files');
+  const chunks = () => testDb.db.collection('bodies.chunks');
+
+  test('removes old unreferenced files and chunks, and keeps referenced or recent ones', async () => {
+    const store = createCallStore(testDb.db);
+    const referenced = await store.bodies.writeBytes(
+      new Uint8Array(1500).fill(4),
+    );
+    await store.insertSend({
+      ...send('sw-1', '2026-11-21T11:00:00Z'),
+      request: { ...request, body: referenced },
+    });
+    const orphan = await store.bodies.writeBytes(new Uint8Array(1500).fill(5));
+    // Chunks left by an upload that never finished: no file document.
+    const upload = store.bodies.openUpload();
+    await upload.write(new Uint8Array(300 * 1024).fill(6));
+    const [loose] = await chunks()
+      .find({ files_id: { $nin: (await files().distinct('_id')) as never[] } })
+      .toArray();
+    expect(
+      loose,
+      'an unfinished upload leaves chunks with no file',
+    ).toBeDefined();
+    // A1: the chunk id is an ObjectId made at upload time.
+    expect(
+      Math.abs(
+        (loose!._id as unknown as { getTimestamp(): Date })
+          .getTimestamp()
+          .getTime() - Date.now(),
+      ),
+    ).toBeLessThan(60_000);
+
+    // Cutoff now: the orphan file and the loose chunks are older than it.
+    const swept = await store.sweepOrphanBodies(new Date(Date.now() + 1000));
+    expect(swept.files).toBeGreaterThanOrEqual(1);
+    expect(swept.chunks).toBeGreaterThanOrEqual(1);
+    expect(await files().countDocuments({ _id: orphan.fileId as never })).toBe(
+      0,
+    );
+    expect(await chunks().countDocuments({ files_id: orphan.fileId })).toBe(0);
+    expect(await chunks().countDocuments({ files_id: loose?.files_id })).toBe(
+      0,
+    );
+    expect(
+      await files().countDocuments({ _id: referenced.fileId as never }),
+    ).toBe(1);
+    expect(await store.bodies.readAll(referenced)).toEqual(
+      new Uint8Array(1500).fill(4),
+    );
+    await upload.abort().catch(() => {});
+  });
+
+  // Code review of delete-with-undo, 1: saved requests keep large bodies in the same bucket.
+  test("keeps a saved request's stored text body and file part", async () => {
+    const store = createCallStore(testDb.db);
+    const savedStore = createSavedRequestStore(testDb.db);
+    const big = 'x'.repeat(1024 * 1024 + 10);
+    const { id: textId } = await savedStore.create({
+      name: 'big text',
+      request: {
+        method: 'POST',
+        url: 'http://a.test/',
+        queryRows: [],
+        headerRows: [],
+        body: { type: 'text', text: big },
+      },
+    });
+    const { id: partsId } = await savedStore.create({
+      name: 'big file',
+      request: {
+        method: 'POST',
+        url: 'http://a.test/',
+        queryRows: [],
+        headerRows: [],
+        body: {
+          type: 'multipart',
+          parts: [
+            {
+              kind: 'file',
+              name: 'f',
+              filename: 'f.bin',
+              contentType: 'application/octet-stream',
+              bytes: new Uint8Array(1024 * 1024 + 20).fill(8),
+            },
+          ],
+        },
+      },
+    });
+
+    await store.sweepOrphanBodies(new Date(Date.now() + 1000));
+
+    const text = await savedStore.get(textId);
+    expect(text?.request.body).toEqual({ type: 'text', text: big });
+    const parts = await savedStore.get(partsId);
+    const body = parts?.request.body;
+    expect(
+      body?.type === 'multipart' && body.parts[0]?.kind === 'file'
+        ? body.parts[0].bytes.length
+        : 0,
+    ).toBe(1024 * 1024 + 20);
+  });
+
+  test('keeps unreferenced files and chunks newer than the cutoff', async () => {
+    const store = createCallStore(testDb.db);
+    const recent = await store.bodies.writeBytes(new Uint8Array(1500).fill(7));
+    await store.sweepOrphanBodies(new Date(Date.now() - 60 * 60 * 1000));
+    expect(await files().countDocuments({ _id: recent.fileId as never })).toBe(
+      1,
+    );
+    expect(
+      await chunks().countDocuments({ files_id: recent.fileId }),
+    ).toBeGreaterThan(0);
   });
 });

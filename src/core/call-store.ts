@@ -1,6 +1,8 @@
-// Insert-only store for call documents. There is deliberately no update or delete function:
-// a call record does not change after it is written (PRD; test-strategy.md T1.1).
-import type { Db, Filter } from 'mongodb';
+// Store for call documents. There is deliberately no update function: a call record does not change after it is
+// written (PRD; test-strategy.md T1.1). A call is removed only whole, by deleteCall (slice 8, T1.7); body files are
+// removed with it or, when nothing refers to them, by sweepOrphanBodies (T3.9). Anything new that refers to a file in
+// the `bodies` bucket must be added to the sweep's references.
+import { type Db, type Filter, ObjectId } from 'mongodb';
 import { z } from 'zod';
 import { createBodyStore } from './body-store';
 import {
@@ -39,9 +41,10 @@ export function createCallStore(db: Db) {
       throw error;
     }));
 
+  const bodies = createBodyStore(db);
   return {
     /** Files for bodies over the inline limit. Holds no call document. */
-    bodies: createBodyStore(db),
+    bodies,
 
     insertSend: async (doc: SendDoc): Promise<void> => {
       await ensureIndexes();
@@ -101,6 +104,65 @@ export function createCallStore(db: Db) {
         inFlight,
         false,
       ),
+
+    /**
+     * Deletes one call for good (slice 8): its send, its completions and every body file they refer to. Nothing else is
+     * touched (T1.7). `deleted` is false for an unknown id.
+     */
+    deleteCall: async (sendId: string): Promise<{ deleted: boolean }> => {
+      const rawSend = await sends.findOne({ _id: sendId });
+      if (!rawSend) return { deleted: false };
+      const rawCompletions = await completions.find({ sendId }).toArray();
+      const fileIds = [
+        (rawSend as { request?: { body?: unknown } }).request?.body,
+        ...rawCompletions.map(
+          (c) => (c as { response?: { body?: unknown } }).response?.body,
+        ),
+      ].flatMap((body) => (isStoredFile(body) ? [body.fileId] : []));
+      // The send first: once it is gone the call is gone, whatever happens next (code review of delete-with-undo, 7).
+      await sends.deleteOne({ _id: sendId });
+      await completions.deleteMany({ sendId });
+      // A file that cannot be removed now is left for the sweep; the call is deleted either way (code review, 6).
+      for (const fileId of fileIds) {
+        await bodies.remove(fileId).catch(() => undefined);
+      }
+      return { deleted: true };
+    },
+
+    /**
+     * T3.9: removes body files no send or completion refers to, and chunks whose file document is missing, when they
+     * are older than `cutoff`. An upload in progress has chunks before its file document, so the cutoff must be well
+     * before now.
+     */
+    sweepOrphanBodies: async (
+      cutoff: Date,
+    ): Promise<{ files: number; chunks: number }> => {
+      // Every document that can refer to a body file: calls, and saved requests' text bodies and file parts (code
+      // review of delete-with-undo, 1).
+      const savedRequests = db.collection('savedRequests');
+      const referenced = [
+        ...(await sends.distinct('request.body.fileId')),
+        ...(await completions.distinct('response.body.fileId')),
+        ...(await savedRequests.distinct('request.body.text.fileId')),
+        ...(await savedRequests.distinct('request.body.parts.bytes.fileId')),
+      ].filter((id): id is string => typeof id === 'string');
+      const fileDocs = db.collection('bodies.files');
+      const orphans = await fileDocs
+        .find(
+          { uploadDate: { $lt: cutoff }, _id: { $nin: referenced as never[] } },
+          { projection: { _id: 1 } },
+        )
+        .toArray();
+      for (const orphan of orphans) await bodies.remove(String(orphan._id));
+      const existing = await fileDocs.distinct('_id');
+      const { deletedCount } = await db.collection('bodies.chunks').deleteMany({
+        files_id: { $nin: existing },
+        _id: {
+          $lt: ObjectId.createFromTime(Math.floor(cutoff.getTime() / 1000)),
+        },
+      });
+      return { files: orphans.length, chunks: deletedCount };
+    },
   };
 
   async function list(
@@ -144,6 +206,11 @@ export function createCallStore(db: Db) {
 }
 
 const RESPONSES_LIMIT = 500;
+
+const isStoredFile = (body: unknown): body is { fileId: string } =>
+  typeof body === 'object' &&
+  body !== null &&
+  typeof (body as { fileId?: unknown }).fileId === 'string';
 
 const escapeRegExp = (text: string) =>
   text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');

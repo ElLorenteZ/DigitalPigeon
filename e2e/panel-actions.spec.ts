@@ -68,6 +68,7 @@ const openFirstRow = async () => {
     .getByRole('listitem')
     .first()
     .getByRole('button')
+    .first()
     .click();
   await expect(
     window.getByTestId('call-panel').getByRole('heading', { name: 'Call' }),

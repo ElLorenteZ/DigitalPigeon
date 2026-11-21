@@ -87,7 +87,7 @@ test('T2.7 — a call with a body can be opened, replayed and edited, and the or
   const before = await history().count();
   await sendAndSeeNewRow();
 
-  await history().first().getByRole('button').click();
+  await history().first().getByRole('button').first().click();
   // A JSON body opens Pretty, labelled; Raw shows the recorded text.
   await expect(panel().getByTestId('call-request-body-view')).toHaveAttribute(
     'data-view',
@@ -129,13 +129,13 @@ test('T2.7 — a call with a body can be opened, replayed and edited, and the or
   await sendAndSeeNewRow();
   expect(capture.requests[2]?.body.toString()).toBe('{"item":"changed"}');
 
-  await history().nth(2).getByRole('button').click();
+  await history().nth(2).getByRole('button').first().click();
   await showBodyView(panel(), 'call-request-body', 'Raw');
   await expectBodyText(
     panel().getByTestId('call-request-body'),
     '{"item":"é"}',
   );
-  await history().first().getByRole('button').click();
+  await history().first().getByRole('button').first().click();
   await showBodyView(panel(), 'call-request-body', 'Raw');
   await expectBodyText(
     panel().getByTestId('call-request-body'),
@@ -163,7 +163,7 @@ test('a Form body typed through rows arrives encoded, and loads back as rows', a
 
   await window.getByLabel('Form field value 1').fill('other');
   await showSidebarTab(testApp.window, 'History');
-  await history().first().getByRole('button').click();
+  await history().first().getByRole('button').first().click();
   await expectBodyText(
     panel().getByTestId('call-request-body'),
     'a+b=1%262%3D%C3%A9',
@@ -259,7 +259,7 @@ test('a body that could not be shown does not leave its error on the next call o
     };
   });
   await showSidebarTab(testApp.window, 'History');
-  await history().first().getByRole('button').click();
+  await history().first().getByRole('button').first().click();
   await expect(panel().getByTestId('call-request-line')).toContainText(
     '/fails-to-show',
   );
@@ -274,7 +274,7 @@ test('a body that could not be shown does not leave its error on the next call o
     };
     scope.ResizeObserver = scope.__resizeObserver;
   });
-  await history().nth(1).getByRole('button').click();
+  await history().nth(1).getByRole('button').first().click();
   await expect(panel().getByTestId('call-request-line')).toContainText(
     '/shows',
   );
@@ -303,7 +303,7 @@ test('a stored JSON response loads page by page, formatted, to its final value',
   await sendAndSeeNewRow();
 
   await showSidebarTab(testApp.window, 'History');
-  await history().first().getByRole('button').click();
+  await history().first().getByRole('button').first().click();
   const text = panel().getByTestId('response-body');
   const loadMore = panel().getByRole('button', { name: 'Load more' });
   await expect(panel().getByTestId('response-body-view')).toHaveAttribute(
@@ -372,7 +372,7 @@ test('a 17 MiB response can be read to its end with Load more', async () => {
   await sendAndSeeNewRow();
 
   await showSidebarTab(testApp.window, 'History');
-  await history().first().getByRole('button').click();
+  await history().first().getByRole('button').first().click();
   const text = panel().getByTestId('response-body');
   const remaining = panel().getByTestId('response-body-remaining');
   const loadMore = panel().getByRole('button', { name: 'Load more' });
@@ -418,7 +418,7 @@ test('opening the call already shown does not load another page (second review, 
   await chooseBodyType(testApp.window, 'none');
   await sendAndSeeNewRow();
   await showSidebarTab(testApp.window, 'History');
-  const row = history().first().getByRole('button');
+  const row = history().first().getByRole('button').first();
   const remaining = panel().getByTestId('response-body-remaining');
 
   await row.click();
@@ -445,7 +445,7 @@ test('a large typed body pages in the panel, replays the same bytes, and Edit an
   expect(capture.requests[0]?.body.toString()).toBe(text);
 
   await showSidebarTab(testApp.window, 'History');
-  await history().first().getByRole('button').click();
+  await history().first().getByRole('button').first().click();
   await expect(
     panel().getByTestId('call-request-body-remaining'),
   ).toHaveAttribute('data-remaining', String(MIB + 4));

@@ -62,7 +62,7 @@ test('edit a past call, export it as curl, and see a refused header explained', 
   // Clear the form, so that what Edit puts there can only have come from the call.
   await window.getByLabel('URL').fill('');
   await button('Remove').click();
-  await history.first().getByRole('button').click();
+  await history.first().getByRole('button').first().click();
 
   await button('Copy call as curl').click();
   const command = window.getByTestId('call-curl');
@@ -82,7 +82,7 @@ test('edit a past call, export it as curl, and see a refused header explained', 
   await expect(window.getByTestId('call-request-headers')).toContainText(
     'X-Zeta: original',
   );
-  await history.first().getByRole('button').click();
+  await history.first().getByRole('button').first().click();
   await expect(window.getByTestId('call-request-headers')).toContainText(
     'X-Zeta: changed',
   );

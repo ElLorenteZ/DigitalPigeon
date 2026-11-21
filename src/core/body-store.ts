@@ -149,6 +149,19 @@ export function createBodyStore(db: Db) {
       }
     },
 
+    /**
+     * Removes one file and its chunks (slice 8). Only call deletion and the orphan sweep use it: a file is removed when
+     * no record refers to it any more.
+     */
+    remove: async (fileId: string): Promise<void> => {
+      try {
+        await bucket.delete(asId(fileId));
+      } catch {
+        // No file document: the chunks of an upload that never finished. They go all the same.
+        await db.collection('bodies.chunks').deleteMany({ files_id: fileId });
+      }
+    },
+
     /** The whole file, checked against the reference a document holds. */
     readAll: async (
       { fileId, length }: StoredFile,

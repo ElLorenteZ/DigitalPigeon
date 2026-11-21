@@ -1,55 +1,157 @@
+/* Shell layout (slice 6, phase 1): title bar, sidebar beside the main area, status bar. The panes scroll; the page does not. */
+*,
+::before,
+::after {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
 body {
   font-family:
     -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial,
     sans-serif;
-  margin: auto;
-  max-width: 60rem;
-  padding: 2rem;
+  overflow: hidden;
 }
 
-main {
-  max-width: none;
+[hidden] {
+  display: none !important;
 }
+
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.title-bar,
+.status-bar {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-shrink: 0;
+  padding: 0 16px;
+}
+
+.title-bar {
+  height: 44px;
+}
+
+.status-bar {
+  height: 28px;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.brand h1 {
+  font-size: 13px;
+  margin: 0;
+}
+
+.spacer {
+  flex: 1;
+}
+
+.environments-panel {
+  flex-shrink: 0;
+  max-height: 40vh;
+  overflow: auto;
+  padding: 8px 16px;
+}
+
+.body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+.sidebar {
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  width: 340px;
+  min-height: 0;
+}
+
+.sidebar-panel {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+
+.main {
+  flex: 1;
+  min-width: 0;
+  overflow: auto;
+  /* Monaco relayouts on resize: a scrollbar that comes and goes would resize it in a loop. */
+  scrollbar-gutter: stable;
+}
+
 .row {
   display: flex;
   gap: 0.5rem;
   margin: 0.25rem 0;
 }
+
+.request-bar,
+.url-field {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.url-field {
+  flex: 1;
+}
+
 .url {
   flex: 1;
 }
+
 fieldset {
   margin: 0.5rem 0;
 }
+
 pre {
   white-space: pre-wrap;
   word-break: break-all;
-  background: #f4f4f4;
-  padding: 0.5rem;
 }
-.status-up {
-  color: #1a7f37;
-}
-.status-down,
-.status-not-configured,
-.error {
-  color: #b42318;
-}
+
 .history-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
   background: none;
   border: none;
   cursor: pointer;
   font: inherit;
-  padding: 0;
   text-align: left;
 }
-.history-row:hover {
-  text-decoration: underline;
+
+.history-row .info,
+.history-row .result {
+  display: flex;
+  flex-direction: column;
 }
+
+.history-row .info {
+  flex: 1;
+  min-width: 0;
+}
+
 .body-editor {
   height: 20rem;
-  border: 1px solid #ddd;
 }
+
 .body-view [aria-pressed='true'] {
   font-weight: bold;
 }

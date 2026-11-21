@@ -13,12 +13,16 @@ import {
   startCaptureServer,
 } from '../test-support/capture-server';
 import {
-  type TestApp,
+  bodyTypeRadio,
   callOperation,
+  chooseBodyType,
   gate,
   launchWithTestDatabase,
   settle,
+  showRequest,
+  showSidebarTab,
   stubOperation,
+  type TestApp,
 } from './support';
 
 let capture: CaptureServer;
@@ -38,7 +42,7 @@ async function sendStored(value: string) {
   const rowsBefore = await history().count();
   await window.getByLabel('Method').selectOption('POST');
   await window.getByLabel('URL').fill(`${capture.url}/${value}`);
-  await window.getByLabel('Body type').selectOption('multipart');
+  await chooseBodyType(window, 'multipart');
   // The form keeps parts from the previous send; start from none.
   while ((await window.getByRole('button', { name: 'Remove' }).count()) > 0) {
     await window.getByRole('button', { name: 'Remove' }).first().click();
@@ -111,6 +115,12 @@ test.afterAll(async () => {
   await rm(dir, { recursive: true, force: true });
 });
 
+// Each test starts on the request form with History shown (slice 6: the shell keeps one view at a time).
+test.beforeEach(async () => {
+  await showRequest(testApp.window);
+  await showSidebarTab(testApp.window, 'History');
+});
+
 test('when two Edits overlap, the form holds the later one whichever read finishes last', async () => {
   const a = await sendStored('from-a');
   const b = await sendStored('from-b');
@@ -123,6 +133,7 @@ test('when two Edits overlap, the form holds the later one whichever read finish
   await window.getByLabel('URL').fill('http://untouched.test/');
 
   // History lists newest first: B, then A.
+  await showSidebarTab(testApp.window, 'History');
   await history().nth(1).getByRole('button').click();
   await expect(panel.getByTestId('call-request-line')).toContainText('/from-a');
   await panel.getByRole('button', { name: 'Edit', exact: true }).click();
@@ -145,9 +156,10 @@ test('a failed read during Edit shows the reason and leaves the form as it was',
   await stubReadBody({}, { failFileId: c.fileId });
   const { window } = testApp;
   const panel = window.getByTestId('call-panel');
-  await window.getByLabel('Body type').selectOption('json');
+  await chooseBodyType(window, 'json');
   await window.getByLabel('URL').fill('http://untouched.test/');
 
+  await showSidebarTab(testApp.window, 'History');
   await history().nth(0).getByRole('button').click();
   await expect(panel.getByTestId('call-request-line')).toContainText('/from-c');
   await panel.getByRole('button', { name: 'Edit', exact: true }).click();
@@ -157,7 +169,7 @@ test('a failed read during Edit shows the reason and leaves the form as it was',
   );
   await expect(panel.getByTestId('call-edit-error')).toBeInViewport();
   await expect(window.getByLabel('URL')).toHaveValue('http://untouched.test/');
-  await expect(window.getByLabel('Body type')).toHaveValue('json');
+  await expect(bodyTypeRadio(window, 'json')).toBeChecked();
 });
 
 // Code review, 2: while Edit reads a stored body the panel says so, and a change to the form ends the pending Edit.
@@ -167,6 +179,7 @@ test('a change to the form while Edit reads a stored body keeps the change', asy
   const { window } = testApp;
   const panel = window.getByTestId('call-panel');
 
+  await showSidebarTab(testApp.window, 'History');
   await history().nth(0).getByRole('button').click();
   await expect(panel.getByTestId('call-request-line')).toContainText('/from-d');
   await panel.getByRole('button', { name: 'Edit', exact: true }).click();
@@ -174,6 +187,7 @@ test('a change to the form while Edit reads a stored body keeps the change', asy
     'Loading the call into the form…',
   );
 
+  await showRequest(window);
   await window.getByLabel('URL').fill('http://typed-meanwhile.test/');
   await expect(panel.getByTestId('call-edit-status')).toHaveCount(0);
   held.release();

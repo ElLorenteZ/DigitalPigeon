@@ -250,3 +250,85 @@ export async function settle(page: Page): Promise<void> {
   await callOperation(page, 'pigeon:db-status');
   await page.evaluate(() => new Promise(requestAnimationFrame));
 }
+
+// The shell (slice 6): the request's Query, Headers and Body tabs, the sidebar's Saved and History tabs, the call view
+// that takes the request's place, and the environments panel under the title bar. Each helper is a no-op when what it
+// shows is already shown.
+export async function showRequestTab(
+  page: Page,
+  name: 'Query' | 'Headers' | 'Body',
+): Promise<void> {
+  await showRequest(page);
+  const tab = page
+    .getByRole('tablist', { name: 'Request' })
+    .getByRole('tab', { name: new RegExp(`^${name}`) });
+  if ((await tab.getAttribute('aria-selected')) !== 'true') await tab.click();
+}
+
+export async function showSidebarTab(
+  page: Page,
+  name: 'Saved' | 'History',
+): Promise<void> {
+  const tab = page
+    .getByRole('tablist', { name: 'Sidebar' })
+    .getByRole('tab', { name, exact: true });
+  if ((await tab.getAttribute('aria-selected')) !== 'true') await tab.click();
+}
+
+/** Leaves an opened call for the request form, as the "Back to the request" button does. */
+export async function showRequest(page: Page): Promise<void> {
+  const back = page.getByRole('button', {
+    name: 'Back to the request',
+    exact: true,
+  });
+  if (await back.isVisible()) await back.click();
+}
+
+export async function openEnvironments(page: Page): Promise<void> {
+  const toggle = page.getByRole('button', {
+    name: 'Environments',
+    exact: true,
+  });
+  if ((await toggle.getAttribute('aria-expanded')) !== 'true') {
+    await toggle.click();
+  }
+}
+
+const BODY_TYPE_LABELS: Record<string, string> = {
+  none: 'None',
+  json: 'JSON',
+  xml: 'XML',
+  text: 'Text',
+  form: 'Form',
+  multipart: 'Multipart',
+};
+
+// A CSS locator, not a role query: it still finds the radio while the form is hidden behind an opened call.
+export const bodyTypeRadio = (page: Page, type: string): Locator =>
+  page.locator(
+    `[role="radiogroup"][aria-label="Body type"] input[type="radio"][value="${type}"]`,
+  );
+
+export async function chooseBodyType(page: Page, type: string): Promise<void> {
+  await showRequestTab(page, 'Body');
+  await page
+    .getByRole('radiogroup', { name: 'Body type' })
+    .getByRole('radio', { name: BODY_TYPE_LABELS[type] ?? type, exact: true })
+    .check();
+}
+
+/** A history row's whole call (method, URL, outcome, time) is its button's accessible name. */
+export const rowName = (row: Locator): Locator => row.getByRole('button');
+
+/** Matches a string containing `text`, for accessible names checked by part. */
+export const containing = (text: string): RegExp =>
+  new RegExp(text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+
+/** Returns from the request form to the opened call, as the "Back to the call" button does. */
+export async function showCall(page: Page): Promise<void> {
+  const back = page.getByRole('button', {
+    name: 'Back to the call',
+    exact: true,
+  });
+  if (await back.isVisible()) await back.click();
+}

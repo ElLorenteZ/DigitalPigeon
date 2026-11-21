@@ -1,11 +1,11 @@
 ---
 change_id: workspace-shell
 title: Give the app the target design's workspace shell (screens 01 and 02)
-status: new
+status: closed
 ticket: null
 created: 2026-11-21
 updated: 2026-11-21
-closed: null
+closed: 2026-11-21
 produced-by: lz-change
 ---
 
@@ -46,3 +46,6 @@ finished".
 - Target: `~/Documents/digital-pigeon.pen`, frames `pyg23` (01) and `aJeTB` (02); components `UWrNk` (Logo Small),
   `TUcWi` (History Row), `lej2z` (Method Badge), `FAc0D` (Status Pill), `Dgb4H` (Tab), `EuE17` (Segment).
 - Roadmap order rationale: the shell goes before slices 7–9 so their UI is built once, in place.
+- Outcome (2026-11-21): closed as done. The app has the shell of screens 01 and 02. All 3 plan phases are verified, the
+  review verdict is merge, and all 10 code-review findings are fixed. PR #5. Open: an editable request body in the code
+  editor (roadmap, "Not ordered yet").

@@ -4,6 +4,7 @@ import type { CompletionDoc, SendDoc } from './call-schema';
 import type { Call } from './call-store';
 import * as callStoreModule from './call-store';
 import { createCallStore } from './call-store';
+import { createSavedRequestStore } from './saved-request-store';
 
 let testDb: TestDb;
 
@@ -508,6 +509,56 @@ describe('sweepOrphanBodies', () => {
       new Uint8Array(1500).fill(4),
     );
     await upload.abort().catch(() => {});
+  });
+
+  // Code review of delete-with-undo, 1: saved requests keep large bodies in the same bucket.
+  test("keeps a saved request's stored text body and file part", async () => {
+    const store = createCallStore(testDb.db);
+    const savedStore = createSavedRequestStore(testDb.db);
+    const big = 'x'.repeat(1024 * 1024 + 10);
+    const { id: textId } = await savedStore.create({
+      name: 'big text',
+      request: {
+        method: 'POST',
+        url: 'http://a.test/',
+        queryRows: [],
+        headerRows: [],
+        body: { type: 'text', text: big },
+      },
+    });
+    const { id: partsId } = await savedStore.create({
+      name: 'big file',
+      request: {
+        method: 'POST',
+        url: 'http://a.test/',
+        queryRows: [],
+        headerRows: [],
+        body: {
+          type: 'multipart',
+          parts: [
+            {
+              kind: 'file',
+              name: 'f',
+              filename: 'f.bin',
+              contentType: 'application/octet-stream',
+              bytes: new Uint8Array(1024 * 1024 + 20).fill(8),
+            },
+          ],
+        },
+      },
+    });
+
+    await store.sweepOrphanBodies(new Date(Date.now() + 1000));
+
+    const text = await savedStore.get(textId);
+    expect(text?.request.body).toEqual({ type: 'text', text: big });
+    const parts = await savedStore.get(partsId);
+    const body = parts?.request.body;
+    expect(
+      body?.type === 'multipart' && body.parts[0]?.kind === 'file'
+        ? body.parts[0].bytes.length
+        : 0,
+    ).toBe(1024 * 1024 + 20);
   });
 
   test('keeps unreferenced files and chunks newer than the cutoff', async () => {

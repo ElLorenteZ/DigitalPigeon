@@ -1,5 +1,7 @@
-// Insert-only store for call documents. There is deliberately no update or delete function:
-// a call record does not change after it is written (PRD; test-strategy.md T1.1).
+// Store for call documents. There is deliberately no update function: a call record does not change after it is
+// written (PRD; test-strategy.md T1.1). A call is removed only whole, by deleteCall (slice 8, T1.7); body files are
+// removed with it or, when nothing refers to them, by sweepOrphanBodies (T3.9). Anything new that refers to a file in
+// the `bodies` bucket must be added to the sweep's references.
 import { type Db, type Filter, ObjectId } from 'mongodb';
 import { z } from 'zod';
 import { createBodyStore } from './body-store';
@@ -117,9 +119,13 @@ export function createCallStore(db: Db) {
           (c) => (c as { response?: { body?: unknown } }).response?.body,
         ),
       ].flatMap((body) => (isStoredFile(body) ? [body.fileId] : []));
-      await completions.deleteMany({ sendId });
+      // The send first: once it is gone the call is gone, whatever happens next (code review of delete-with-undo, 7).
       await sends.deleteOne({ _id: sendId });
-      for (const fileId of fileIds) await bodies.remove(fileId);
+      await completions.deleteMany({ sendId });
+      // A file that cannot be removed now is left for the sweep; the call is deleted either way (code review, 6).
+      for (const fileId of fileIds) {
+        await bodies.remove(fileId).catch(() => undefined);
+      }
       return { deleted: true };
     },
 
@@ -131,9 +137,14 @@ export function createCallStore(db: Db) {
     sweepOrphanBodies: async (
       cutoff: Date,
     ): Promise<{ files: number; chunks: number }> => {
+      // Every document that can refer to a body file: calls, and saved requests' text bodies and file parts (code
+      // review of delete-with-undo, 1).
+      const savedRequests = db.collection('savedRequests');
       const referenced = [
         ...(await sends.distinct('request.body.fileId')),
         ...(await completions.distinct('response.body.fileId')),
+        ...(await savedRequests.distinct('request.body.text.fileId')),
+        ...(await savedRequests.distinct('request.body.parts.bytes.fileId')),
       ].filter((id): id is string => typeof id === 'string');
       const fileDocs = db.collection('bodies.files');
       const orphans = await fileDocs

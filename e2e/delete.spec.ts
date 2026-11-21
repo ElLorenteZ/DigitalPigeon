@@ -122,3 +122,39 @@ test('a call deleted from its record returns to the request, and Undo restores i
   await expect(row('/del-record')).toHaveCount(1);
   expect(await stored(id)).toBe(true);
 });
+
+// Code review of delete-with-undo, 2 and 4.
+test('deleting the response on screen says so, and Undo shows it again', async () => {
+  await sendTo('/del-shown');
+  const result = testApp.window.getByTestId('result');
+  const strip = testApp.window.getByTestId('responses-strip');
+  await strip.getByRole('button', { name: /^Delete response/ }).click();
+  await expect(result).toContainText('This response was deleted');
+  await expect(result.getByTestId('response-body')).toHaveCount(0);
+  await toast().getByRole('button', { name: 'Undo' }).click();
+  await expect(result.getByTestId('response-body')).toBeVisible();
+});
+
+test('two deletes in a row can each be undone', async () => {
+  await sendTo('/del-one');
+  await sendTo('/del-two');
+  const deleteRow = (path: string) =>
+    testApp.window.getByRole('button', {
+      name: new RegExp(`^Delete GET \\S*${path}$`),
+    });
+  await deleteRow('/del-one').click();
+  await deleteRow('/del-two').click();
+  await expect(toast()).toHaveCount(2);
+  await toast()
+    .filter({ hasText: '/del-one' })
+    .getByRole('button', { name: 'Undo' })
+    .click();
+  await expect(row('/del-one')).toHaveCount(1);
+  await expect(row('/del-two')).toHaveCount(0);
+  await toast()
+    .filter({ hasText: '/del-two' })
+    .getByRole('button', { name: 'Undo' })
+    .click();
+  await expect(row('/del-two')).toHaveCount(1);
+  await expect(toast()).toHaveCount(0);
+});

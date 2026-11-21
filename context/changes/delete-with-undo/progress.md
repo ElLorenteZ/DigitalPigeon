@@ -85,3 +85,38 @@ $ npm run typecheck → 0 · npm run lint → clean · npm run test:unit → 371
 ```
 
 **Drift:** none. The ledger records the spec selector edits.
+
+## Code-review fixes: /code-review findings 1–10
+
+- **Executor:** lz-tdd (finding 1); lz-e2e (findings 2 and 4); lz-build (the rest)
+- **Status:** done
+- **Started:** 2026-11-21
+- **Finished:** 2026-11-21
+
+**Changed**
+- 1: `sweepOrphanBodies` also counts saved requests' files, `request.body.text.fileId` and
+  `request.body.parts.bytes.fileId`, as in use. The new integration test failed first with "The stored body … is
+  missing".
+- 2: a response on screen that is held for deletion shows "This response was deleted. Undo keeps it." A picked
+  response that is deleted clears the pick.
+- 3: the History-row and strip × buttons are disabled for a call in flight, and `deleteLater` ignores one.
+- 4: one toast per pending delete, naming the call (`METHOD /path`), and one per failure.
+- 5: the Undo toast closes as soon as the window ends, before the store is called.
+- 6 and 7: `deleteCall` deletes the send first, then the completions. A file that cannot be removed is left for the
+  sweep, and the call still counts as deleted.
+- 8 and 9: the sweep runs at most once an hour, for data older than 24 h.
+- 10: the `call-store.ts` header now describes deletion and names the sweep's references.
+
+**Verification**
+
+```
+$ npx vitest run --project integration src/core/call-store.int.test.ts -t "saved request's stored"   # before
+     × keeps a saved request's stored text body and file part — Error: The stored body … is missing
+$ npx playwright test e2e/delete.spec.ts                                                        # before
+  ✘ deleting the response on screen says so… · ✘ two deletes in a row can each be undone
+$ npx playwright test e2e/delete.spec.ts --repeat-each=3 → 15 passed (34.2s)
+$ npx playwright test → 74 passed (1.1m)
+$ npm run test:integration → 351 passed · npm run test:unit → 371 passed · typecheck 0 · lint clean
+```
+
+**Drift:** none.

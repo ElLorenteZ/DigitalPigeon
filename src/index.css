@@ -1131,11 +1131,18 @@ button.danger {
   border-color: #f8717166;
 }
 
-.toast {
+.toasts {
   position: fixed;
   left: 50%;
   bottom: 44px;
   transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  z-index: 10;
+}
+
+.toast {
   display: flex;
   align-items: center;
   gap: 16px;
@@ -1144,7 +1151,6 @@ button.danger {
   background: var(--raised);
   border: 1px solid var(--border-strong);
   box-shadow: 0 8px 24px #00000066;
-  z-index: 10;
 }
 
 .toast .undo {

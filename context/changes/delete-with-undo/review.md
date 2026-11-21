@@ -41,3 +41,20 @@ Covers plan drift, conventions, lessons and verification. Does **not** cover gen
 
 - Delete is held in the app for 8 s and done in the store after. A closed tab deletes nothing.
 - The orphan sweep runs after each delete with a 1 h cutoff, so an upload in progress is never touched.
+
+## Host code review
+
+`/code-review responses-strip...delete-with-undo` ran on 2026-11-21 and reported 10 findings. All are fixed.
+
+| # | Finding | Disposition |
+|---|---|---|
+| 1 | The sweep deleted saved requests' stored bodies | fixed, integration test (**blocker**: data loss) |
+| 2 | Deleting the response on screen left it shown | fixed, e2e |
+| 3 | × was enabled for calls in flight | fixed |
+| 4 | One toast for many pending deletes | fixed, e2e |
+| 5 | Undo was offered after the window had passed | fixed |
+| 6 | A file-removal error reported a deleted call as not deleted | fixed |
+| 7 | Completions were deleted before the send | fixed |
+| 8 | The sweep could hit an upload running for over an hour | fixed (24 h cutoff) |
+| 9 | The sweep ran on every delete | fixed (at most hourly) |
+| 10 | A stale "insert-only" header | fixed |

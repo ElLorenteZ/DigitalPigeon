@@ -164,10 +164,12 @@ export function App() {
   // nothing: the call stays.
   const [held, setHeld] = useState<ReadonlySet<string>>(new Set());
   const holdTimers = useRef(new Map<string, number>());
-  const [deleteToast, setDeleteToast] = useState<{
-    sendId: string;
-    error?: string;
-  } | null>(null);
+  // One toast per pending delete, and one per failed delete (code review of delete-with-undo, 4).
+  const [deleteToasts, setDeleteToasts] = useState<
+    { sendId: string; label: string; error?: string }[]
+  >([]);
+  const dropToast = (sendId: string) =>
+    setDeleteToasts((current) => current.filter((t) => t.sendId !== sendId));
   const [inFlightId, setInFlightId] = useState<string | null>(null);
   const [historyError, setHistoryError] = useState<string | null>(null);
   const [form, setForm] = useState<Form>(EMPTY_FORM);
@@ -549,16 +551,27 @@ export function App() {
       return next;
     });
   // Hides the call at once and deletes it in the store after the Undo window (slice 8).
-  const deleteLater = (sendId: string) => {
-    if (holdTimers.current.has(sendId)) return;
+  const deleteLater = (call: {
+    state: ReadableCall['state'];
+    send: { _id: string; request: { method: string; url: string } };
+  }) => {
+    const sendId = call.send._id;
+    if (holdTimers.current.has(sendId) || call.state === 'in-flight') return;
+    const label = `${call.send.request.method} ${requestKeyOf(call.send.request.method, call.send.request.url).path}`;
     setHeld((current) => new Set(current).add(sendId));
-    setDeleteToast({ sendId });
+    setDeleteToasts((current) => [
+      ...current.filter((t) => t.sendId !== sendId),
+      { sendId, label },
+    ]);
     if (opened?.send._id === sendId) {
       setOpened(null);
       setView('workspace');
     }
+    if (pickedFor?.sendId === sendId) setPickedFor(null);
     const timer = window.setTimeout(() => {
       holdTimers.current.delete(sendId);
+      // The window has passed: Undo is no longer offered (code review of delete-with-undo, 5).
+      dropToast(sendId);
       void (async () => {
         const done = await pigeon.deleteCall(sendId).catch(
           (error: unknown): MutationResult => ({
@@ -568,14 +581,14 @@ export function App() {
         );
         if (!done.ok) {
           unhold(sendId);
-          setDeleteToast({ sendId, error: done.message });
+          setDeleteToasts((current) => [
+            ...current,
+            { sendId, label, error: done.message },
+          ]);
           return;
         }
         await refreshHistory();
         unhold(sendId);
-        setDeleteToast((current) =>
-          current?.sendId === sendId ? null : current,
-        );
       })();
     }, UNDO_WINDOW_MS);
     holdTimers.current.set(sendId, timer);
@@ -586,7 +599,7 @@ export function App() {
     window.clearTimeout(timer);
     holdTimers.current.delete(sendId);
     unhold(sendId);
-    setDeleteToast(null);
+    dropToast(sendId);
   };
 
   // Picking a response loads its completion; the latest is the result itself.
@@ -813,6 +826,7 @@ export function App() {
               <ResultView
                 result={result}
                 picked={picked}
+                deleted={result?.ok === true && held.has(result.send._id)}
                 strip={
                   responsesList.error ? (
                     <p data-testid="responses-error" className="error">
@@ -860,7 +874,7 @@ export function App() {
                       c.send._id !== opened.send._id &&
                       !held.has(c.send._id),
                   )}
-                  onDelete={() => deleteLater(opened.send._id)}
+                  onDelete={() => deleteLater(opened)}
                   onOpenResponse={(id) => void openCall(id)}
                   onReplay={() => {
                     showRequest();
@@ -881,29 +895,40 @@ export function App() {
           </div>
         </main>
       </div>
-      {deleteToast ? (
-        <div role="status" aria-label="Deleted" className="toast">
-          {deleteToast.error ? (
-            <>
-              <span className="error">
-                Could not delete the call: {deleteToast.error}
-              </span>
-              <button type="button" onClick={() => setDeleteToast(null)}>
-                Dismiss
-              </button>
-            </>
-          ) : (
-            <>
-              <span>Call deleted</span>
-              <button
-                type="button"
-                className="undo"
-                onClick={() => undoDelete(deleteToast.sendId)}
-              >
-                Undo
-              </button>
-            </>
-          )}
+      {deleteToasts.length > 0 ? (
+        <div className="toasts">
+          {deleteToasts.map((t) => (
+            <div
+              key={`${t.sendId}:${t.error ? 'error' : 'held'}`}
+              role="status"
+              aria-label="Deleted"
+              className="toast"
+            >
+              {t.error ? (
+                <>
+                  <span className="error">
+                    Could not delete {t.label}: {t.error}
+                  </span>
+                  <button type="button" onClick={() => dropToast(t.sendId)}>
+                    Dismiss
+                  </button>
+                </>
+              ) : (
+                <>
+                  <span>
+                    Call deleted · <code>{t.label}</code>
+                  </span>
+                  <button
+                    type="button"
+                    className="undo"
+                    onClick={() => undoDelete(t.sendId)}
+                  >
+                    Undo
+                  </button>
+                </>
+              )}
+            </div>
+          ))}
         </div>
       ) : null}
       <footer className="status-bar">
@@ -1927,9 +1952,12 @@ function stateText(state: Opened['state']): string {
 function ResultView({
   result,
   picked,
+  deleted,
   strip,
 }: {
   result: SendResult | null;
+  /** The response on screen is held for deletion (code review of delete-with-undo, 2). */
+  deleted: boolean;
   /** A response picked from the strip, while it loads and after. */
   picked: Picked | null;
   strip: ReactNode;
@@ -1954,6 +1982,14 @@ function ResultView({
     );
   }
   const shown = picked ? picked.completion : result.completion;
+  if (deleted && !picked) {
+    return (
+      <section data-testid="result">
+        {strip}
+        <p className="empty">This response was deleted. Undo keeps it.</p>
+      </section>
+    );
+  }
   return (
     <section data-testid="result">
       {shown ? (
@@ -2052,7 +2088,7 @@ function ResponsesStrip({
   calls: CallView[];
   selectedId: string;
   onPick: (sendId: string) => void;
-  onDelete: (sendId: string) => void;
+  onDelete: (call: ReadableCall) => void;
 }) {
   const readable = calls.filter(
     (c): c is ReadableCall => c.state !== 'unreadable',
@@ -2074,7 +2110,8 @@ function ResponsesStrip({
             type="button"
             className="chip-delete"
             aria-label={`Delete response ${codeText(call)} ${call.send.sentAt.toLocaleTimeString()}`}
-            onClick={() => onDelete(call.send._id)}
+            disabled={call.state === 'in-flight'}
+            onClick={() => onDelete(call)}
           >
             ×
           </button>
@@ -2704,7 +2741,7 @@ function HistoryList({
   calls: CallView[];
   error: string | null;
   onOpen: (sendId: string) => void;
-  onDelete: (sendId: string) => void;
+  onDelete: (call: ReadableCall) => void;
 }) {
   // One group per day, in the order days first appear; today is computed once per render (code review of
   // workspace-shell, 5 and 9).
@@ -2767,7 +2804,8 @@ function HistoryList({
                   type="button"
                   className="row-delete"
                   aria-label={`Delete ${call.send.request.method} ${call.send.request.url}`}
-                  onClick={() => onDelete(call.send._id)}
+                  disabled={call.state === 'in-flight'}
+                  onClick={() => onDelete(call)}
                 >
                   ×
                 </button>

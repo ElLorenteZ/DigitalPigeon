@@ -14,6 +14,7 @@ export const channels = {
   send: 'pigeon:send',
   cancel: 'pigeon:cancel',
   listCalls: 'pigeon:list-calls',
+  listResponses: 'pigeon:list-responses',
   dbStatus: 'pigeon:db-status',
   getCall: 'pigeon:get-call',
   replay: 'pigeon:replay',
@@ -106,6 +107,13 @@ export const ReplayInputSchema = z.strictObject({
 export type ReplayInput = z.infer<typeof ReplayInputSchema>;
 
 export const GetCallInputSchema = z.string().min(1);
+
+/** The responses to one request: same method and URL path; query, fragment and host are not part of the key (slice 7). */
+export const ListResponsesInputSchema = z.strictObject({
+  method: z.enum(METHODS),
+  path: z.string().startsWith('/').max(8192),
+});
+export type ListResponsesInput = z.infer<typeof ListResponsesInputSchema>;
 
 /** The most one readBody call returns: the display page, equal to the inline limit (plan.md). */
 export const BODY_PAGE_BYTES = 1024 * 1024;
@@ -317,6 +325,7 @@ export interface PigeonApi {
   listCalls: () => Promise<ListCallsResult>;
   dbStatus: () => Promise<DbStatusView>;
   getCall: (sendId: string) => Promise<GetCallResult>;
+  listResponses: (input: ListResponsesInput) => Promise<ListCallsResult>;
   replay: (input: ReplayInput) => Promise<SendResult>;
   readBody: (input: ReadBodyInput) => Promise<ReadBodyResult>;
   describeBody: (input: DescribeBodyInput) => Promise<DescribeBodyResult>;

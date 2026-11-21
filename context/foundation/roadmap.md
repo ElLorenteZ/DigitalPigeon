@@ -36,7 +36,7 @@ was added on 2026-11-11 by the author's decision, ahead of slice 6.
 - [x] A recorded multipart call can be replayed after the uploaded file is deleted from its original location. *(slice 4: T1.4, `replay.int.test.ts` inline and GridFS, `e2e/multipart.spec.ts`)*
 - [ ] History can be narrowed by environment, by saved request, by date range, and by a search term in URL or body.
 - [ ] History can be narrowed by HTTP method (one or several) and by the `Authorization` header value sent; filters combine, and each option shows its count.
-- [ ] A request shows every response it has received, newest first, and any one of them can be deleted without affecting the others.
+- [ ] A request shows every response it has received, newest first, and any one of them can be deleted without affecting the others. *(slice 7: shows every response, newest first, `e2e/responses.spec.ts`, `call-store.int.test.ts`; delete is slice 8)*
 - [ ] A call can be resent from History, one at a time or as a selection; each resend creates a new record.
 - [ ] A deleted call can be restored with Undo for a few seconds, then it is gone permanently.
 - [x] The app shows the target design's shell: the circuit-trace pigeon logo, title bar with the active environment, sidebar tabs, and the status bar. *(slice 6: `e2e/shell.spec.ts`; screenshots compared with screens 01 and 02, `archive/workspace-shell`)*
@@ -55,8 +55,8 @@ was added on 2026-11-11 by the author's decision, ahead of slice 6.
 | 5 | Saved requests and environments | Save a request and edit it later; define environments (name + `baseUrl`), switch the active one, and the same saved request goes to the other `baseUrl`; calls link back to their saved request | done | `saved-requests-and-environments` |
 | 5b | Desktop to local web app | One command starts a Node server bound to `127.0.0.1`; opening its address in a browser shows the app working as it does today (send, history, preview, replay, curl export, bodies, multipart, saved requests, environments); the Electron shell is gone; every existing e2e journey passes in a plain browser; a request to the server from another origin, or without the per-launch token, is refused and nothing is sent or recorded | done | `local-web-app` |
 | 6 | Workspace shell in the design | The app looks like screens 01 and 02: the logo in the title bar, the environment selector in the title bar, a sidebar with Saved and History tabs (Templates appears in M2), request above response, the status bar; every existing e2e journey still passes | done | `workspace-shell` |
-| 7 | Responses to this request | Send the same method and path three times and the response panel shows three response chips, newest selected; pick one to view it; the call record lists the other responses of its request | next | `responses-strip` |
-| 8 | Delete with undo | Delete one response from the strip, the history list or the call record; it disappears, an Undo toast restores it for a few seconds, then it is gone permanently along with its stored bodies and file copies | later | — |
+| 7 | Responses to this request | Send the same method and path three times and the response panel shows three response chips, newest selected; pick one to view it; the call record lists the other responses of its request | done | `responses-strip` |
+| 8 | Delete with undo | Delete one response from the strip, the history list or the call record; it disappears, an Undo toast restores it for a few seconds, then it is gone permanently along with its stored bodies and file copies | next | `delete-with-undo` |
 | 9 | Search, filter, resend | Screen 04: search text plus method, environment, `Authorization` header and date facets with counts, results table, resend one or a selection, delete a selection; an empty result says so and offers to clear filters | later | — |
 
 **Order rationale:**

@@ -1,11 +1,11 @@
 ---
 change_id: responses-strip
 title: Show every response a request has received, and let one be picked
-status: new
+status: closed
 ticket: null
 created: 2026-11-21
 updated: 2026-11-21
-closed: null
+closed: 2026-11-21
 produced-by: lz-change
 ---
 
@@ -30,3 +30,8 @@ Author, 2026-11-11: two calls are responses to "the same request" when they have
 - Deleting a response from a chip (the ×). That is slice 8, which owns delete and Undo.
 - History search and filters (slice 9).
 - Any change to what is sent or recorded.
+
+## Notes
+
+- Outcome (2026-11-21): closed as done. Both phases are verified, the review verdict is merge, and 7 of 9 code-review
+  findings are fixed. The other 2 are fix later (slice 9: a stored `request.path` with an index). PR #6, stacked on #5.

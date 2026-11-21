@@ -1532,3 +1532,16 @@ button.link {
   background: var(--bg);
   border-radius: 0 0 12px 12px;
 }
+
+.reimport-note {
+  margin: 14px 0 0;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: var(--accent-soft);
+  color: var(--text);
+}
+
+.import-outcome {
+  padding: 0 6px 8px;
+  font-size: 12px;
+}

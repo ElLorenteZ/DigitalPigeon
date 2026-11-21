@@ -205,6 +205,7 @@ export function App() {
   const [templateSources, setTemplateSources] = useState<TemplateSource[]>([]);
   const [templatesError, setTemplatesError] = useState<string | null>(null);
   const [importOpen, setImportOpen] = useState(false);
+  const [importOutcome, setImportOutcome] = useState<string | null>(null);
   const [view, setView] = useState<'workspace' | 'call' | 'results'>(
     'workspace',
   );
@@ -927,7 +928,11 @@ export function App() {
             <TemplatesTree
               sources={templateSources}
               error={templatesError}
-              onImport={() => setImportOpen(true)}
+              outcome={importOutcome}
+              onImport={() => {
+                setImportOutcome(null);
+                setImportOpen(true);
+              }}
               onOpen={(id) => void openTemplate(id)}
             />
           </div>
@@ -1135,8 +1140,11 @@ export function App() {
       </div>
       {importOpen ? (
         <ImportDialog
+          existingNames={templateSources.map((source) => source.name)}
+          onRefresh={refreshTemplates}
           onCancel={() => setImportOpen(false)}
-          onImported={async () => {
+          onImported={async (outcome) => {
+            setImportOutcome(outcome);
             setImportOpen(false);
             setSidebarTab('templates');
             await refreshTemplates();
@@ -3556,11 +3564,13 @@ function SearchResults({
 function TemplatesTree({
   sources,
   error,
+  outcome,
   onImport,
   onOpen,
 }: {
   sources: TemplateSource[];
   error: string | null;
+  outcome: string | null;
   onImport: () => void;
   onOpen: (id: string) => void;
 }) {
@@ -3582,6 +3592,11 @@ function TemplatesTree({
       {error ? (
         <p className="error" role="alert">
           {error}
+        </p>
+      ) : null}
+      {outcome ? (
+        <p className="muted import-outcome" data-testid="import-outcome">
+          {outcome}
         </p>
       ) : null}
       {sources.length === 0 ? (
@@ -3643,11 +3658,16 @@ function TemplatesTree({
 
 // Screen 05: choose a spec, preview its directories, and generate one template per operation.
 function ImportDialog({
+  existingNames,
   onCancel,
   onImported,
+  onRefresh,
 }: {
+  /** Sources already imported: the same title re-imports in place (slice 11). */
+  existingNames: string[];
   onCancel: () => void;
-  onImported: () => Promise<void>;
+  onImported: (outcome: string) => Promise<void>;
+  onRefresh: () => Promise<void>;
 }) {
   const [file, setFile] = useState<{
     name: string;
@@ -3663,6 +3683,10 @@ function ImportDialog({
     ? groupOperations(file.spec.operations, grouping)
     : null;
   const count = file?.spec?.operations.length ?? 0;
+  const reimport =
+    file?.spec !== null &&
+    file?.spec !== undefined &&
+    existingNames.includes(file.spec.title);
 
   // The latest file picked wins, whichever read finishes last (code review of openapi-import, 6).
   const latestPick = useRef(0);
@@ -3702,6 +3726,7 @@ function ImportDialog({
         filename: file.name,
         grouping,
         useEnvironment,
+        mode: reimport ? 'reimport' : 'new',
       })
       .catch((error: unknown) => ({
         ok: false as const,
@@ -3710,9 +3735,15 @@ function ImportDialog({
     setBusy(false);
     if (!done.ok) {
       setImportError(done.message);
+      // The list was stale: another source has this title. Refresh it, so the dialog offers the re-import.
+      if (/already imported/.test(done.message)) await onRefresh();
       return;
     }
-    await onImported();
+    await onImported(
+      done.reimported
+        ? `${done.added} added · ${done.updated} updated · ${done.removed} removed`
+        : `${done.added} ${done.added === 1 ? 'template' : 'templates'} added`,
+    );
   };
 
   return (
@@ -3817,13 +3848,22 @@ function ImportDialog({
             </div>
           </>
         ) : null}
+        {reimport ? (
+          <p className="reimport-note">
+            Re-imports “{file?.spec?.title}”: its templates are updated in
+            place, new operations are added and gone ones removed. History is
+            not touched.
+          </p>
+        ) : null}
         {importError ? (
           <p className="error" role="alert">
             {importError}
           </p>
         ) : null}
         <div className="dialog-footer">
-          <span className="muted">Importing never touches History.</span>
+          <span className="muted">
+            Re-importing updates templates in place; History is never touched.
+          </span>
           <span className="spacer" />
           <button type="button" onClick={onCancel}>
             Cancel
@@ -3834,7 +3874,7 @@ function ImportDialog({
             disabled={!file?.spec || count === 0 || busy}
             onClick={() => void generate()}
           >
-            Generate {count} templates
+            {reimport ? 'Update' : 'Generate'} {count} templates
           </button>
         </div>
       </div>

@@ -28,6 +28,7 @@ export const pigeon: PigeonApi = {
   listCalls: call(channels.listCalls),
   listResponses: call(channels.listResponses),
   deleteCall: call(channels.deleteCall),
+  searchCalls: call(channels.searchCalls),
   dbStatus: call(channels.dbStatus),
   getCall: call(channels.getCall),
   replay: call(channels.replay),

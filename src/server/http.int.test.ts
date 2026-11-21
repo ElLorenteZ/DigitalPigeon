@@ -229,6 +229,9 @@ describe('operations over HTTP', () => {
       [channels.send]: sent,
       [channels.cancel]: await call(channels.cancel, 'nothing-in-flight'),
       [channels.listCalls]: await call(channels.listCalls),
+      [channels.searchCalls]: await call(channels.searchCalls, {
+        methods: ['POST'],
+      }),
       [channels.listResponses]: await call(channels.listResponses, {
         method: 'POST',
         path: '/',
@@ -272,6 +275,9 @@ describe('operations over HTTP', () => {
     };
 
     expect(Object.keys(answers).sort()).toEqual(Object.values(channels).sort());
+    expect(
+      (answers[channels.searchCalls] as { ok: boolean; total: number }).total,
+    ).toBeGreaterThanOrEqual(1);
     // Deleted last: the send is gone, and its replay is not (slice 8).
     expect(answers[channels.deleteCall]).toEqual({ ok: true });
     expect(

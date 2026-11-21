@@ -206,6 +206,8 @@ Not in the target design. Order is set when the author asks for them.
 - **OAuth2 token flows, cookie jar.**
 - **Proxy, client certificates (mTLS), custom CA** — moves into M1 if assumption A1 (work APIs need no proxy) proves false.
 - **WebSocket, gRPC, SSE.**
+- **Editable request body in the code editor** (from `workspace-shell` review F2): screen 01 shows the request body
+  in a numbered editor; the form keeps a textarea. Needs the form's text state to live with an editable Monaco model.
 - **Harden the per-launch token against other software on the same machine** (author decision 2026-11-20, after
   `/code-review` of `local-web-app`, findings 4 and 6). Cookies are not isolated by port, so every 127.0.0.1 server
   the browser visits receives `dp_<port>=<token>`. The token URL also appears in stdout and in the browser-launch

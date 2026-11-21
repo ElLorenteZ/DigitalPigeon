@@ -153,6 +153,17 @@ export function App() {
   const [status, setStatus] = useState<StatusView | null>(null);
   const [history, setHistory] = useState<CallView[]>([]);
   const [result, setResult] = useState<SendResult | null>(null);
+  // Slice 7: the responses to the request of the result shown, and the one picked from them (null: the latest).
+  // Tagged with the request they answer, so a list for the previous request is never shown for the next one.
+  const [responsesFor, setResponsesFor] = useState<{
+    key: string;
+    calls: CallView[];
+  }>({ key: '', calls: [] });
+  const [picked, setPicked] = useState<{
+    sendId: string;
+    completion: CompletionDoc | null;
+  } | null>(null);
+  const [otherResponses, setOtherResponses] = useState<CallView[]>([]);
   const [inFlightId, setInFlightId] = useState<string | null>(null);
   const [historyError, setHistoryError] = useState<string | null>(null);
   const [form, setForm] = useState<Form>(EMPTY_FORM);
@@ -502,11 +513,84 @@ export function App() {
     }
   }, [requestScroll]);
   const resultRegion = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    if (result) resultRegion.current?.scrollIntoView({ block: 'nearest' });
-  }, [result]);
 
   const canSend = status?.status === 'up';
+
+  // The strips refresh when History changes: a send, a replay or a completion lands there first (slice 7).
+  const historyMark = `${history.length}:${history[0]?.state === 'unreadable' ? history[0].id : (history[0]?.send._id ?? '')}:${history.filter((c) => c.state === 'in-flight').length}`;
+  const resultKey = result?.ok
+    ? requestKeyOf(result.send.request.method, result.send.request.url)
+    : null;
+  useEffect(() => {
+    setPicked(null);
+  }, [result]);
+  const resultKeyText = resultKey
+    ? `${resultKey.method} ${resultKey.path}`
+    : '';
+  const responses =
+    responsesFor.key === resultKeyText ? responsesFor.calls : [];
+  // Again when the responses strip first appears: it loads after the result and pushes the body down (slice 7).
+  const hasResponses = responses.length > 0;
+  useEffect(() => {
+    if (result) resultRegion.current?.scrollIntoView({ block: 'nearest' });
+  }, [result, hasResponses]);
+  useEffect(() => {
+    if (!resultKey) return;
+    let active = true;
+    void pigeon
+      .listResponses(resultKey)
+      .then((listed) => {
+        if (active && listed.ok) {
+          setResponsesFor({ key: resultKeyText, calls: listed.calls });
+        }
+      })
+      .catch(() => undefined);
+    return () => {
+      active = false;
+    };
+  }, [resultKey?.method, resultKey?.path, historyMark]);
+  const openedKey = opened
+    ? requestKeyOf(opened.send.request.method, opened.send.request.url)
+    : null;
+  useEffect(() => {
+    if (!openedKey) {
+      setOtherResponses([]);
+      return;
+    }
+    let active = true;
+    void pigeon
+      .listResponses(openedKey)
+      .then((listed) => {
+        if (active && listed.ok) setOtherResponses(listed.calls);
+      })
+      .catch(() => undefined);
+    return () => {
+      active = false;
+    };
+  }, [openedKey?.method, openedKey?.path, historyMark]);
+
+  // Picking a response loads its completion; the latest is the result itself.
+  const latestPick = useRef(0);
+  const pickResponse = async (sendId: string) => {
+    const thisPick = ++latestPick.current;
+    if (result?.ok && sendId === result.send._id) {
+      setPicked(null);
+      return;
+    }
+    setPicked({ sendId, completion: null });
+    try {
+      const got = await pigeon.getCall(sendId);
+      if (thisPick !== latestPick.current) return;
+      const completion =
+        got.ok && got.call && got.call.state !== 'unreadable'
+          ? (got.call.completion ?? null)
+          : null;
+      setPicked({ sendId, completion });
+    } catch {
+      if (thisPick === latestPick.current)
+        setPicked({ sendId, completion: null });
+    }
+  };
   const inFlight = inFlightId !== null;
 
   const chooseEnvironment = (id: string | null) => {
@@ -681,7 +765,19 @@ export function App() {
               <CurlView testId="form-curl" outcome={formCurl} />
             </div>
             <div ref={resultRegion}>
-              <ResultView result={result} />
+              <ResultView
+                result={result}
+                picked={picked}
+                strip={
+                  result?.ok && responses.length > 0 ? (
+                    <ResponsesStrip
+                      calls={responses}
+                      selectedId={picked?.sendId ?? result.send._id}
+                      onPick={(id) => void pickResponse(id)}
+                    />
+                  ) : null
+                }
+              />
             </div>
           </div>
           <div className="call-view" hidden={view !== 'call'}>
@@ -707,6 +803,12 @@ export function App() {
                   editLoading={editLoading}
                   savedRequests={savedRequests}
                   savedListLoaded={savedListLoaded}
+                  otherResponses={otherResponses.filter(
+                    (c) =>
+                      c.state === 'unreadable' ||
+                      c.send._id !== opened.send._id,
+                  )}
+                  onOpenResponse={(id) => void openCall(id)}
                   onReplay={() => {
                     showRequest();
                     void run((clientRequestId) =>
@@ -1540,6 +1642,8 @@ function CallPanel({
   editLoading,
   savedRequests,
   savedListLoaded,
+  otherResponses,
+  onOpenResponse,
   onReplay,
   onEdit,
   onCopyCurl,
@@ -1551,6 +1655,8 @@ function CallPanel({
   editLoading: boolean;
   savedRequests: SavedRequestListing[];
   savedListLoaded: boolean;
+  otherResponses: CallView[];
+  onOpenResponse: (sendId: string) => void;
   onReplay: () => void;
   onEdit: () => void;
   onCopyCurl: () => void;
@@ -1642,6 +1748,22 @@ function CallPanel({
           </span>
         ) : null}
       </div>
+      {otherResponses.length > 0 ? (
+        <div data-testid="other-responses" className="other-responses">
+          <span className="label">
+            Other responses to {method} {requestKeyOf(method, url).path}
+          </span>
+          {otherResponses.map((other) =>
+            other.state === 'unreadable' ? null : (
+              <ResponseChip
+                key={other.send._id}
+                call={other}
+                onClick={() => onOpenResponse(other.send._id)}
+              />
+            ),
+          )}
+        </div>
+      ) : null}
       {editLoading ? (
         <p data-testid="call-edit-status">Loading the call into the form…</p>
       ) : null}
@@ -1716,7 +1838,16 @@ function stateText(state: Opened['state']): string {
   return 'Completed';
 }
 
-function ResultView({ result }: { result: SendResult | null }) {
+function ResultView({
+  result,
+  picked,
+  strip,
+}: {
+  result: SendResult | null;
+  /** A response picked from the strip; its completion is null while it loads or if it has none. */
+  picked: { sendId: string; completion: CompletionDoc | null } | null;
+  strip: ReactNode;
+}) {
   if (!result) return null;
   if (!result.ok) {
     return (
@@ -1736,13 +1867,86 @@ function ResultView({ result }: { result: SendResult | null }) {
       </section>
     );
   }
+  const shown = picked ? picked.completion : result.completion;
   return (
     <section data-testid="result">
-      <CompletionView
-        key={result.completion._id}
-        completion={result.completion}
-      />
+      {shown ? (
+        <CompletionView key={shown._id} completion={shown} strip={strip} />
+      ) : (
+        <>
+          {strip}
+          <p className="empty">
+            {picked ? 'No response was recorded for this call' : null}
+          </p>
+        </>
+      )}
     </section>
+  );
+}
+
+// The request a call answers: its method and URL path (query, fragment and host left out; slice 7).
+function requestKeyOf(method: string, url: string) {
+  let path = '/';
+  try {
+    path = new URL(url).pathname || '/';
+  } catch {
+    path = url.split(/[?#]/)[0] || '/';
+  }
+  return { method: method as Method, path };
+}
+
+// "Responses to this request" (screen 01): one chip per response, newest first, the one shown pressed.
+function ResponsesStrip({
+  calls,
+  selectedId,
+  onPick,
+}: {
+  calls: CallView[];
+  selectedId: string;
+  onPick: (sendId: string) => void;
+}) {
+  const readable = calls.filter(
+    (c): c is ReadableCall => c.state !== 'unreadable',
+  );
+  return (
+    <div data-testid="responses-strip" className="responses-strip">
+      <span className="strip-label">
+        <strong>Responses to this request</strong>
+        <span>{readable.length} kept</span>
+      </span>
+      {readable.map((call) => (
+        <ResponseChip
+          key={call.send._id}
+          call={call}
+          pressed={call.send._id === selectedId}
+          onClick={() => onPick(call.send._id)}
+        />
+      ))}
+    </div>
+  );
+}
+
+function ResponseChip({
+  call,
+  pressed,
+  onClick,
+}: {
+  call: ReadableCall;
+  pressed?: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      className="response-chip"
+      aria-pressed={pressed}
+      onClick={onClick}
+    >
+      <span className={`dot ${outcomeClass(call)}`} aria-hidden="true" />
+      <span className={`code ${outcomeClass(call)}`}>{codeText(call)}</span>
+      <span className="time">{call.send.sentAt.toLocaleTimeString()}</span>
+      <span className="duration">{durationText(call)}</span>
+    </button>
   );
 }
 
@@ -1751,8 +1955,11 @@ function ResultView({ result }: { result: SendResult | null }) {
 function CompletionView({
   completion,
   heading = true,
+  strip = null,
 }: {
   completion: CompletionDoc;
+  /** The responses strip, under the header (slice 7). */
+  strip?: ReactNode;
   /** The call record names the column itself, so it leaves this heading out. */
   heading?: boolean;
 }) {
@@ -1765,6 +1972,7 @@ function CompletionView({
           {heading ? <h2>Response</h2> : null}
           <span className="status-pill err">{completion.error.code}</span>
         </div>
+        {strip}
         <p data-testid="response-error">
           {completion.error.code}: {completion.error.message} ({duration})
         </p>
@@ -1790,6 +1998,7 @@ function CompletionView({
           Recorded · {completion.completedAt.toLocaleString()}
         </span>
       </div>
+      {strip}
       <div role="tablist" aria-label="Response" className="tabs">
         <button
           type="button"

@@ -285,6 +285,108 @@ test('the store offers no way to update or delete a call', () => {
     'insertCompletion',
     'insertSend',
     'listCalls',
+    'listResponses',
   ]);
   expect(Object.keys(callStoreModule).sort()).toEqual(['createCallStore']);
+});
+
+// Slice 7 (responses-strip): the calls that are responses to one request: same method, same URL path. The query string,
+// the fragment and the host are not part of the key (author 2026-11-11; plan.md, screen 01).
+describe('listResponses', () => {
+  const at = (n: number) =>
+    new Date(Date.UTC(2026, 10, 21, 9, 0, n)).toISOString();
+  const sendTo = (
+    id: string,
+    method: string,
+    url: string,
+    n: number,
+  ): SendDoc => ({
+    ...send(id, at(n)),
+    request: { ...request, method, url },
+  });
+  const ids = (calls: Call[]) => readable(calls).map((c) => c.send._id);
+
+  test('same method and path match, whatever the query, fragment or host; newest first', async () => {
+    const store = createCallStore(testDb.db);
+    await store.insertSend(
+      sendTo('rs-a1', 'GET', 'http://a.test/rs/orders', 1),
+    );
+    await store.insertSend(
+      sendTo('rs-a2', 'GET', 'http://a.test/rs/orders?dryRun=false', 2),
+    );
+    await store.insertSend(
+      sendTo('rs-a3', 'GET', 'https://b.test:8443/rs/orders#top', 3),
+    );
+    await store.insertCompletion(completion('rs-c2', 'rs-a2', [1]));
+
+    const calls = await store.listResponses('GET', '/rs/orders', new Set());
+    expect(ids(calls)).toEqual(['rs-a3', 'rs-a2', 'rs-a1']);
+    const second = readable(calls)[1];
+    expect(second?.state).toBe('completed');
+    // History-style rows: no bodies.
+    expect(second?.send.request).not.toHaveProperty('body');
+  });
+
+  test('another method, a longer path, or a path sharing a prefix does not match', async () => {
+    const store = createCallStore(testDb.db);
+    await store.insertSend(
+      sendTo('rs-b1', 'GET', 'http://a.test/rs2/orders', 1),
+    );
+    await store.insertSend(
+      sendTo('rs-b2', 'POST', 'http://a.test/rs2/orders', 2),
+    );
+    await store.insertSend(
+      sendTo('rs-b3', 'GET', 'http://a.test/rs2/orders/1', 3),
+    );
+    await store.insertSend(
+      sendTo('rs-b4', 'GET', 'http://a.test/rs2/orders-old', 4),
+    );
+    await store.insertSend(
+      sendTo('rs-b5', 'GET', 'http://a.test/rs2/orders/', 5),
+    );
+
+    expect(
+      ids(await store.listResponses('GET', '/rs2/orders', new Set())),
+    ).toEqual(['rs-b1']);
+  });
+
+  test('regular-expression characters in the path are matched literally', async () => {
+    const store = createCallStore(testDb.db);
+    await store.insertSend(
+      sendTo('rs-c1', 'GET', 'http://a.test/rs3/a.b(c)+', 1),
+    );
+    await store.insertSend(
+      sendTo('rs-c2', 'GET', 'http://a.test/rs3/aXb(c)+', 2),
+    );
+
+    expect(
+      ids(await store.listResponses('GET', '/rs3/a.b(c)+', new Set())),
+    ).toEqual(['rs-c1']);
+  });
+
+  test('the root path matches a URL with no path', async () => {
+    const store = createCallStore(testDb.db);
+    await store.insertSend(sendTo('rs-d1', 'DELETE', 'http://root.test', 1));
+    await store.insertSend(
+      sendTo('rs-d2', 'DELETE', 'http://root.test/?x=1', 2),
+    );
+    await store.insertSend(sendTo('rs-d3', 'DELETE', 'http://root.test/x', 3));
+
+    expect(ids(await store.listResponses('DELETE', '/', new Set()))).toEqual([
+      'rs-d2',
+      'rs-d1',
+    ]);
+  });
+
+  test('every response is returned, not only the newest 200, up to the cap of 500', async () => {
+    const store = createCallStore(testDb.db);
+    for (let n = 0; n < 230; n += 1) {
+      await store.insertSend(
+        sendTo(`rs-e${n}`, 'PUT', 'http://a.test/rs4/many', n),
+      );
+    }
+    expect(
+      await store.listResponses('PUT', '/rs4/many', new Set()),
+    ).toHaveLength(230);
+  });
 });

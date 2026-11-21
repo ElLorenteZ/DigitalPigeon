@@ -1,6 +1,7 @@
 // Slice 10 (openapi-import): screen 05. An OpenAPI JSON file is previewed by tag or path segment, generated into the
 // Templates tab's tree, and a template opens into the form and sends to the active environment's baseUrl.
 import { expect, test } from '@playwright/test';
+import { BILLING } from '../test-support/wsdl-fixture';
 import {
   type CaptureServer,
   startCaptureServer,
@@ -181,4 +182,49 @@ test('an invalid file says where it failed and cannot be generated', async () =>
   ).toBeDisabled();
   await dialog().getByRole('button', { name: 'Cancel' }).click();
   await expect(dialog()).toBeHidden();
+});
+
+// Slice 12 (wsdl-import).
+test('a WSDL is previewed by port, generated as SOAP templates, and one sends and is recorded', async () => {
+  const { window } = testApp;
+  const wsdl = BILLING.replaceAll('http://localhost:8080', capture.url);
+  await window.getByRole('tab', { name: 'Templates', exact: true }).click();
+  await button('Import OpenAPI / WSDL').click();
+  await dialog().getByRole('button', { name: 'WSDL', exact: true }).click();
+  await dialog()
+    .getByLabel('Spec file')
+    .setInputFiles({
+      name: 'billing.wsdl',
+      mimeType: 'text/xml',
+      buffer: Buffer.from(wsdl),
+    });
+  await expect(dialog()).toContainText(
+    'WSDL · BillingService · 2 ports · 4 operations',
+  );
+  const preview = dialog().getByTestId('import-preview');
+  await expect(preview).toContainText('BillingPort/ 2');
+  await expect(preview).toContainText('BillingPort12/ 2');
+  await dialog().getByRole('button', { name: 'Generate 4 templates' }).click();
+  await expect(dialog()).toBeHidden();
+
+  await tree()
+    .getByRole('button', { name: /^SOAP CreateInvoice/ })
+    .first()
+    .click();
+  await expect(window.getByLabel('Method')).toHaveValue('POST');
+  await expect(window.getByLabel('URL')).toHaveValue(`${capture.url}/billing`);
+  await expect(window.getByLabel('Body text')).toHaveValue(
+    /<tns:CreateInvoice>/,
+  );
+  capture.respondWith({ status: 200, body: Buffer.from('<ok/>') });
+  await button('Send').click();
+  await expect(window.getByTestId('result')).toContainText('200');
+  const received = capture.requests.at(-1);
+  const raw = received?.rawHeaders ?? [];
+  const soapAction =
+    raw[raw.findIndex((h) => h.toLowerCase() === 'soapaction') + 1];
+  expect(soapAction).toBe('"urn:CreateInvoice"');
+  expect(received?.body.toString()).toContain(
+    '<tns:customerId></tns:customerId>',
+  );
 });

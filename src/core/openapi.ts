@@ -24,6 +24,7 @@ export interface ParsedSpec {
   operations: SpecOperation[];
 }
 
+// TRACE is left out: the request form does not offer it (code review of openapi-import, 1).
 const METHODS = [
   'get',
   'put',
@@ -32,7 +33,6 @@ const METHODS = [
   'options',
   'head',
   'patch',
-  'trace',
 ] as const;
 
 type Json = Record<string, unknown>;
@@ -107,14 +107,19 @@ function parametersOf(value: unknown): Parameter[] {
           {
             name: text(p.name),
             in: text(p.in),
-            example:
-              p.example === undefined || p.example === null
-                ? ''
-                : String(p.example),
+            example: exampleText(p.example),
           },
         ]
       : [],
   );
+}
+
+// Objects and arrays as JSON, not "[object Object]" (code review of openapi-import, 5).
+function exampleText(example: unknown): string {
+  if (example === undefined || example === null) return '';
+  return typeof example === 'object'
+    ? JSON.stringify(example)
+    : String(example);
 }
 
 // Operation-level parameters override path-level ones with the same name and location (OpenAPI 3, Path Item).
@@ -157,7 +162,9 @@ export function groupOperations(
       by === 'tag'
         ? (op.tag ?? 'default')
         : (op.path.split('/').find((segment) => segment !== '') ?? 'root');
-    groups.set(name, [...(groups.get(name) ?? []), op]);
+    const group = groups.get(name);
+    if (group) group.push(op);
+    else groups.set(name, [op]);
   }
   return groups;
 }

@@ -310,6 +310,9 @@ export const SearchResultSchema = z.discriminatedUnion('ok', [
 export type SearchResult = z.infer<typeof SearchResultSchema>;
 
 /** Slice 10: importing an OpenAPI JSON file as request templates. The server parses it again. */
+/** Code review of openapi-import, 9: its own schema, not the call id's. */
+export const GetTemplateInputSchema = z.string().min(1).max(64);
+
 export const ImportOpenApiInputSchema = z.strictObject({
   text: z.string().max(20 * 1024 * 1024),
   filename: z.string().max(1024),

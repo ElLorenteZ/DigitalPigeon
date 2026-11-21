@@ -44,6 +44,7 @@ import {
   ListTemplatesResultSchema,
   type GetTemplateResult,
   GetTemplateResultSchema,
+  GetTemplateInputSchema,
   SearchQuerySchema,
   SearchResultSchema,
   BODY_PAGE_BYTES,
@@ -618,7 +619,7 @@ export function registerIpc({ ipcMain, db, dbStatus }: IpcDeps): void {
   ipcMain.handle(
     channels.getTemplate,
     async (_event, raw: unknown): Promise<GetTemplateResult> => {
-      const id = GetCallInputSchema.safeParse(raw);
+      const id = GetTemplateInputSchema.safeParse(raw);
       if (!id.success) {
         return { ok: false, message: z.prettifyError(id.error) };
       }

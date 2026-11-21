@@ -93,3 +93,34 @@ $ screenshot: context/changes/openapi-import/shot-import.png, compared with jXmW
   in place" waits for slice 11, which builds it.
 - decision: there is no "Folder" button and no template filter box, which the design shows. Neither is in any M2
   criterion.
+
+## Code-review fixes: /code-review findings 1–9
+
+- **Executor:** lz-tdd (findings 1, 2 and 5); lz-build (the rest)
+- **Status:** done
+- **Started:** 2026-11-21
+- **Finished:** 2026-11-21
+
+**Changed**
+- 1: TRACE operations are skipped, because the form cannot send them.
+- 2: a server URL with `{variables}` or a scheme other than http(s) gives the path alone.
+- 3: `openTemplate` uses the saved-request open counter, so a later open or a form change wins.
+- 4: templates are inserted before their source, and removed if the source insert fails.
+- 5: object and array parameter examples are written as JSON. Path parameters stay as `{name}` in the URL; accepted,
+  because the user edits the URL.
+- 6: the dialog keeps the latest file picked.
+- 7 and 8: grouping is linear, in the store and in the tree.
+- 9: `GetTemplateInputSchema`.
+
+**Verification**
+
+```
+$ npx vitest run --project unit src/core/openapi.test.ts        # before
+     × skips TRACE… · × writes object and array parameter examples as JSON
+$ npx vitest run --project integration src/core/template-store.int.test.ts   # before
+     × a server URL with variables or another scheme gives the path…
+$ (after) unit 10 passed · integration (store + server) 46 passed
+$ npx playwright test → 82 passed (1.3m) · npm run test:unit → 381 passed · typecheck 0 · lint clean
+```
+
+**Drift:** none.

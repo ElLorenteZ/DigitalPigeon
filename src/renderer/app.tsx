@@ -445,14 +445,17 @@ export function App() {
   };
 
   // A template opens into the form unlinked, as Edit of a call does (roadmap M2 decision).
+  // The latest open or form change wins, as for saved requests (T2.10; code review of openapi-import, 3).
   const openTemplate = async (id: string) => {
     endPendingEdit();
+    const thisOpen = ++latestSavedOpen.current;
     const got = await pigeon.getTemplate(id).catch(
       (error: unknown): GetTemplateResult => ({
         ok: false,
         message: errorText(error),
       }),
     );
+    if (thisOpen !== latestSavedOpen.current) return;
     if (!got.ok || !got.template) {
       setTemplatesError(
         got.ok ? 'That template no longer exists' : got.message,
@@ -3591,10 +3594,9 @@ function TemplatesTree({
         {sources.map((source) => {
           const directories = new Map<string, typeof source.templates>();
           for (const t of source.templates) {
-            directories.set(t.directory, [
-              ...(directories.get(t.directory) ?? []),
-              t,
-            ]);
+            const group = directories.get(t.directory);
+            if (group) group.push(t);
+            else directories.set(t.directory, [t]);
           }
           return (
             <li key={source.id}>
@@ -3662,10 +3664,14 @@ function ImportDialog({
     : null;
   const count = file?.spec?.operations.length ?? 0;
 
+  // The latest file picked wins, whichever read finishes last (code review of openapi-import, 6).
+  const latestPick = useRef(0);
   const choose = async (picked: File | undefined) => {
     if (!picked) return;
+    const thisPick = ++latestPick.current;
     setImportError(null);
     const text = await picked.text().catch(() => null);
+    if (thisPick !== latestPick.current) return;
     if (text === null) {
       setFile({
         name: picked.name,

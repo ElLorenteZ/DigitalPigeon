@@ -1,11 +1,11 @@
 ---
 change_id: openapi-import
 title: Import an OpenAPI JSON file as request templates in a Templates tab
-status: new
+status: closed
 ticket: null
 created: 2026-11-21
 updated: 2026-11-21
-closed: null
+closed: 2026-11-21
 produced-by: lz-change
 ---
 
@@ -30,3 +30,8 @@ sends to the active environment's `baseUrl`".
 - WSDL (slice 12).
 - YAML specs, `$ref` resolution beyond `#/components/…` request-body examples, and Swagger 2.0.
 - Editing templates.
+
+## Notes
+
+- Outcome (2026-11-21): closed as done. All 3 phases are verified, the review verdict is merge, and 8 of 9 code-review
+  findings are fixed; path parameters staying as `{id}` is accepted. Stacked PR on #8.

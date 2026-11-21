@@ -119,3 +119,40 @@ describe('groupOperations', () => {
     expect(groups.get('orders')).toHaveLength(4);
   });
 });
+
+// Code review of openapi-import, 1 and 5.
+describe('parseOpenApi: what the app cannot send, and examples that are not strings', () => {
+  it('skips TRACE, which the request form does not offer', () => {
+    const ops = parseOpenApi(
+      JSON.stringify({
+        openapi: '3.0.0',
+        paths: { '/x': { trace: {}, get: {} } },
+      }),
+    ).operations;
+    expect(ops.map((o) => o.method)).toEqual(['GET']);
+  });
+
+  it('writes object and array parameter examples as JSON', () => {
+    const [op] = parseOpenApi(
+      JSON.stringify({
+        openapi: '3.0.0',
+        paths: {
+          '/x': {
+            get: {
+              parameters: [
+                { name: 'filter', in: 'query', example: { a: 1 } },
+                { name: 'ids', in: 'query', example: [1, 2] },
+                { name: 'n', in: 'query', example: 5 },
+              ],
+            },
+          },
+        },
+      }),
+    ).operations;
+    expect(op?.queryRows).toEqual([
+      ['filter', '{"a":1}'],
+      ['ids', '[1,2]'],
+      ['n', '5'],
+    ]);
+  });
+});

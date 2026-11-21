@@ -107,6 +107,28 @@ describe('template store', () => {
     );
   });
 
+  // Code review of openapi-import, 2: a server URL the form cannot send falls back to the path.
+  test('a server URL with variables or another scheme gives the path, not an unusable URL', async () => {
+    const store = createTemplateStore(testDb.db);
+    for (const url of ['https://{region}.api.test/v1', 'ftp://files.test/']) {
+      const imported = await store.importOpenApi({
+        text: JSON.stringify({
+          openapi: '3.0.0',
+          servers: [{ url }],
+          paths: { '/pets': { get: {} } },
+        }),
+        filename: 'v.json',
+        grouping: 'tag',
+        useEnvironment: false,
+      });
+      const listed = (await store.list()).find(
+        (s) => s.id === imported.sourceId,
+      );
+      const template = await store.get(listed?.templates[0]?.id ?? '');
+      expect(template?.request.url).toBe('/pets');
+    }
+  });
+
   test('an unknown template is null', async () => {
     expect(await createTemplateStore(testDb.db).get('nope')).toBeNull();
   });

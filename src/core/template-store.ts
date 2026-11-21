@@ -52,6 +52,20 @@ export interface ImportInput {
 const joinUrl = (base: string, path: string) =>
   `${base.replace(/\/+$/, '')}/${path.replace(/^\/+/, '')}`;
 
+// A server URL the form can send: http(s), and no {variables} in it. Otherwise the template takes the path alone and
+// goes to the active environment (code review of openapi-import, 2).
+function sendableServer(server: string | undefined): string | undefined {
+  if (!server || /[{}]/.test(server)) return undefined;
+  try {
+    const url = new URL(server);
+    return url.protocol === 'http:' || url.protocol === 'https:'
+      ? server
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export function createTemplateStore(db: Db) {
   const sources = db.collection<TemplateSourceDoc>('templateSources');
   const templates = db.collection<TemplateDoc>('templates');
@@ -62,7 +76,7 @@ export function createTemplateStore(db: Db) {
       input: ImportInput,
     ): Promise<{ sourceId: string; count: number }> => {
       const spec = parseOpenApi(input.text);
-      const server = spec.servers[0];
+      const server = sendableServer(spec.servers[0]);
       const sourceId = randomUUID();
       const docs: TemplateDoc[] = [];
       let order = 0;
@@ -90,15 +104,22 @@ export function createTemplateStore(db: Db) {
           });
         }
       }
-      await sources.insertOne({
-        _id: sourceId,
-        name: spec.title,
-        kind: 'openapi',
-        filename: input.filename,
-        grouping: input.grouping,
-        importedAt: new Date(),
-      });
+      // Templates first, then their source: a failure part-way leaves nothing listed (code review of
+      // openapi-import, 4).
       if (docs.length > 0) await templates.insertMany(docs);
+      try {
+        await sources.insertOne({
+          _id: sourceId,
+          name: spec.title,
+          kind: 'openapi',
+          filename: input.filename,
+          grouping: input.grouping,
+          importedAt: new Date(),
+        });
+      } catch (error) {
+        await templates.deleteMany({ sourceId }).catch(() => undefined);
+        throw error;
+      }
       return { sourceId, count: docs.length };
     },
 
@@ -109,20 +130,25 @@ export function createTemplateStore(db: Db) {
         .find({}, { projection: { 'request.body': 0 } })
         .sort({ order: 1 })
         .toArray();
+      // One pass to group by source (code review of openapi-import, 7).
+      const bySource = new Map<string, TemplateDoc[]>();
+      for (const row of rows) {
+        const group = bySource.get(row.sourceId);
+        if (group) group.push(row as TemplateDoc);
+        else bySource.set(row.sourceId, [row as TemplateDoc]);
+      }
       return all.map((source) => ({
         id: source._id,
         name: source.name,
         kind: source.kind,
         importedAt: source.importedAt,
-        templates: rows
-          .filter((t) => t.sourceId === source._id)
-          .map((t) => ({
-            id: t._id,
-            directory: t.directory,
-            name: t.name,
-            method: t.request.method,
-            path: pathOf(t.request.url),
-          })),
+        templates: (bySource.get(source._id) ?? []).map((t) => ({
+          id: t._id,
+          directory: t.directory,
+          name: t.name,
+          method: t.request.method,
+          path: pathOf(t.request.url),
+        })),
       }));
     },
 

@@ -37,3 +37,19 @@ Covers plan drift, conventions, lessons and verification. Does **not** cover gen
 ## For the archive record
 - One parser serves both preview and import.
 - Templates open unlinked, by the roadmap decision.
+
+## Host code review
+
+`/code-review history-search...openapi-import` ran on 2026-11-21 and reported 9 findings: 8 fixed, 1 accepted in part.
+
+| # | Finding | Disposition |
+|---|---|---|
+| 1 | A TRACE template listed but could not open | fixed, unit test |
+| 2 | A server URL with variables made unopenable templates | fixed, integration test |
+| 3 | `openTemplate` had no latest-open guard | fixed |
+| 4 | A failed import left an orphan source | fixed |
+| 5 | Object examples became "[object Object]"; path parameters stay `{id}` | fixed (examples); path parameters accepted |
+| 6 | A file-pick race | fixed |
+| 7 | Quadratic grouping in `list` | fixed |
+| 8 | Quadratic grouping in the parser and the tree | fixed |
+| 9 | Template id validated with the call-id schema | fixed |

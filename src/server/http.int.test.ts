@@ -225,10 +225,30 @@ describe('operations over HTTP', () => {
       },
     })) as { ok: boolean; id: string };
 
+    const imported = await call(channels.importOpenApi, {
+      text: JSON.stringify({
+        openapi: '3.0.0',
+        info: { title: 'T' },
+        paths: { '/x': { get: {} } },
+      }),
+      filename: 't.json',
+      grouping: 'tag',
+      useEnvironment: true,
+    });
+    const listedTemplates = (await call(channels.listTemplates)) as {
+      sources: { templates: { id: string }[] }[];
+    };
+
     const answers: Record<string, unknown> = {
       [channels.send]: sent,
       [channels.cancel]: await call(channels.cancel, 'nothing-in-flight'),
       [channels.listCalls]: await call(channels.listCalls),
+      [channels.importOpenApi]: imported,
+      [channels.listTemplates]: listedTemplates,
+      [channels.getTemplate]: await call(
+        channels.getTemplate,
+        listedTemplates.sources[0]?.templates[0]?.id,
+      ),
       [channels.searchCalls]: await call(channels.searchCalls, {
         methods: ['POST'],
       }),
@@ -278,6 +298,11 @@ describe('operations over HTTP', () => {
     expect(
       (answers[channels.searchCalls] as { ok: boolean; total: number }).total,
     ).toBeGreaterThanOrEqual(1);
+    // Slice 10: the imported template lists and opens.
+    expect(answers[channels.getTemplate]).toMatchObject({
+      ok: true,
+      template: { request: { method: 'GET', url: '/x' } },
+    });
     // Deleted last: the send is gone, and its replay is not (slice 8).
     expect(answers[channels.deleteCall]).toEqual({ ok: true });
     expect(

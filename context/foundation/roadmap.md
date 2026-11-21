@@ -199,13 +199,31 @@ was added on 2026-11-11 by the author's decision, ahead of slice 6.
 
 ### M2 — Templates from OpenAPI and WSDL (design screen 05)
 
-Next after M1, because it is the rest of the target design. Slices named, not detailed; detail them when M1 closes.
-- **OpenAPI import**: choose a JSON file, preview, generate one template per operation into directories by tag or path
-  segment; the Templates tab shows the tree; a template opens into the form and sends with the active `baseUrl`.
-- **Re-import and errors**: re-importing updates templates in place without touching History; an invalid file imports
-  nothing and shows where it failed (screen 03, row 3).
-- **WSDL import and SOAP send**: spike WSDL parsing first (`tech-stack.md`); templates filed by service and port; a SOAP
-  operation sends and is recorded like any other call.
+Cut on 2026-11-21, before M1 closed. The author's instruction "continue … finish when roadmap will be finished"
+outranks the rule "detail it when M1 closes". M1 waits only on the author's own judgement.
+
+**Exit criteria**, from `prd.md`:
+- [x] Importing an OpenAPI JSON file creates one request template per operation, filed into directories by tag or by
+  first path segment, with a preview before generating. *(slice 10: `openapi.test.ts`, `template-store.int.test.ts`,
+  `e2e/templates.spec.ts`)*
+- [ ] Importing a WSDL file creates one template per operation, filed by service and port, and a SOAP template sends
+  and is recorded like any other call.
+- [ ] An invalid file imports nothing and shows where it failed.
+- [ ] Re-importing the same spec updates its templates in place and does not change History.
+- [x] The sidebar has three tabs: Templates (directories), Saved and History. *(slice 10: `e2e/templates.spec.ts`)*
+
+| # | Slice | Observable outcome | Status | Change |
+|---|---|---|---|---|
+| 10 | OpenAPI import | Choose an OpenAPI JSON file; the dialog previews directories by tag or path segment; Generate fills the Templates tab tree (source → directory → operation); a template opens into the form and sends to the active environment's `baseUrl` | done | `openapi-import` |
+| 11 | Re-import and errors | Importing the same spec again updates its templates in place, adding new operations and removing gone ones, with History unchanged; an invalid file imports nothing and the dialog says where it failed (JSON position, or the path that is missing) | next | `reimport-and-errors` |
+| 12 | WSDL import and SOAP send | Spike WSDL parsing first. A WSDL file previews and generates one template per operation, filed by service and port; a SOAP template sends a `POST` with `SOAPAction` and an envelope, recorded like any call | later | — |
+
+**Order rationale:** OpenAPI first, because it is the most common format and proves the template store, the tree and
+the import dialog. Re-import and errors come second, on a store that already exists. WSDL comes last, because it is
+the riskiest (`tech-stack.md`: weaker JS tooling) and is spiked before planning.
+
+**Decision for the author to confirm (PRD open question):** a template opens into the form unlinked, as Edit of a call
+does. Save then makes a saved request from it. Templates are not edited in place; re-import replaces them.
 
 ### Not ordered yet
 

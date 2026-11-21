@@ -149,7 +149,7 @@ test('save, find, open, save over, save as new, send with a link back, and delet
   await expect(rowName(history().first())).toHaveAccessibleName(
     containing(`GET ${url} — 200`),
   );
-  await history().first().getByRole('button').click();
+  await history().first().getByRole('button').first().click();
   await expect(panel.getByTestId('call-saved-request')).toHaveText(
     'From saved request: Get orders',
   );
@@ -163,7 +163,7 @@ test('save, find, open, save over, save as new, send with a link back, and delet
   await expect(saved()).toHaveCount(1);
   await expect(saved().first()).toBeInViewport();
   await showSidebarTab(testApp.window, 'History');
-  await history().first().getByRole('button').click();
+  await history().first().getByRole('button').first().click();
   await expect(panel.getByTestId('call-saved-request')).toHaveText(
     'From a deleted saved request',
   );
@@ -190,7 +190,7 @@ test('a send from a saved request deleted after it was opened records no link', 
   await expect(rowName(history().first())).toHaveAccessibleName(
     containing(`GET ${capture.url}/r2 — 200`),
   );
-  await history().first().getByRole('button').click();
+  await history().first().getByRole('button').first().click();
   await expect(panel.getByTestId('call-request-line')).toContainText('/r2');
   await expect(panel.getByTestId('call-saved-request')).toHaveCount(0);
 });
@@ -288,7 +288,7 @@ test('one saved request goes to whichever environment is chosen, and calls keep 
   expect(other.requests.map((q) => q.url)).toEqual(['/v2/orders']);
 
   // Each call names the environment it went to and links to the saved request.
-  await history().nth(1).getByRole('button').click();
+  await history().nth(1).getByRole('button').first().click();
   await expect(panel.getByTestId('call-environment')).toHaveText(
     `Environment: first — ${capture.url}/v1`,
   );
@@ -302,7 +302,7 @@ test('one saved request goes to whichever environment is chosen, and calls keep 
     containing(`GET ${capture.url}/v1/orders — 200`),
   );
   expect(capture.requests).toHaveLength(2);
-  await history().first().getByRole('button').click();
+  await history().first().getByRole('button').first().click();
   await expect(panel.getByTestId('call-environment')).toHaveText(
     `Environment: first — ${capture.url}/v1`,
   );
@@ -311,7 +311,7 @@ test('one saved request goes to whichever environment is chosen, and calls keep 
   );
 
   // Edit of the first call: unlinked, path restored; saved as a new request that follows the environment.
-  await history().nth(2).getByRole('button').click();
+  await history().nth(2).getByRole('button').first().click();
   await panel.getByRole('button', { name: 'Edit', exact: true }).click();
   await expect(window.getByLabel('URL')).toHaveValue('/orders');
   await expect(window.getByTestId('saved-request-link')).toHaveCount(0);
@@ -421,7 +421,7 @@ test('a call linked to a saved request the list could not load is not called del
   await expect(rowName(history().first())).toHaveAccessibleName(
     containing(`GET ${capture.url}/cr4 — 200`),
   );
-  await history().first().getByRole('button').click();
+  await history().first().getByRole('button').first().click();
   await expect(panel.getByTestId('call-saved-request')).toHaveText(
     'From a saved request',
   );

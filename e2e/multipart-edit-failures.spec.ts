@@ -134,11 +134,11 @@ test('when two Edits overlap, the form holds the later one whichever read finish
 
   // History lists newest first: B, then A.
   await showSidebarTab(testApp.window, 'History');
-  await history().nth(1).getByRole('button').click();
+  await history().nth(1).getByRole('button').first().click();
   await expect(panel.getByTestId('call-request-line')).toContainText('/from-a');
   await panel.getByRole('button', { name: 'Edit', exact: true }).click();
 
-  await history().nth(0).getByRole('button').click();
+  await history().nth(0).getByRole('button').first().click();
   await expect(panel.getByTestId('call-request-line')).toContainText('/from-b');
   await panel.getByRole('button', { name: 'Edit', exact: true }).click();
   await expect(window.getByLabel('Part value 1')).toHaveValue('from-b');
@@ -160,7 +160,7 @@ test('a failed read during Edit shows the reason and leaves the form as it was',
   await window.getByLabel('URL').fill('http://untouched.test/');
 
   await showSidebarTab(testApp.window, 'History');
-  await history().nth(0).getByRole('button').click();
+  await history().nth(0).getByRole('button').first().click();
   await expect(panel.getByTestId('call-request-line')).toContainText('/from-c');
   await panel.getByRole('button', { name: 'Edit', exact: true }).click();
 
@@ -183,7 +183,7 @@ test('a change to the form while Edit reads a stored body keeps the change', asy
   const panel = window.getByTestId('call-panel');
 
   await showSidebarTab(testApp.window, 'History');
-  await history().nth(0).getByRole('button').click();
+  await history().nth(0).getByRole('button').first().click();
   await expect(panel.getByTestId('call-request-line')).toContainText('/from-d');
   await panel.getByRole('button', { name: 'Edit', exact: true }).click();
   await expect(panel.getByTestId('call-edit-status')).toHaveText(

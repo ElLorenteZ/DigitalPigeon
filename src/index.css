@@ -1075,3 +1075,87 @@ textarea {
 .other-responses .label {
   flex-shrink: 0;
 }
+
+/* Delete with Undo (slice 8; screen 02 Delete, screen 03 row 3 toast). */
+.history-list li[data-state] {
+  position: relative;
+}
+
+.row-delete {
+  position: absolute;
+  top: 6px;
+  right: 4px;
+  min-height: 20px;
+  width: 20px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--faint);
+  opacity: 0;
+}
+
+.history-list li:hover .row-delete,
+.row-delete:focus-visible {
+  opacity: 1;
+}
+
+.row-delete:hover {
+  color: var(--err);
+}
+
+.chip-group {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+.chip-group .response-chip {
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+}
+
+.chip-delete {
+  min-height: 34px;
+  padding: 0 8px;
+  border-radius: 0 8px 8px 0;
+  border-left: none;
+  color: var(--faint);
+}
+
+.chip-delete:hover {
+  color: var(--err);
+}
+
+button.danger {
+  color: var(--err);
+  border-color: #f8717166;
+}
+
+.toasts {
+  position: fixed;
+  left: 50%;
+  bottom: 44px;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  z-index: 10;
+}
+
+.toast {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 10px 14px;
+  border-radius: 10px;
+  background: var(--raised);
+  border: 1px solid var(--border-strong);
+  box-shadow: 0 8px 24px #00000066;
+}
+
+.toast .undo {
+  color: var(--accent);
+  border-color: transparent;
+  background: transparent;
+  font-weight: 600;
+}

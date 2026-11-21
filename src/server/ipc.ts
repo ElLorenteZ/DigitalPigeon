@@ -64,6 +64,8 @@ import {
 } from '../shared/ipc-contract';
 
 const HISTORY_LIMIT = 200;
+const SWEEP_EVERY_MS = 60 * 60 * 1000;
+const SWEEP_AGE_MS = 24 * 60 * 60 * 1000;
 
 /** Where operations are registered: one handler per channel, called with an unused event and the raw input. */
 export interface Registrar {
@@ -525,6 +527,42 @@ export function registerIpc({ ipcMain, db, dbStatus }: IpcDeps): void {
       return { ok: false, message: message(error) };
     }
   });
+
+  // Slice 8: the UI has already held the call for Undo; this deletes it for good, then sweeps body files nothing
+  // refers to (T3.9). A call still in flight here is refused.
+  let lastSweep = 0;
+  ipcMain.handle(
+    channels.deleteCall,
+    async (_event, raw: unknown): Promise<MutationResult> => {
+      const sendId = GetCallInputSchema.safeParse(raw);
+      if (!sendId.success) {
+        return { ok: false, message: z.prettifyError(sendId.error) };
+      }
+      if (inFlightSendIds.has(sendId.data)) {
+        return { ok: false, message: 'A call in flight cannot be deleted' };
+      }
+      const database = db();
+      if (!database || dbStatus().status !== 'up') {
+        return { ok: false, message: 'Database not running' };
+      }
+      try {
+        const store = storeFor(database);
+        const { deleted } = await store.deleteCall(sendId.data);
+        if (!deleted) return { ok: false, message: 'Call not found' };
+        // At most once an hour, and only for data older than a day: an upload can run long before its file document
+        // exists (code review of delete-with-undo, 8 and 9).
+        if (Date.now() - lastSweep >= SWEEP_EVERY_MS) {
+          lastSweep = Date.now();
+          await store
+            .sweepOrphanBodies(new Date(Date.now() - SWEEP_AGE_MS))
+            .catch(() => undefined);
+        }
+        return { ok: true };
+      } catch (error) {
+        return { ok: false, message: message(error) };
+      }
+    },
+  );
 
   ipcMain.handle(
     channels.listResponses,

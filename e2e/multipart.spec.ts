@@ -102,7 +102,7 @@ test('a picked file is sent, deleted from disk, and replayed with the same bytes
   await rm(path);
   expect(existsSync(path)).toBe(false);
 
-  await history.first().getByRole('button').click();
+  await history.first().getByRole('button').first().click();
   await window.getByRole('button', { name: 'Replay', exact: true }).click();
   await expect(history).toHaveCount(rowsBefore + 2);
   await expect(rowName(history.first())).toHaveAccessibleName(
@@ -156,7 +156,7 @@ for (const [label, size, unit] of [
     await expect(history).toHaveCount(rowsBefore + 1, { timeout: 30_000 });
     await rm(path);
 
-    await history.first().getByRole('button').click();
+    await history.first().getByRole('button').first().click();
     const parts = panel.getByTestId('call-request-parts').getByRole('listitem');
     await expect(parts).toHaveText([
       'note · text · 10 B',

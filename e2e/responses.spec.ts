@@ -43,7 +43,8 @@ test.beforeEach(async () => {
 const button = (name: string) =>
   testApp.window.getByRole('button', { name, exact: true });
 const strip = () => testApp.window.getByTestId('responses-strip');
-const chips = () => strip().getByRole('button');
+// The chips that pick a response; each sits beside its delete button (slice 8).
+const chips = () => strip().getByRole('button', { name: /^(?!Delete )/ });
 
 async function sendWith(url: string, status: number, body: string) {
   capture.respondWith({ status, body: Buffer.from(body) });

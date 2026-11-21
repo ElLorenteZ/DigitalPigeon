@@ -15,6 +15,7 @@ export const channels = {
   cancel: 'pigeon:cancel',
   listCalls: 'pigeon:list-calls',
   listResponses: 'pigeon:list-responses',
+  deleteCall: 'pigeon:delete-call',
   dbStatus: 'pigeon:db-status',
   getCall: 'pigeon:get-call',
   replay: 'pigeon:replay',
@@ -326,6 +327,8 @@ export interface PigeonApi {
   dbStatus: () => Promise<DbStatusView>;
   getCall: (sendId: string) => Promise<GetCallResult>;
   listResponses: (input: ListResponsesInput) => Promise<ListCallsResult>;
+  /** Deletes one call for good, with its body files (slice 8). The UI holds it for Undo before calling this. */
+  deleteCall: (sendId: string) => Promise<MutationResult>;
   replay: (input: ReplayInput) => Promise<SendResult>;
   readBody: (input: ReadBodyInput) => Promise<ReadBodyResult>;
   describeBody: (input: DescribeBodyInput) => Promise<DescribeBodyResult>;

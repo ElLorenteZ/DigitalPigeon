@@ -9,11 +9,16 @@ import {
   startCaptureServer,
 } from '../test-support/capture-server';
 import {
-  type TestApp,
   callOperation,
+  containing,
   gate,
   launchWithTestDatabase,
+  openEnvironments,
+  rowName,
+  showRequest,
+  showSidebarTab,
   stubOperation,
+  type TestApp,
 } from './support';
 
 const activeId = async () =>
@@ -48,6 +53,12 @@ test.afterAll(async () => {
   await b?.close();
 });
 
+// Each test starts on the request form with History shown (slice 6: the shell keeps one view at a time).
+test.beforeEach(async () => {
+  await showRequest(testApp.window);
+  await showSidebarTab(testApp.window, 'History');
+});
+
 const button = (name: string) =>
   testApp.window.getByRole('button', { name, exact: true });
 
@@ -66,6 +77,7 @@ async function rowOf(name: string): Promise<number> {
 
 async function addEnvironment(name: string, baseUrl: string) {
   const { window } = testApp;
+  await openEnvironments(window);
   await window.getByLabel('New environment name').fill(name);
   await window.getByLabel('New environment base address').fill(baseUrl);
   await button('Add environment').click();
@@ -73,6 +85,7 @@ async function addEnvironment(name: string, baseUrl: string) {
 
 test('a path goes to the chosen environment, a switch takes effect at once, and calls keep the environment they used', async () => {
   const { window } = testApp;
+  await showSidebarTab(window, 'History');
   const history = window.getByTestId('history').getByRole('listitem');
   const panel = window.getByTestId('call-panel');
   const select = window.getByLabel('Environment', { exact: true });
@@ -89,14 +102,18 @@ test('a path goes to the chosen environment, a switch takes effect at once, and 
   await window.getByLabel('URL').fill('/orders?x=1');
   await button('Send').click();
   await expect(history).toHaveCount(1);
-  await expect(history.first()).toContainText(`GET ${a.url}/api/orders?x=1`);
+  await expect(rowName(history.first())).toHaveAccessibleName(
+    containing(`GET ${a.url}/api/orders?x=1`),
+  );
   expect(a.requests.map((r) => r.url)).toEqual(['/api/orders?x=1']);
 
   // B1: no wait between the switch and the send.
   await select.selectOption({ label: `beta — ${b.url}/api/` });
   await button('Send').click();
   await expect(history).toHaveCount(2);
-  await expect(history.first()).toContainText(`GET ${b.url}/api/orders?x=1`);
+  await expect(rowName(history.first())).toHaveAccessibleName(
+    containing(`GET ${b.url}/api/orders?x=1`),
+  );
   expect(b.requests.map((r) => r.url)).toEqual(['/api/orders?x=1']);
   expect(a.requests).toHaveLength(1);
 
@@ -123,6 +140,7 @@ test('a path goes to the chosen environment, a switch takes effect at once, and 
 
   // Copy as curl from the form composes with the environment the select shows.
   await select.selectOption({ label: `alpha2 — ${a.url}/v2` });
+  await showRequest(window);
   await button('Copy as curl').click();
   await expect(window.getByTestId('form-curl')).toContainText(
     `${a.url}/v2/orders?x=1`,
@@ -133,6 +151,7 @@ test('a path goes to the chosen environment, a switch takes effect at once, and 
 test('a refused base URL says why, and deleting the chosen environment leaves None, so a path is refused in view', async () => {
   const { window } = testApp;
   const select = window.getByLabel('Environment', { exact: true });
+  await showSidebarTab(window, 'History');
   const history = window.getByTestId('history').getByRole('listitem');
 
   await addEnvironment('bad', 'https://a.test/v1?x=1');
@@ -155,6 +174,7 @@ test('a refused base URL says why, and deleting the chosen environment leaves No
   await expect(history).toHaveCount(rowsBefore);
 
   // Copy as curl refuses the path for the same reason (plan phase 2; review F1).
+  await showRequest(window);
   await button('Copy as curl').click();
   await expect(window.getByTestId('form-curl-error')).toContainText(
     'choose an environment',
@@ -237,6 +257,7 @@ test('after one choice fails to be stored, a later choice is stored', async () =
 test('a send while the switch is still being saved goes to the environment the select shows', async () => {
   const { window } = testApp;
   const select = window.getByLabel('Environment', { exact: true });
+  await showSidebarTab(window, 'History');
   const history = window.getByTestId('history').getByRole('listitem');
   await addEnvironment('first', `${a.url}/first`);
   await addEnvironment('second', `${b.url}/second`);

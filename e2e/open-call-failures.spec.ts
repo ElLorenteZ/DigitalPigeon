@@ -9,12 +9,14 @@ import {
   startCaptureServer,
 } from '../test-support/capture-server';
 import {
-  type TestApp,
   expectBodyText,
   gate,
   launchWithTestDatabase,
   settle,
+  showRequest,
+  showSidebarTab,
   stubOperation,
+  type TestApp,
 } from './support';
 
 type Reply =
@@ -38,6 +40,7 @@ test.beforeAll(async () => {
     { timeout: 15_000 },
   );
   await window.getByLabel('URL').fill(`${capture.url}/seed`);
+  await showSidebarTab(window, 'History');
   const history = window.getByTestId('history').getByRole('listitem');
   for (let sent = 1; sent <= 2; sent += 1) {
     await window.getByRole('button', { name: 'Send', exact: true }).click();
@@ -48,6 +51,12 @@ test.beforeAll(async () => {
 test.afterAll(async () => {
   await testApp?.close();
   await capture?.close();
+});
+
+// Each test starts on the request form with History shown (slice 6: the shell keeps one view at a time).
+test.beforeEach(async () => {
+  await showRequest(testApp.window);
+  await showSidebarTab(testApp.window, 'History');
 });
 
 let held = gate();

@@ -16,6 +16,7 @@ import {
   type ReactNode,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -167,6 +168,11 @@ export function App() {
     null,
   );
   const environment = environments.find((e) => e.id === environmentId);
+  // The shell (slice 6): which list the sidebar shows, whether the main area shows the request or an opened call, and
+  // whether the environments editor is open under the title bar.
+  const [sidebarTab, setSidebarTab] = useState<'saved' | 'history'>('history');
+  const [view, setView] = useState<'workspace' | 'call'>('workspace');
+  const [environmentsOpen, setEnvironmentsOpen] = useState(false);
   const choiceSaves = useRef<Promise<void>>(Promise.resolve());
   const [savedRequests, setSavedRequests] = useState<SavedRequestListing[]>([]);
   const [savedError, setSavedError] = useState<string | null>(null);
@@ -381,6 +387,8 @@ export function App() {
       setSavedError(
         got.ok ? 'That saved request no longer exists' : got.message,
       );
+      // The error shows in the workspace's saved bar (code review of workspace-shell, 3).
+      setView('workspace');
       return;
     }
     const { savedRequest } = got;
@@ -419,6 +427,7 @@ export function App() {
     await refreshSaved();
   };
   const newForm = () => {
+    setView('workspace');
     formIdentity.current += 1;
     changeForm(EMPTY_FORM);
     setFormLink(null);
@@ -433,6 +442,7 @@ export function App() {
         message: errorText(error),
       }));
     setSavedError(done.ok ? null : done.message);
+    if (!done.ok) setView('workspace');
     // The form no longer edits a saved request that is gone.
     if (done.ok) {
       setFormLink((current) => (current?.id === id ? null : current));
@@ -445,6 +455,7 @@ export function App() {
   const openCall = async (sendId: string) => {
     const thisOpen = ++latestOpen.current;
     endPendingEdit();
+    setView('call');
     setOpenedCurl(null);
     setEditError(null);
     setOpenError(null);
@@ -478,8 +489,18 @@ export function App() {
 
   // The panel's Replay and Edit act on the form and the result, which sit above the history list.
   const requestRegion = useRef<HTMLDivElement>(null);
-  const showRequest = () =>
-    requestRegion.current?.scrollIntoView({ block: 'start' });
+  // The workspace is display:none until the view change commits, so the scroll waits for it (code review of
+  // workspace-shell, 2).
+  const [requestScroll, setRequestScroll] = useState(0);
+  const showRequest = () => {
+    setView('workspace');
+    setRequestScroll((n) => n + 1);
+  };
+  useLayoutEffect(() => {
+    if (requestScroll > 0) {
+      requestRegion.current?.scrollIntoView({ block: 'start' });
+    }
+  }, [requestScroll]);
   const resultRegion = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (result) resultRegion.current?.scrollIntoView({ block: 'nearest' });
@@ -488,120 +509,274 @@ export function App() {
   const canSend = status?.status === 'up';
   const inFlight = inFlightId !== null;
 
+  const chooseEnvironment = (id: string | null) => {
+    setEnvironmentId(id);
+    // Only what the select shows at the next start; a send names its environment itself (B1). Saved one after
+    // another, so the last choice is the one stored (code review #5).
+    choiceSaves.current = choiceSaves.current.then(async () => {
+      // A failure is shown and does not stop later choices (second code review, 5).
+      try {
+        const done = await pigeon.setActiveEnvironment(id);
+        setEnvironmentsError(done.ok ? null : done.message);
+      } catch (error) {
+        setEnvironmentsError(errorText(error));
+      }
+    });
+  };
+
   return (
-    <main>
-      <h1>DigitalPigeon</h1>
-      <StatusBar status={status} />
-      <div ref={requestRegion}>
-        <RequestForm
-          form={form}
-          onChange={changeForm}
-          environments={environments}
-          environmentId={environmentId}
-          onChooseEnvironment={(id) => {
-            setEnvironmentId(id);
-            // Only what the select shows at the next start; a send names its environment itself (B1). Saved one after
-            // another, so the last choice is the one stored (code review #5).
-            choiceSaves.current = choiceSaves.current.then(async () => {
-              // A failure is shown and does not stop later choices (second code review, 5).
-              try {
-                const done = await pigeon.setActiveEnvironment(id);
-                setEnvironmentsError(done.ok ? null : done.message);
-              } catch (error) {
-                setEnvironmentsError(errorText(error));
-              }
-            });
-          }}
-          canSend={canSend}
-          inFlight={inFlight}
-          onSend={() =>
-            run((clientRequestId) =>
-              pigeon.send({
-                clientRequestId,
-                ...requestOf(form),
-                environmentId,
-                ...(formLink ? { savedRequestId: formLink.id } : {}),
-              }),
-            )
-          }
-          onCancel={() => inFlightId && pigeon.cancel(inFlightId)}
-          onCopyCurl={async () =>
-            setFormCurl(
-              await exportCurl(() => {
-                const request = requestOf(form);
-                return buildWireRequest({
-                  ...request,
-                  url: composeUrl(request.url, environment),
-                });
-              }),
-            )
-          }
-        />
-      </div>
-      <SavedRequestBar
-        name={savedName}
-        link={formLink}
-        saving={saving}
-        error={savedError ?? savedListError}
-        onName={setSavedName}
-        onSave={() => void saveForm(false)}
-        onSaveAsNew={() => void saveForm(true)}
-        onNew={newForm}
-      />
-      <CurlView testId="form-curl" outcome={formCurl} />
-      <SavedRequestList
-        savedRequests={savedRequests}
-        onOpen={(id) => void openSaved(id)}
-        onDelete={(id) => void deleteSaved(id)}
-      />
-      <EnvironmentsEditor
-        environments={environments}
-        error={environmentsError}
-        onSave={(input) =>
-          afterEnvironmentChange(pigeon.saveEnvironment(input))
-        }
-        onDelete={(id) => afterEnvironmentChange(pigeon.deleteEnvironment(id))}
-      />
-      <div ref={resultRegion}>
-        <ResultView result={result} />
-      </div>
-      <HistoryList
-        calls={history}
-        error={historyError}
-        onOpen={(sendId) => void openCall(sendId)}
-      />
-      <div ref={openedRegion}>
-        {openError ? (
-          <p data-testid="open-error" className="error">
-            Could not open the call: {openError}
-          </p>
-        ) : null}
-        {opened ? (
-          <CallPanel
-            call={opened}
-            canReplay={canSend && !inFlight}
-            curl={openedCurl}
-            editError={editError}
-            editLoading={editLoading}
-            savedRequests={savedRequests}
-            savedListLoaded={savedListLoaded}
-            onReplay={() => {
-              showRequest();
-              void run((clientRequestId) =>
-                pigeon.replay({
-                  clientRequestId,
-                  sendId: opened.send._id,
-                }),
-              );
-            }}
-            onEdit={() => void editCall(opened.send)}
-            onCopyCurl={async () =>
-              setOpenedCurl(await exportCurl(() => opened.send.request))
+    <div className="app">
+      <header className="title-bar">
+        <div className="brand">
+          <Logo />
+          <h1>DigitalPigeon</h1>
+        </div>
+        <span className="spacer" />
+        <select
+          aria-label="Environment"
+          className="environment-select"
+          value={environmentId ?? ''}
+          onChange={(e) => chooseEnvironment(e.target.value || null)}
+        >
+          <option value="">None</option>
+          {environments.map((e) => (
+            <option key={e.id} value={e.id}>
+              {e.name} — {e.baseUrl}
+            </option>
+          ))}
+        </select>
+        <button
+          type="button"
+          aria-expanded={environmentsOpen}
+          onClick={() => setEnvironmentsOpen((open) => !open)}
+        >
+          Environments
+        </button>
+      </header>
+      {environmentsError ? (
+        // Outside the editor, so a failed choice in the title bar shows with the editor closed (code review of
+        // workspace-shell, 1).
+        <p
+          data-testid="environments-error"
+          role="alert"
+          className="error environments-error"
+        >
+          {environmentsError}
+        </p>
+      ) : null}
+      {environmentsOpen ? (
+        <div className="environments-panel">
+          <EnvironmentsEditor
+            environments={environments}
+            onSave={(input) =>
+              afterEnvironmentChange(pigeon.saveEnvironment(input))
+            }
+            onDelete={(id) =>
+              afterEnvironmentChange(pigeon.deleteEnvironment(id))
             }
           />
-        ) : null}
+        </div>
+      ) : null}
+      <div className="body">
+        <aside className="sidebar">
+          <div role="tablist" aria-label="Sidebar" className="sidebar-tabs">
+            <button
+              type="button"
+              role="tab"
+              id="tab-saved"
+              aria-selected={sidebarTab === 'saved'}
+              aria-controls="panel-saved"
+              onClick={() => setSidebarTab('saved')}
+            >
+              Saved
+            </button>
+            <button
+              type="button"
+              role="tab"
+              id="tab-history"
+              aria-selected={sidebarTab === 'history'}
+              aria-controls="panel-history"
+              onClick={() => setSidebarTab('history')}
+            >
+              History
+            </button>
+          </div>
+          <div
+            role="tabpanel"
+            id="panel-saved"
+            aria-labelledby="tab-saved"
+            className="sidebar-panel"
+            hidden={sidebarTab !== 'saved'}
+          >
+            <SavedRequestList
+              savedRequests={savedRequests}
+              onOpen={(id) => void openSaved(id)}
+              onDelete={(id) => void deleteSaved(id)}
+            />
+          </div>
+          <div
+            role="tabpanel"
+            id="panel-history"
+            aria-labelledby="tab-history"
+            className="sidebar-panel"
+            hidden={sidebarTab !== 'history'}
+          >
+            <HistoryList
+              calls={history}
+              error={historyError}
+              onOpen={(sendId) => void openCall(sendId)}
+            />
+          </div>
+        </aside>
+        <main className="main">
+          <div className="workspace" hidden={view !== 'workspace'}>
+            {opened ? (
+              <button
+                type="button"
+                className="back"
+                onClick={() => setView('call')}
+              >
+                <span aria-hidden="true">←</span> Back to the call
+              </button>
+            ) : null}
+            <div ref={requestRegion} className="request">
+              <SavedRequestBar
+                name={savedName}
+                link={formLink}
+                saving={saving}
+                error={savedError ?? savedListError}
+                onName={setSavedName}
+                onSave={() => void saveForm(false)}
+                onSaveAsNew={() => void saveForm(true)}
+                onNew={newForm}
+              />
+              <RequestForm
+                form={form}
+                onChange={changeForm}
+                canSend={canSend}
+                inFlight={inFlight}
+                onSend={() =>
+                  run((clientRequestId) =>
+                    pigeon.send({
+                      clientRequestId,
+                      ...requestOf(form),
+                      environmentId,
+                      ...(formLink ? { savedRequestId: formLink.id } : {}),
+                    }),
+                  )
+                }
+                onCancel={() => inFlightId && pigeon.cancel(inFlightId)}
+                onCopyCurl={async () =>
+                  setFormCurl(
+                    await exportCurl(() => {
+                      const request = requestOf(form);
+                      return buildWireRequest({
+                        ...request,
+                        url: composeUrl(request.url, environment),
+                      });
+                    }),
+                  )
+                }
+              />
+              <CurlView testId="form-curl" outcome={formCurl} />
+            </div>
+            <div ref={resultRegion}>
+              <ResultView result={result} />
+            </div>
+          </div>
+          <div className="call-view" hidden={view !== 'call'}>
+            <button
+              type="button"
+              className="back"
+              onClick={() => setView('workspace')}
+            >
+              <span aria-hidden="true">←</span> Back to the request
+            </button>
+            <div ref={openedRegion}>
+              {openError ? (
+                <p data-testid="open-error" className="error">
+                  Could not open the call: {openError}
+                </p>
+              ) : null}
+              {opened ? (
+                <CallPanel
+                  call={opened}
+                  canReplay={canSend && !inFlight}
+                  curl={openedCurl}
+                  editError={editError}
+                  editLoading={editLoading}
+                  savedRequests={savedRequests}
+                  savedListLoaded={savedListLoaded}
+                  onReplay={() => {
+                    showRequest();
+                    void run((clientRequestId) =>
+                      pigeon.replay({
+                        clientRequestId,
+                        sendId: opened.send._id,
+                      }),
+                    );
+                  }}
+                  onEdit={() => void editCall(opened.send)}
+                  onCopyCurl={async () =>
+                    setOpenedCurl(await exportCurl(() => opened.send.request))
+                  }
+                />
+              ) : null}
+            </div>
+          </div>
+        </main>
       </div>
-    </main>
+      <footer className="status-bar">
+        <StatusBar status={status} />
+        <span className="note">
+          Every send is kept as its own immutable record
+        </span>
+        <span className="spacer" />
+        <span className="version">v0.1 · M1</span>
+      </footer>
+    </div>
+  );
+}
+
+function Logo() {
+  // Logo Small from the design (Pencil component UWrNk), drawn on a 512 grid.
+  return (
+    <svg
+      className="logo"
+      viewBox="0 0 512 512"
+      width="24"
+      height="24"
+      role="img"
+      aria-label="DigitalPigeon logo"
+    >
+      <path
+        d="M112 16h288a96 96 0 0 1 96 96v288a96 96 0 0 1-96 96h-288a96 96 0 0 1-96-96v-288a96 96 0 0 1 96-96z"
+        fill="#0E1A2B"
+      />
+      <g
+        fill="none"
+        stroke="#3DDC97"
+        strokeWidth="19"
+        strokeLinejoin="round"
+        strokeLinecap="round"
+      >
+        <path d="M392 200l-24 0 0 16 24 24 0 48-48 48-112 0-48-48-80 0 0-32 80 0 48-48 64 0 24-24 0-24 16-16 24 0 16 16 0 24z" />
+        <path
+          d="M248 256l64 0 32 32 0 16m-128-8l88 0m-32 40l0 32m32-32l0 20 12 12m-212-96l-40 0m328-72l40 0"
+          strokeOpacity="0.85"
+        />
+      </g>
+      <path
+        d="M263 368h18a3 3 0 0 1 3 3v8a3 3 0 0 1-3 3h-18a3 3 0 0 1-3-3v-8a3 3 0 0 1 3-3z m48 0h18a3 3 0 0 1 3 3v8a3 3 0 0 1-3 3h-18a3 3 0 0 1-3-3v-8a3 3 0 0 1 3-3z"
+        fill="#3DDC97"
+      />
+      <path
+        d="M339 172a9 9 0 1 0 18 0 9 9 0 1 0-18 0z m-99 84a8 8 0 1 0 16 0 8 8 0 1 0-16 0z m96 48a8 8 0 1 0 16 0 8 8 0 1 0-16 0z m-40-8a8 8 0 1 0 16 0 8 8 0 1 0-16 0z m-240-24a8 8 0 1 0 16 0 8 8 0 1 0-16 0z m368-72a8 8 0 1 0 16 0 8 8 0 1 0-16 0z"
+        fill="#0E1A2B"
+        stroke="#3DDC97"
+        strokeWidth="19"
+      />
+    </svg>
   );
 }
 
@@ -710,21 +885,25 @@ function BodyEditor({
   onChange: (body: BodyInput) => void;
 }) {
   return (
-    <fieldset>
+    <fieldset className="body-editor-fields">
       <legend>Body</legend>
-      <select
-        aria-label="Body type"
-        value={body.type}
-        onChange={(e) =>
-          onChange(bodyOfType(e.target.value as BodyInput['type'], body))
-        }
-      >
+      {/* Pressed buttons, not radios: an arrow key on a radio changes the type, and the body with it (code review of
+          workspace-shell, 4). */}
+      <div role="group" aria-label="Body type" className="segment">
         {BODY_TYPES.map(([type, label]) => (
-          <option key={type} value={type}>
+          <button
+            key={type}
+            type="button"
+            data-type={type}
+            aria-pressed={body.type === type}
+            onClick={() => {
+              if (body.type !== type) onChange(bodyOfType(type, body));
+            }}
+          >
             {label}
-          </option>
+          </button>
         ))}
-      </select>
+      </div>
       {'text' in body ? (
         <textarea
           aria-label="Body text"
@@ -931,7 +1110,7 @@ function SavedRequestBar({
   onNew: () => void;
 }) {
   return (
-    <div className="row">
+    <div className="saved-bar">
       <input
         aria-label="Saved request name"
         placeholder="Name"
@@ -972,9 +1151,12 @@ function SavedRequestList({
   onDelete: (id: string) => void;
 }) {
   return (
-    <section>
-      <h2>Saved requests</h2>
-      <ol data-testid="saved-requests">
+    <section className="saved">
+      <div className="title-row">
+        <h2>Saved requests</h2>
+        <span className="count">{savedRequests.length} saved</span>
+      </div>
+      <ol data-testid="saved-requests" className="saved-list">
         {savedRequests.map((s) => (
           <li key={s.id} className="row">
             <button type="button" onClick={() => onOpen(s.id)}>
@@ -993,12 +1175,10 @@ function SavedRequestList({
 // Saved environments, editable in place, and a row to add one (slice 5). Rows are listed by name; names may repeat.
 function EnvironmentsEditor({
   environments,
-  error,
   onSave,
   onDelete,
 }: {
   environments: EnvironmentView[];
-  error: string | null;
   /** Resolves true when saved; on false the reason is shown and the fields keep what was typed. */
   onSave: (input: SaveEnvironmentInput) => Promise<boolean>;
   onDelete: (id: string) => Promise<boolean>;
@@ -1017,11 +1197,6 @@ function EnvironmentsEditor({
   return (
     <section data-testid="environments">
       <h2>Environments</h2>
-      {error ? (
-        <p data-testid="environments-error" role="alert" className="error">
-          {error}
-        </p>
-      ) : null}
       <ol>
         {environments.map((e, index) => {
           const n = index + 1;
@@ -1107,9 +1282,6 @@ function EnvironmentsEditor({
 function RequestForm({
   form,
   onChange,
-  environments,
-  environmentId,
-  onChooseEnvironment,
   canSend,
   inFlight,
   onSend,
@@ -1118,80 +1290,113 @@ function RequestForm({
 }: {
   form: Form;
   onChange: (form: Form) => void;
-  environments: EnvironmentView[];
-  environmentId: string | null;
-  onChooseEnvironment: (id: string | null) => void;
   canSend: boolean;
   inFlight: boolean;
   onSend: () => void;
   onCancel: () => void;
   onCopyCurl: () => void;
 }) {
+  // Screen 01 opens on Body. Panels stay mounted while hidden, so what was typed and the editor survive a switch.
+  const [tab, setTab] = useState<'query' | 'headers' | 'body'>('body');
+  const body = form.body ?? { type: 'none' };
+  const tabs = [
+    ['query', 'Query', String(form.queryRows.length)],
+    ['headers', 'Headers', String(form.headerRows.length)],
+    ['body', 'Body', BODY_TYPES.find(([t]) => t === body.type)?.[1] ?? ''],
+  ] as const;
   return (
     <form
+      className="request-form"
       onSubmit={(e) => {
         e.preventDefault();
         if (!inFlight) onSend();
       }}
     >
-      <div className="row">
-        <select
-          aria-label="Method"
-          value={form.method}
-          onChange={(e) =>
-            onChange({ ...form, method: e.target.value as Method })
-          }
-        >
-          {METHODS.map((m) => (
-            <option key={m}>{m}</option>
-          ))}
-        </select>
-        <select
-          aria-label="Environment"
-          value={environmentId ?? ''}
-          onChange={(e) => onChooseEnvironment(e.target.value || null)}
-        >
-          <option value="">None</option>
-          {environments.map((e) => (
-            <option key={e.id} value={e.id}>
-              {e.name} — {e.baseUrl}
-            </option>
-          ))}
-        </select>
-        <input
-          aria-label="URL"
-          className="url"
-          placeholder="https://… or /path, sent to the environment"
-          value={form.url}
-          onChange={(e) => onChange({ ...form, url: e.target.value })}
-        />
+      <div className="request-bar">
+        <div className="url-field">
+          <select
+            aria-label="Method"
+            className="method-select"
+            value={form.method}
+            onChange={(e) =>
+              onChange({ ...form, method: e.target.value as Method })
+            }
+          >
+            {METHODS.map((m) => (
+              <option key={m}>{m}</option>
+            ))}
+          </select>
+          <input
+            aria-label="URL"
+            className="url"
+            placeholder="https://… or /path, sent to the environment"
+            value={form.url}
+            onChange={(e) => onChange({ ...form, url: e.target.value })}
+          />
+        </div>
+        <button type="button" className="secondary" onClick={onCopyCurl}>
+          Copy as curl
+        </button>
         {inFlight ? (
-          <button type="button" onClick={onCancel}>
+          <button type="button" className="primary" onClick={onCancel}>
             Cancel
           </button>
         ) : (
-          <button type="submit" disabled={!canSend}>
+          <button type="submit" className="primary" disabled={!canSend}>
             Send
           </button>
         )}
-        <button type="button" onClick={onCopyCurl}>
-          Copy as curl
-        </button>
       </div>
-      <RowsEditor
-        label="Query"
-        rows={form.queryRows}
-        onChange={(queryRows) => onChange({ ...form, queryRows })}
-      />
-      <RowsEditor
-        label="Header"
-        rows={form.headerRows}
-        onChange={(headerRows) => onChange({ ...form, headerRows })}
-      />
-      <BodyEditor
-        body={form.body ?? { type: 'none' }}
-        onChange={(body) => onChange({ ...form, body })}
-      />
+      <div role="tablist" aria-label="Request" className="tabs">
+        {tabs.map(([id, label, count]) => (
+          <button
+            key={id}
+            type="button"
+            role="tab"
+            id={`request-tab-${id}`}
+            aria-selected={tab === id}
+            aria-controls={`request-panel-${id}`}
+            onClick={() => setTab(id)}
+          >
+            {label} <span className="count">{count}</span>
+          </button>
+        ))}
+      </div>
+      <div
+        role="tabpanel"
+        id="request-panel-query"
+        aria-label="Query"
+        hidden={tab !== 'query'}
+      >
+        <RowsEditor
+          label="Query"
+          rows={form.queryRows}
+          onChange={(queryRows) => onChange({ ...form, queryRows })}
+        />
+      </div>
+      <div
+        role="tabpanel"
+        id="request-panel-headers"
+        aria-label="Headers"
+        hidden={tab !== 'headers'}
+      >
+        <RowsEditor
+          label="Header"
+          rows={form.headerRows}
+          onChange={(headerRows) => onChange({ ...form, headerRows })}
+        />
+      </div>
+      <div
+        role="tabpanel"
+        id="request-panel-body"
+        aria-label="Body"
+        hidden={tab !== 'body'}
+      >
+        <BodyEditor
+          body={body}
+          onChange={(next) => onChange({ ...form, body: next })}
+        />
+      </div>
     </form>
   );
 }
@@ -1351,19 +1556,91 @@ function CallPanel({
   onCopyCurl: () => void;
 }) {
   const { method, url, headers, body } = call.send.request;
+  const response =
+    call.completion && 'response' in call.completion
+      ? call.completion.response
+      : null;
+  const auth = headers.find(([n]) => n.toLowerCase() === 'authorization');
   return (
-    <section data-testid="call-panel" data-state={call.state}>
-      <h2>Call</h2>
-      <div className="row">
-        <button type="button" onClick={onReplay} disabled={!canReplay}>
-          Replay
-        </button>
-        <button type="button" onClick={onEdit}>
-          Edit
-        </button>
-        <button type="button" onClick={onCopyCurl}>
-          Copy call as curl
-        </button>
+    <section
+      data-testid="call-panel"
+      data-state={call.state}
+      className="call-record"
+    >
+      <div className="call-top">
+        <div className="call-title">
+          <nav className="breadcrumb" aria-label="Breadcrumb">
+            <span>History</span>
+            <span aria-hidden="true">›</span>
+            <h2>Call</h2>
+            <code>#{shortId(call.send._id)}</code>
+          </nav>
+          <p data-testid="call-request-line" className="call-request-line">
+            <span className={`method-text method-${method.toLowerCase()}`}>
+              {method}
+            </span>{' '}
+            <span className="call-url">{url}</span>
+            <span className="call-sent">
+              {' '}
+              · sent {call.send.sentAt.toLocaleString()}
+            </span>
+          </p>
+        </div>
+        <div className="call-actions">
+          <button type="button" className="secondary" onClick={onCopyCurl}>
+            Copy call as curl
+          </button>
+          <button type="button" className="secondary" onClick={onEdit}>
+            Edit
+          </button>
+          <button
+            type="button"
+            className="primary"
+            onClick={onReplay}
+            disabled={!canReplay}
+          >
+            Replay
+          </button>
+        </div>
+      </div>
+      <div className="chips">
+        {response ? (
+          <span className={`status-pill ${statusClass(response.status)}`}>
+            {statusLabel(response.status)}
+          </span>
+        ) : null}
+        <span className="chip" data-testid="call-state">
+          {stateText(call.state)}
+        </span>
+        {call.completion ? (
+          <span className="chip mono">
+            {Math.round(call.completion.durationMs)} ms
+          </span>
+        ) : null}
+        {call.send.environment ? (
+          <span className="chip" data-testid="call-environment">
+            Environment: {call.send.environment.name} —{' '}
+            {call.send.environment.baseUrl}
+          </span>
+        ) : null}
+        {call.send.savedRequestId ? (
+          <span className="chip" data-testid="call-saved-request">
+            {(() => {
+              const source = savedRequests.find(
+                (s) => s.id === call.send.savedRequestId,
+              );
+              if (source) return `From saved request: ${source.name}`;
+              return savedListLoaded
+                ? 'From a deleted saved request'
+                : 'From a saved request';
+            })()}
+          </span>
+        ) : null}
+        {auth ? (
+          <span className="chip mono">
+            Authorization: {abbreviate(auth[1])}
+          </span>
+        ) : null}
       </div>
       {editLoading ? (
         <p data-testid="call-edit-status">Loading the call into the form…</p>
@@ -1374,51 +1651,64 @@ function CallPanel({
         </p>
       ) : null}
       <CurlView testId="call-curl" outcome={curl} />
-      <p data-testid="call-state">{stateText(call.state)}</p>
-      <h3>Request as sent</h3>
-      <p data-testid="call-request-line">
-        {method} {url} · sent {call.send.sentAt.toLocaleString()}
+      <p className="immutable-note">
+        Replaying or editing never changes this record — each send creates a new
+        entry in History.
       </p>
-      {call.send.savedRequestId ? (
-        <p data-testid="call-saved-request">
-          {(() => {
-            const source = savedRequests.find(
-              (s) => s.id === call.send.savedRequestId,
-            );
-            if (source) return `From saved request: ${source.name}`;
-            return savedListLoaded
-              ? 'From a deleted saved request'
-              : 'From a saved request';
-          })()}
-        </p>
-      ) : null}
-      {call.send.environment ? (
-        <p data-testid="call-environment">
-          Environment: {call.send.environment.name} —{' '}
-          {call.send.environment.baseUrl}
-        </p>
-      ) : null}
-      <pre data-testid="call-request-headers">
-        {headers.map(([n, v]) => `${n}: ${v}`).join('\n')}
-      </pre>
-      {body && isMultipart(headers) ? (
-        <PartsList body={body} headers={headers} />
-      ) : null}
-      {body ? (
-        <BodyText testId="call-request-body" body={body} headers={headers} />
-      ) : null}
-      {call.completion ? (
-        <>
-          <h3>Response</h3>
-          <p data-testid="call-completed-at">
-            completed {call.completion.completedAt.toLocaleString()}
-          </p>
-          <CompletionView completion={call.completion} />
-        </>
-      ) : null}
+      <div className="call-columns">
+        <div className="call-column">
+          <div className="column-head">
+            <h3>Request as sent</h3>
+            <span className="mono faint">
+              sent {call.send.sentAt.toLocaleTimeString()}
+            </span>
+          </div>
+          <p className="label">Headers · {headers.length}</p>
+          <HeaderTable testId="call-request-headers" headers={headers} />
+          <p className="label">Body</p>
+          {body && isMultipart(headers) ? (
+            <PartsList body={body} headers={headers} />
+          ) : null}
+          {body ? (
+            <BodyText
+              testId="call-request-body"
+              body={body}
+              headers={headers}
+            />
+          ) : (
+            <p className="empty">No body was sent with this request</p>
+          )}
+        </div>
+        <div className="call-column">
+          {call.completion ? (
+            <>
+              <div className="column-head">
+                <h3>Response</h3>
+                <span className="mono faint" data-testid="call-completed-at">
+                  completed {call.completion.completedAt.toLocaleString()}
+                </span>
+              </div>
+              <CompletionView
+                key={call.completion._id}
+                completion={call.completion}
+                heading={false}
+              />
+            </>
+          ) : (
+            <p className="empty">No response was recorded</p>
+          )}
+        </div>
+      </div>
     </section>
   );
 }
+
+const shortId = (id: string) =>
+  id.length > 12 ? `${id.slice(0, 6)}…${id.slice(-4)}` : id;
+
+// A long header value shown as its start and end, as the design's Authorization chip does.
+const abbreviate = (value: string) =>
+  value.length > 24 ? `${value.slice(0, 12)}…${value.slice(-4)}` : value;
 
 function stateText(state: Opened['state']): string {
   if (state === 'in-flight') return 'In flight';
@@ -1438,38 +1728,153 @@ function ResultView({ result }: { result: SendResult | null }) {
           : {result.error.message}
         </p>
         {result.completion ? (
-          <CompletionView completion={result.completion} />
+          <CompletionView
+            key={result.completion._id}
+            completion={result.completion}
+          />
         ) : null}
       </section>
     );
   }
   return (
     <section data-testid="result">
-      <CompletionView completion={result.completion} />
+      <CompletionView
+        key={result.completion._id}
+        completion={result.completion}
+      />
     </section>
   );
 }
 
-function CompletionView({ completion }: { completion: CompletionDoc }) {
+// The response as screen 01 shows it: a header row with the status pill, duration, size and when it was recorded, then
+// Body and Headers tabs. Panels stay mounted, so the body editor keeps its place across a switch.
+function CompletionView({
+  completion,
+  heading = true,
+}: {
+  completion: CompletionDoc;
+  /** The call record names the column itself, so it leaves this heading out. */
+  heading?: boolean;
+}) {
+  const [tab, setTab] = useState<'body' | 'headers'>('body');
   const duration = `${Math.round(completion.durationMs)} ms`;
   if ('error' in completion) {
     return (
-      <p data-testid="response-error">
-        {completion.error.code}: {completion.error.message} ({duration})
-      </p>
+      <div className="response">
+        <div className="response-header">
+          {heading ? <h2>Response</h2> : null}
+          <span className="status-pill err">{completion.error.code}</span>
+        </div>
+        <p data-testid="response-error">
+          {completion.error.code}: {completion.error.message} ({duration})
+        </p>
+      </div>
     );
   }
   const { status, headers, body } = completion.response;
   return (
-    <div>
-      <p data-testid="response-status">
-        {status} · {duration}
-      </p>
-      <pre data-testid="response-headers">
-        {headers.map(([n, v]) => `${n}: ${v}`).join('\n')}
-      </pre>
-      <BodyText testId="response-body" body={body} headers={headers} />
+    <div className="response">
+      <div className="response-header">
+        {heading ? <h2>Response</h2> : null}
+        <span
+          data-testid="response-status"
+          className={`status-pill ${statusClass(status)}`}
+        >
+          {statusLabel(status)}
+          <span className="sr-only"> · {duration}</span>
+        </span>
+        <span className="meta">{duration}</span>
+        <span className="meta">{sizeText(body.length)}</span>
+        <span className="spacer" />
+        <span className="recorded-chip">
+          Recorded · {completion.completedAt.toLocaleString()}
+        </span>
+      </div>
+      <div role="tablist" aria-label="Response" className="tabs">
+        <button
+          type="button"
+          role="tab"
+          aria-selected={tab === 'body'}
+          onClick={() => setTab('body')}
+        >
+          Body
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={tab === 'headers'}
+          onClick={() => setTab('headers')}
+        >
+          Headers <span className="count">{headers.length}</span>
+        </button>
+      </div>
+      <div
+        role="tabpanel"
+        aria-label="Response headers"
+        hidden={tab !== 'headers'}
+      >
+        <HeaderTable testId="response-headers" headers={headers} />
+      </div>
+      <div role="tabpanel" aria-label="Response body" hidden={tab !== 'body'}>
+        <BodyText testId="response-body" body={body} headers={headers} />
+      </div>
     </div>
+  );
+}
+
+const statusClass = (status: number) =>
+  status >= 500
+    ? 'err'
+    : status >= 400
+      ? 'warn'
+      : status >= 300
+        ? 'info'
+        : 'ok';
+
+const statusLabel = (status: number) =>
+  STATUS_TEXT[status] ? `${status} ${STATUS_TEXT[status]}` : String(status);
+
+const STATUS_TEXT: Record<number, string> = {
+  200: 'OK',
+  201: 'Created',
+  202: 'Accepted',
+  204: 'No Content',
+  301: 'Moved Permanently',
+  302: 'Found',
+  304: 'Not Modified',
+  400: 'Bad Request',
+  401: 'Unauthorized',
+  403: 'Forbidden',
+  404: 'Not Found',
+  409: 'Conflict',
+  422: 'Unprocessable Content',
+  429: 'Too Many Requests',
+  500: 'Internal Server Error',
+  502: 'Bad Gateway',
+  503: 'Service Unavailable',
+  504: 'Gateway Timeout',
+};
+
+// Headers as the design's key/value table: names in the accent colour, values beside them, in mono.
+function HeaderTable({
+  testId,
+  headers,
+}: {
+  testId: string;
+  headers: [string, string][];
+}) {
+  return (
+    <dl data-testid={testId} className="header-table">
+      {headers.map(([name, value], index) => (
+        <div key={index}>
+          <dt>
+            {name}
+            <span className="sr-only">: </span>
+          </dt>
+          <dd>{value}</dd>
+        </div>
+      ))}
+    </dl>
   );
 }
 
@@ -1650,6 +2055,10 @@ function useBodyEditor(
   created.current = onCreate;
   useEffect(() => {
     const instance = monaco.editor.create(host.current as HTMLDivElement, {
+      theme: definePigeonTheme(),
+      fontFamily:
+        "'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace",
+      fontSize: 12,
       model: null,
       readOnly: true,
       links: false,
@@ -1678,6 +2087,37 @@ function setModel(
   const previous = editor.getModel();
   editor.setModel(monaco.editor.createModel(text, language));
   previous?.dispose();
+}
+
+// The editor in the design's colours (slice 6): surface background, muted gutter, accent-tinted strings.
+let pigeonThemeDefined = false;
+function definePigeonTheme(): string {
+  if (!pigeonThemeDefined) {
+    monaco.editor.defineTheme('pigeon', {
+      base: 'vs-dark',
+      inherit: true,
+      rules: [
+        { token: 'string', foreground: 'E3C27A' },
+        { token: 'string.key.json', foreground: '60A5FA' },
+        { token: 'string.value.json', foreground: '3DD6B5' },
+        { token: 'number', foreground: 'E7E9EC' },
+        { token: 'keyword', foreground: 'A78BFA' },
+        { token: 'tag', foreground: '60A5FA' },
+        { token: 'attribute.name', foreground: 'A78BFA' },
+      ],
+      colors: {
+        'editor.background': '#13161B',
+        'editor.foreground': '#E7E9EC',
+        'editorLineNumber.foreground': '#5B626D',
+        'editorLineNumber.activeForeground': '#8B929D',
+        'editor.lineHighlightBackground': '#1A1E25',
+        'editor.selectionBackground': '#3DD6B533',
+        'editorWidget.background': '#1A1E25',
+      },
+    });
+    pigeonThemeDefined = true;
+  }
+  return 'pigeon';
 }
 
 function MonacoBody({
@@ -1886,6 +2326,8 @@ function PagedBodyText({
   );
 }
 
+// A row per call, as the design's History Row: method badge, path with host and time, status with duration. Rows group
+// under the day they were sent. The visible text is split up, so the row's accessible name keeps the whole call.
 function HistoryList({
   calls,
   error,
@@ -1895,38 +2337,125 @@ function HistoryList({
   error: string | null;
   onOpen: (sendId: string) => void;
 }) {
+  // One group per day, in the order days first appear; today is computed once per render (code review of
+  // workspace-shell, 5 and 9).
+  const today = startOfDay(new Date());
+  const groups = new Map<string, CallView[]>();
+  for (const call of calls) {
+    const day =
+      call.state === 'unreadable'
+        ? 'Unreadable'
+        : dayLabel(call.send.sentAt, today);
+    groups.set(day, [...(groups.get(day) ?? []), call]);
+  }
   return (
-    <section>
-      <h2>History</h2>
+    <section className="history">
+      <div className="title-row">
+        <h2>History</h2>
+        <span className="count">{calls.length} calls</span>
+      </div>
       {error ? (
         <p data-testid="history-error" className="error">
           History could not be loaded: {error}
         </p>
       ) : null}
-      <ol data-testid="history">
-        {calls.map((call) =>
-          call.state === 'unreadable' ? (
-            <li key={call.id} data-state="unreadable">
-              Unreadable record {call.id}: {call.error}
-            </li>
-          ) : (
-            <li key={call.send._id} data-state={call.state}>
-              <button
-                type="button"
-                className="history-row"
-                onClick={() => onOpen(call.send._id)}
-              >
-                <span className="method">{call.send.request.method}</span>{' '}
-                {call.send.request.url} — {outcome(call)} ·{' '}
-                {call.send.sentAt.toLocaleString()}
-              </button>
-            </li>
+      <ol data-testid="history" className="history-list">
+        {[...groups].map(([day, dayCalls]) => [
+          <li key={`day-${day}`} className="day" aria-hidden="true">
+            {day}
+          </li>,
+          ...dayCalls.map((call) =>
+            call.state === 'unreadable' ? (
+              <li key={call.id} data-state="unreadable">
+                Unreadable record {call.id}: {call.error}
+              </li>
+            ) : (
+              <li key={call.send._id} data-state={call.state}>
+                <button
+                  type="button"
+                  className="history-row"
+                  aria-label={`${call.send.request.method} ${call.send.request.url} — ${outcome(call)} · ${call.send.sentAt.toLocaleString()}`}
+                  onClick={() => onOpen(call.send._id)}
+                >
+                  <MethodBadge method={call.send.request.method} />
+                  <span className="row-info">
+                    <span className="path">
+                      {pathOf(call.send.request.url)}
+                    </span>
+                    <span className="meta">
+                      {hostOf(call.send.request.url)} ·{' '}
+                      {call.send.sentAt.toLocaleTimeString()}
+                    </span>
+                  </span>
+                  <span className="result">
+                    <span className={`code ${outcomeClass(call)}`}>
+                      {codeText(call)}
+                    </span>
+                    <span className="duration">{durationText(call)}</span>
+                  </span>
+                </button>
+              </li>
+            ),
           ),
-        )}
+        ])}
       </ol>
     </section>
   );
 }
+
+type ReadableCall = Exclude<CallView, { state: 'unreadable' }>;
+
+function MethodBadge({ method }: { method: string }) {
+  return (
+    <span className={`method-badge method-${method.toLowerCase()}`}>
+      {method}
+    </span>
+  );
+}
+
+const startOfDay = (d: Date) =>
+  new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+
+const dayLabel = (date: Date, today: number) => {
+  const days = Math.round((today - startOfDay(date)) / 86_400_000);
+  if (days === 0) return 'Today';
+  if (days === 1) return 'Yesterday';
+  return date.toLocaleDateString();
+};
+
+const parsedUrl = (url: string) => {
+  try {
+    return new URL(url);
+  } catch {
+    return null;
+  }
+};
+const pathOf = (url: string) => {
+  const u = parsedUrl(url);
+  return u ? `${u.pathname}${u.search}` : url;
+};
+const hostOf = (url: string) => parsedUrl(url)?.host ?? '';
+
+function codeText(call: ReadableCall): string {
+  if (call.state === 'in-flight') return '…';
+  if (call.state === 'interrupted' || !call.completion) return '—';
+  return 'error' in call.completion
+    ? 'ERR'
+    : String(call.completion.response.status);
+}
+
+function outcomeClass(call: ReadableCall): string {
+  if (call.state !== 'completed' || !call.completion) return 'faint';
+  if ('error' in call.completion) return 'err';
+  return statusClass(call.completion.response.status);
+}
+
+const durationText = (call: ReadableCall) => {
+  if (call.state === 'in-flight') return 'in flight';
+  if (call.state === 'interrupted' || !call.completion) return 'interrupted';
+  const ms = call.completion.durationMs;
+  return ms >= 1000 ? `${(ms / 1000).toFixed(1)} s` : `${Math.round(ms)} ms`;
+};
 
 function outcome(call: Exclude<CallView, { state: 'unreadable' }>): string {
   if (call.state === 'in-flight') return 'in flight';

@@ -12,7 +12,16 @@ import {
   type CaptureServer,
   startCaptureServer,
 } from '../test-support/capture-server';
-import { type TestApp, launchWithTestDatabase } from './support';
+import {
+  chooseBodyType,
+  containing,
+  launchWithTestDatabase,
+  rowName,
+  showRequest,
+  showRequestTab,
+  showSidebarTab,
+  type TestApp,
+} from './support';
 
 let capture: CaptureServer;
 let testApp: TestApp;
@@ -44,7 +53,9 @@ test.afterAll(async () => {
   await rm(dir, { recursive: true, force: true });
 });
 
-test.beforeEach(() => {
+test.beforeEach(async () => {
+  await showRequest(testApp.window);
+  await showSidebarTab(testApp.window, 'History');
   capture.requests.length = 0;
   errors.length = 0;
 });
@@ -56,7 +67,7 @@ async function sendMultipart(path: string, url: string) {
     window.getByRole('button', { name, exact: true });
   await window.getByLabel('Method').selectOption('POST');
   await window.getByLabel('URL').fill(url);
-  await window.getByLabel('Body type').selectOption('multipart');
+  await chooseBodyType(window, 'multipart');
   await button('Add field').click();
   await window.getByLabel('Part name 1').fill('note');
   await window.getByLabel('Part value 1').fill('zażółć');
@@ -71,6 +82,7 @@ async function sendMultipart(path: string, url: string) {
 
 test('a picked file is sent, deleted from disk, and replayed with the same bytes', async () => {
   const { window } = testApp;
+  await showSidebarTab(window, 'History');
   const history = window.getByTestId('history').getByRole('listitem');
   const path = join(dir, 'upload.bin');
   const file = randomBytes(64 * 1024);
@@ -79,8 +91,8 @@ test('a picked file is sent, deleted from disk, and replayed with the same bytes
 
   await sendMultipart(path, `${capture.url}/upload`);
   await expect(history).toHaveCount(rowsBefore + 1);
-  await expect(history.first()).toContainText(
-    `POST ${capture.url}/upload — 200`,
+  await expect(rowName(history.first())).toHaveAccessibleName(
+    containing(`POST ${capture.url}/upload — 200`),
   );
   expect(capture.requests).toHaveLength(1);
   const first = capture.requests[0];
@@ -93,8 +105,8 @@ test('a picked file is sent, deleted from disk, and replayed with the same bytes
   await history.first().getByRole('button').click();
   await window.getByRole('button', { name: 'Replay', exact: true }).click();
   await expect(history).toHaveCount(rowsBefore + 2);
-  await expect(history.first()).toContainText(
-    `POST ${capture.url}/upload — 200`,
+  await expect(rowName(history.first())).toHaveAccessibleName(
+    containing(`POST ${capture.url}/upload — 200`),
   );
 
   expect(capture.requests).toHaveLength(2);
@@ -106,6 +118,7 @@ test('a picked file is sent, deleted from disk, and replayed with the same bytes
 
 test('a 17 MiB file goes through the form and the send handler in full', async () => {
   const { window } = testApp;
+  await showSidebarTab(window, 'History');
   const history = window.getByTestId('history').getByRole('listitem');
   const path = join(dir, 'large.bin');
   const file = randomBytes(17 * 1024 * 1024);
@@ -114,8 +127,8 @@ test('a 17 MiB file goes through the form and the send handler in full', async (
 
   await sendMultipart(path, `${capture.url}/large`);
   await expect(history).toHaveCount(rowsBefore + 1, { timeout: 30_000 });
-  await expect(history.first()).toContainText(
-    `POST ${capture.url}/large — 200`,
+  await expect(rowName(history.first())).toHaveAccessibleName(
+    containing(`POST ${capture.url}/large — 200`),
   );
   expect(capture.requests).toHaveLength(1);
   const received = capture.requests[0]?.body ?? Buffer.alloc(0);
@@ -132,6 +145,7 @@ for (const [label, size, unit] of [
 ] as const) {
   test(`${label}: the panel lists the parts, and Edit then Send resends the same body`, async () => {
     const { window } = testApp;
+    await showSidebarTab(window, 'History');
     const history = window.getByTestId('history').getByRole('listitem');
     const panel = window.getByTestId('call-panel');
     const path = join(dir, `notes-${label}.txt`);
@@ -196,7 +210,7 @@ test.describe('the parts editor', () => {
 
   const startMultipart = async () => {
     const { window } = testApp;
-    await window.getByLabel('Body type').selectOption('multipart');
+    await chooseBodyType(window, 'multipart');
     const remove = window.getByRole('button', { name: 'Remove' });
     while ((await remove.count()) > 0) await remove.first().click();
   };
@@ -208,6 +222,7 @@ test.describe('the parts editor', () => {
     const path = join(dir, 'held.txt');
     await writeFile(path, 'held');
     await startMultipart();
+    await showRequestTab(testApp.window, 'Body');
     await button('Add file').click();
     await window.getByLabel('Part name 1').fill('upload');
     await holdReads();
@@ -228,6 +243,7 @@ test.describe('the parts editor', () => {
     const path = join(dir, 'removed.txt');
     await writeFile(path, 'removed');
     await startMultipart();
+    await showRequestTab(testApp.window, 'Body');
     await button('Add file').click();
     await button('Add field').click();
     await window.getByLabel('Part name 2').fill('kept');
@@ -250,6 +266,7 @@ test.describe('the parts editor', () => {
     await writeFile(a, 'a');
     await writeFile(b, 'b');
     await startMultipart();
+    await showRequestTab(testApp.window, 'Body');
     await button('Add file').click();
     await window.getByLabel('Part file 1').setInputFiles(a);
     await expect(window.getByTestId('part-file-1')).toContainText('first.txt');

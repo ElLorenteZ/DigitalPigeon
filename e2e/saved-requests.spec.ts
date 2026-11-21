@@ -13,11 +13,18 @@ import {
   startCaptureServer,
 } from '../test-support/capture-server';
 import {
-  type TestApp,
+  chooseBodyType,
+  containing,
   gate,
   launchWithTestDatabase,
+  openEnvironments,
+  rowName,
   settle,
+  showRequest,
+  showRequestTab,
+  showSidebarTab,
   stubOperation,
+  type TestApp,
 } from './support';
 
 let capture: CaptureServer;
@@ -48,7 +55,9 @@ test.afterAll(async () => {
   await rm(dir, { recursive: true, force: true });
 });
 
-test.beforeEach(() => {
+test.beforeEach(async () => {
+  await showRequest(testApp.window);
+  await showSidebarTab(testApp.window, 'History');
   capture.requests.length = 0;
   other.requests.length = 0;
   errors.length = 0;
@@ -96,11 +105,13 @@ test('save, find, open, save over, save as new, send with a link back, and delet
 
   await button('New').click();
   await window.getByLabel('URL').fill(url);
+  await showRequestTab(testApp.window, 'Headers');
   await button('Add header').click();
   await window.getByLabel('Header name 1').fill('X-Version');
   await window.getByLabel('Header value 1').fill('one');
   await window.getByLabel('Saved request name').fill('Get orders');
   await button('Save').click();
+  await showSidebarTab(testApp.window, 'Saved');
   await expect(saved()).toHaveText([`Get orders — GET ${url}Delete`]);
   await expect(window.getByTestId('saved-request-link')).toHaveText(
     'Editing saved request: Get orders',
@@ -134,19 +145,24 @@ test('save, find, open, save over, save as new, send with a link back, and delet
     .getByRole('button', { name: /^Get orders —/ })
     .click();
   await button('Send').click();
-  await expect(history().first()).toContainText(`GET ${url} — 200`);
+  await showSidebarTab(testApp.window, 'History');
+  await expect(rowName(history().first())).toHaveAccessibleName(
+    containing(`GET ${url} — 200`),
+  );
   await history().first().getByRole('button').click();
   await expect(panel.getByTestId('call-saved-request')).toHaveText(
     'From saved request: Get orders',
   );
 
   // Deleting it leaves the call, which now says its saved request was deleted.
+  await showSidebarTab(testApp.window, 'Saved');
   await saved()
     .filter({ hasText: /^Get orders — / })
     .getByRole('button', { name: 'Delete' })
     .click();
   await expect(saved()).toHaveCount(1);
   await expect(saved().first()).toBeInViewport();
+  await showSidebarTab(testApp.window, 'History');
   await history().first().getByRole('button').click();
   await expect(panel.getByTestId('call-saved-request')).toHaveText(
     'From a deleted saved request',
@@ -162,6 +178,7 @@ test('a send from a saved request deleted after it was opened records no link', 
   await window.getByLabel('URL').fill(`${capture.url}/r2`);
   await window.getByLabel('Saved request name').fill('Soon gone');
   await button('Save').click();
+  await showSidebarTab(testApp.window, 'Saved');
   await saved()
     .filter({ hasText: /^Soon gone — / })
     .getByRole('button', { name: 'Delete' })
@@ -169,7 +186,10 @@ test('a send from a saved request deleted after it was opened records no link', 
   await expect(saved().filter({ hasText: /^Soon gone/ })).toHaveCount(0);
 
   await button('Send').click();
-  await expect(history().first()).toContainText(`GET ${capture.url}/r2 — 200`);
+  await showSidebarTab(testApp.window, 'History');
+  await expect(rowName(history().first())).toHaveAccessibleName(
+    containing(`GET ${capture.url}/r2 — 200`),
+  );
   await history().first().getByRole('button').click();
   await expect(panel.getByTestId('call-request-line')).toContainText('/r2');
   await expect(panel.getByTestId('call-saved-request')).toHaveCount(0);
@@ -184,13 +204,14 @@ test('a saved request with a 17 MiB file sends the same bytes after the file is 
   await button('New').click();
   await window.getByLabel('Method').selectOption('POST');
   await window.getByLabel('URL').fill(`${capture.url}/upload`);
-  await window.getByLabel('Body type').selectOption('multipart');
+  await chooseBodyType(window, 'multipart');
   await button('Add file').click();
   await window.getByLabel('Part name 1').fill('upload');
   await window.getByLabel('Part file 1').setInputFiles(path);
   await expect(window.getByTestId('part-file-1')).toContainText('upload.bin');
   await window.getByLabel('Saved request name').fill('Upload');
   await button('Save').click();
+  await showSidebarTab(testApp.window, 'Saved');
   await expect(saved().filter({ hasText: /^Upload — / })).toHaveCount(1, {
     timeout: 30_000,
   });
@@ -206,9 +227,13 @@ test('a saved request with a 17 MiB file sends the same bytes after the file is 
     timeout: 30_000,
   });
   await button('Send').click();
-  await expect(history().first()).toContainText(`POST ${capture.url}/upload`, {
-    timeout: 30_000,
-  });
+  await showSidebarTab(testApp.window, 'History');
+  await expect(rowName(history().first())).toHaveAccessibleName(
+    containing(`POST ${capture.url}/upload`),
+    {
+      timeout: 30_000,
+    },
+  );
   const received = capture.requests[0]?.body ?? Buffer.alloc(0);
   expect(received.includes(file)).toBe(true);
   expect(errors).toEqual([]);
@@ -222,6 +247,7 @@ test('one saved request goes to whichever environment is chosen, and calls keep 
   const panel = window.getByTestId('call-panel');
   const select = window.getByLabel('Environment', { exact: true });
   const addEnvironment = async (name: string, baseUrl: string) => {
+    await openEnvironments(window);
     await window.getByLabel('New environment name').fill(name);
     await window.getByLabel('New environment base address').fill(baseUrl);
     await button('Add environment').click();
@@ -242,17 +268,21 @@ test('one saved request goes to whichever environment is chosen, and calls keep 
       .getByRole('button', { name: /^Orders/ });
 
   await select.selectOption({ label: `first — ${capture.url}/v1` });
+  await showSidebarTab(window, 'Saved');
   await orders().click();
   await button('Send').click();
-  await expect(history().first()).toContainText(
-    `GET ${capture.url}/v1/orders — 200`,
+  await showSidebarTab(window, 'History');
+  await expect(rowName(history().first())).toHaveAccessibleName(
+    containing(`GET ${capture.url}/v1/orders — 200`),
   );
 
   await select.selectOption({ label: `second — ${other.url}/v2` });
+  await showSidebarTab(window, 'Saved');
   await orders().click();
   await button('Send').click();
-  await expect(history().first()).toContainText(
-    `GET ${other.url}/v2/orders — 200`,
+  await showSidebarTab(window, 'History');
+  await expect(rowName(history().first())).toHaveAccessibleName(
+    containing(`GET ${other.url}/v2/orders — 200`),
   );
   expect(capture.requests.map((q) => q.url)).toEqual(['/v1/orders']);
   expect(other.requests.map((q) => q.url)).toEqual(['/v2/orders']);
@@ -268,8 +298,8 @@ test('one saved request goes to whichever environment is chosen, and calls keep 
 
   // Replay of the first call goes where it went, and keeps both.
   await button('Replay').click();
-  await expect(history().first()).toContainText(
-    `GET ${capture.url}/v1/orders — 200`,
+  await expect(rowName(history().first())).toHaveAccessibleName(
+    containing(`GET ${capture.url}/v1/orders — 200`),
   );
   expect(capture.requests).toHaveLength(2);
   await history().first().getByRole('button').click();
@@ -285,6 +315,7 @@ test('one saved request goes to whichever environment is chosen, and calls keep 
   await panel.getByRole('button', { name: 'Edit', exact: true }).click();
   await expect(window.getByLabel('URL')).toHaveValue('/orders');
   await expect(window.getByTestId('saved-request-link')).toHaveCount(0);
+  await showRequestTab(testApp.window, 'Headers');
   await button('Add header').click();
   await window.getByLabel('Header name 1').fill('X-Edited');
   await window.getByLabel('Header value 1').fill('yes');
@@ -294,12 +325,13 @@ test('one saved request goes to whichever environment is chosen, and calls keep 
     'Editing saved request: Orders edited',
   );
   await button('Send').click();
-  await expect(history().first()).toContainText(
-    `GET ${other.url}/v2/orders — 200`,
+  await expect(rowName(history().first())).toHaveAccessibleName(
+    containing(`GET ${other.url}/v2/orders — 200`),
   );
   expect(other.requests).toHaveLength(2);
 
   // The original saved request is unchanged.
+  await showSidebarTab(window, 'Saved');
   await orders().click();
   await expect(window.getByLabel('URL')).toHaveValue('/orders');
   await expect(window.getByLabel('Header name 1')).toHaveCount(0);
@@ -318,6 +350,7 @@ test('a save that finishes after New leaves the new form unlinked', async () => 
   await save.release();
   await save.restore();
 
+  await showSidebarTab(testApp.window, 'Saved');
   await expect(saved().filter({ hasText: /^CR1 — / })).toHaveCount(1);
   await expect(window.getByTestId('saved-request-link')).toHaveCount(0);
   await expect(window.getByLabel('URL')).toHaveValue('');
@@ -337,6 +370,7 @@ test('Save is unavailable while a save is in flight, so one press makes one save
   await save.restore();
 
   await expect(button('Save')).toBeEnabled();
+  await showSidebarTab(testApp.window, 'Saved');
   await expect(saved().filter({ hasText: /^Double — / })).toHaveCount(1);
 });
 
@@ -347,6 +381,7 @@ test('typing while a saved request opens keeps what was typed', async () => {
   await window.getByLabel('URL').fill(`${capture.url}/cr2`);
   await window.getByLabel('Saved request name').fill('CR2');
   await button('Save').click();
+  await showSidebarTab(testApp.window, 'Saved');
   await expect(saved().filter({ hasText: /^CR2 — / })).toHaveCount(1);
   await button('New').click();
 
@@ -382,7 +417,10 @@ test('a call linked to a saved request the list could not load is not called del
     'list unavailable',
   );
   await button('Send').click();
-  await expect(history().first()).toContainText(`GET ${capture.url}/cr4 — 200`);
+  await showSidebarTab(testApp.window, 'History');
+  await expect(rowName(history().first())).toHaveAccessibleName(
+    containing(`GET ${capture.url}/cr4 — 200`),
+  );
   await history().first().getByRole('button').click();
   await expect(panel.getByTestId('call-saved-request')).toHaveText(
     'From a saved request',
@@ -403,6 +441,7 @@ test('when two opens overlap, the form holds the later saved request', async () 
   await window.getByLabel('URL').fill(`${capture.url}/second`);
   await window.getByLabel('Saved request name').fill('Overlap second');
   await button('Save').click();
+  await showSidebarTab(testApp.window, 'Saved');
   await expect(saved().filter({ hasText: /^Overlap/ })).toHaveCount(2);
 
   const open = await holdFirstAnswer(channels.getSavedRequest);

@@ -6,7 +6,13 @@ import {
   type CaptureServer,
   startCaptureServer,
 } from '../test-support/capture-server';
-import { type TestApp, launchWithTestDatabase } from './support';
+import {
+  launchWithTestDatabase,
+  showRequest,
+  showRequestTab,
+  showSidebarTab,
+  type TestApp,
+} from './support';
 
 let capture: CaptureServer;
 let testApp: TestApp;
@@ -26,8 +32,15 @@ test.afterAll(async () => {
   await capture?.close();
 });
 
+// Each test starts on the request form with History shown (slice 6: the shell keeps one view at a time).
+test.beforeEach(async () => {
+  await showRequest(testApp.window);
+  await showSidebarTab(testApp.window, 'History');
+});
+
 test('edit a past call, export it as curl, and see a refused header explained', async () => {
   const { window } = testApp;
+  await showSidebarTab(window, 'History');
   const history = window.getByTestId('history').getByRole('listitem');
   const button = (name: string) =>
     window.getByRole('button', { name, exact: true });
@@ -39,6 +52,7 @@ test('edit a past call, export it as curl, and see a refused header explained', 
   );
 
   await window.getByLabel('URL').fill(url);
+  await showRequestTab(testApp.window, 'Headers');
   await button('Add header').click();
   await window.getByLabel('Header name 1').fill('X-Zeta');
   await window.getByLabel('Header value 1').fill('original');
@@ -73,6 +87,7 @@ test('edit a past call, export it as curl, and see a refused header explained', 
     'X-Zeta: changed',
   );
 
+  await showRequestTab(window, 'Headers');
   await window.getByLabel('Header value 1').fill('zażółć');
   await button('Send').click();
   await expect(window.getByTestId('result')).toContainText('Not sent');

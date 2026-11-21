@@ -42,6 +42,11 @@ import {
   multipartBoundary,
 } from '../core/multipart';
 import { authorizationOf } from '../core/headers';
+import {
+  type ParsedSpec,
+  groupOperations,
+  parseOpenApi,
+} from '../core/openapi';
 import { composeUrl } from '../core/url';
 import { type BodyInput, buildWireRequest } from '../core/wire';
 import {
@@ -50,6 +55,8 @@ import {
   type FacetOption,
   type SearchQuery,
   type SearchResult,
+  type TemplateSource,
+  type GetTemplateResult,
   type RequestForm,
   type SavedRequestListing,
   type EnvironmentView,
@@ -191,7 +198,13 @@ export function App() {
   const environment = environments.find((e) => e.id === environmentId);
   // The shell (slice 6): which list the sidebar shows, whether the main area shows the request or an opened call, and
   // whether the environments editor is open under the title bar.
-  const [sidebarTab, setSidebarTab] = useState<'saved' | 'history'>('history');
+  const [sidebarTab, setSidebarTab] = useState<
+    'templates' | 'saved' | 'history'
+  >('history');
+  // Slice 10: templates imported from specs, and the import dialog.
+  const [templateSources, setTemplateSources] = useState<TemplateSource[]>([]);
+  const [templatesError, setTemplatesError] = useState<string | null>(null);
+  const [importOpen, setImportOpen] = useState(false);
   const [view, setView] = useState<'workspace' | 'call' | 'results'>(
     'workspace',
   );
@@ -320,6 +333,23 @@ export function App() {
     if (status?.status === 'up') void refreshSaved();
   }, [status?.status, refreshSaved]);
 
+  const refreshTemplates = useCallback(async () => {
+    try {
+      const listed = await pigeon.listTemplates();
+      if (listed.ok) {
+        setTemplateSources(listed.sources);
+        setTemplatesError(null);
+      } else {
+        setTemplatesError(listed.message);
+      }
+    } catch (error) {
+      setTemplatesError(errorText(error));
+    }
+  }, []);
+  useEffect(() => {
+    if (status?.status === 'up') void refreshTemplates();
+  }, [status?.status, refreshTemplates]);
+
   // The send document is inserted in main shortly after Send is pressed; re-fetch while the send
   // is in flight so its row appears as "in flight".
   useEffect(() => {
@@ -410,6 +440,36 @@ export function App() {
     setFormLink(null);
     setSavedName('');
     setForm({ ...loaded, method: loaded.method as Method });
+    setFormCurl(null);
+    showRequest();
+  };
+
+  // A template opens into the form unlinked, as Edit of a call does (roadmap M2 decision).
+  // The latest open or form change wins, as for saved requests (T2.10; code review of openapi-import, 3).
+  const openTemplate = async (id: string) => {
+    endPendingEdit();
+    const thisOpen = ++latestSavedOpen.current;
+    const got = await pigeon.getTemplate(id).catch(
+      (error: unknown): GetTemplateResult => ({
+        ok: false,
+        message: errorText(error),
+      }),
+    );
+    if (thisOpen !== latestSavedOpen.current) return;
+    if (!got.ok || !got.template) {
+      setTemplatesError(
+        got.ok ? 'That template no longer exists' : got.message,
+      );
+      return;
+    }
+    setTemplatesError(null);
+    formIdentity.current += 1;
+    setFormLink(null);
+    setSavedName('');
+    setForm({
+      ...got.template.request,
+      method: got.template.request.method as Method,
+    });
     setFormCurl(null);
     showRequest();
   };
@@ -829,6 +889,16 @@ export function App() {
             <button
               type="button"
               role="tab"
+              id="tab-templates"
+              aria-selected={sidebarTab === 'templates'}
+              aria-controls="panel-templates"
+              onClick={() => setSidebarTab('templates')}
+            >
+              Templates
+            </button>
+            <button
+              type="button"
+              role="tab"
               id="tab-saved"
               aria-selected={sidebarTab === 'saved'}
               aria-controls="panel-saved"
@@ -846,6 +916,20 @@ export function App() {
             >
               History
             </button>
+          </div>
+          <div
+            role="tabpanel"
+            id="panel-templates"
+            aria-labelledby="tab-templates"
+            className="sidebar-panel"
+            hidden={sidebarTab !== 'templates'}
+          >
+            <TemplatesTree
+              sources={templateSources}
+              error={templatesError}
+              onImport={() => setImportOpen(true)}
+              onOpen={(id) => void openTemplate(id)}
+            />
           </div>
           <div
             role="tabpanel"
@@ -1049,6 +1133,16 @@ export function App() {
           </div>
         </main>
       </div>
+      {importOpen ? (
+        <ImportDialog
+          onCancel={() => setImportOpen(false)}
+          onImported={async () => {
+            setImportOpen(false);
+            setSidebarTab('templates');
+            await refreshTemplates();
+          }}
+        />
+      ) : null}
       {deleteToasts.length > 0 ? (
         <div className="toasts">
           {deleteToasts.map((t) => (
@@ -3455,5 +3549,295 @@ function SearchResults({
         as files (over 1 MiB) are not searched.
       </p>
     </section>
+  );
+}
+
+// Slice 10: the Templates tab: source → directory → template, as screen 05's tree.
+function TemplatesTree({
+  sources,
+  error,
+  onImport,
+  onOpen,
+}: {
+  sources: TemplateSource[];
+  error: string | null;
+  onImport: () => void;
+  onOpen: (id: string) => void;
+}) {
+  const total = sources.reduce((n, s) => n + s.templates.length, 0);
+  return (
+    <section className="templates" data-testid="templates-tree">
+      <div className="title-row">
+        <h2>Templates</h2>
+        <span className="count">
+          {total} in {sources.length}{' '}
+          {sources.length === 1 ? 'source' : 'sources'}
+        </span>
+      </div>
+      <div className="templates-actions">
+        <button type="button" onClick={onImport}>
+          Import OpenAPI / WSDL
+        </button>
+      </div>
+      {error ? (
+        <p className="error" role="alert">
+          {error}
+        </p>
+      ) : null}
+      {sources.length === 0 ? (
+        <p className="empty">
+          No templates yet. Import an OpenAPI JSON file to make one per
+          operation.
+        </p>
+      ) : null}
+      <ul className="tree">
+        {sources.map((source) => {
+          const directories = new Map<string, typeof source.templates>();
+          for (const t of source.templates) {
+            const group = directories.get(t.directory);
+            if (group) group.push(t);
+            else directories.set(t.directory, [t]);
+          }
+          return (
+            <li key={source.id}>
+              <details open>
+                <summary>
+                  <span className="source-name">{source.name}</span>
+                  <span className="count">{source.templates.length}</span>
+                </summary>
+                <ul>
+                  {[...directories].map(([directory, templates]) => (
+                    <li key={directory}>
+                      <details open>
+                        <summary>
+                          <span>{directory}</span>
+                          <span className="count">{templates.length}</span>
+                        </summary>
+                        <ul>
+                          {templates.map((t) => (
+                            <li key={t.id}>
+                              <button
+                                type="button"
+                                className="template-row"
+                                aria-label={`${t.method} ${t.path} — ${t.name}`}
+                                onClick={() => onOpen(t.id)}
+                              >
+                                <MethodBadge method={t.method} />
+                                <span className="path">{t.path}</span>
+                              </button>
+                            </li>
+                          ))}
+                        </ul>
+                      </details>
+                    </li>
+                  ))}
+                </ul>
+              </details>
+            </li>
+          );
+        })}
+      </ul>
+    </section>
+  );
+}
+
+// Screen 05: choose a spec, preview its directories, and generate one template per operation.
+function ImportDialog({
+  onCancel,
+  onImported,
+}: {
+  onCancel: () => void;
+  onImported: () => Promise<void>;
+}) {
+  const [file, setFile] = useState<{
+    name: string;
+    text: string;
+    spec: ParsedSpec | null;
+    error: string | null;
+  } | null>(null);
+  const [grouping, setGrouping] = useState<'tag' | 'path'>('tag');
+  const [useEnvironment, setUseEnvironment] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [importError, setImportError] = useState<string | null>(null);
+  const groups = file?.spec
+    ? groupOperations(file.spec.operations, grouping)
+    : null;
+  const count = file?.spec?.operations.length ?? 0;
+
+  // The latest file picked wins, whichever read finishes last (code review of openapi-import, 6).
+  const latestPick = useRef(0);
+  const choose = async (picked: File | undefined) => {
+    if (!picked) return;
+    const thisPick = ++latestPick.current;
+    setImportError(null);
+    const text = await picked.text().catch(() => null);
+    if (thisPick !== latestPick.current) return;
+    if (text === null) {
+      setFile({
+        name: picked.name,
+        text: '',
+        spec: null,
+        error: 'The file could not be read',
+      });
+      return;
+    }
+    try {
+      setFile({
+        name: picked.name,
+        text,
+        spec: parseOpenApi(text),
+        error: null,
+      });
+    } catch (error) {
+      setFile({ name: picked.name, text, spec: null, error: errorText(error) });
+    }
+  };
+
+  const generate = async () => {
+    if (!file?.spec || busy) return;
+    setBusy(true);
+    const done = await pigeon
+      .importOpenApi({
+        text: file.text,
+        filename: file.name,
+        grouping,
+        useEnvironment,
+      })
+      .catch((error: unknown) => ({
+        ok: false as const,
+        message: errorText(error),
+      }));
+    setBusy(false);
+    if (!done.ok) {
+      setImportError(done.message);
+      return;
+    }
+    await onImported();
+  };
+
+  return (
+    <div className="dialog-backdrop">
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label="Import templates"
+        className="dialog"
+      >
+        <h2>Import templates</h2>
+        <p className="muted">
+          One template per operation, filed into directories. A template is
+          never sent by itself — every send of it is kept in History.
+        </p>
+        <p className="label">Source</p>
+        <div className="segment" role="group" aria-label="Source">
+          <button type="button" aria-pressed="true">
+            OpenAPI JSON
+          </button>
+          <button type="button" aria-pressed="false" disabled title="Slice 12">
+            WSDL
+          </button>
+        </div>
+        <p className="label">File</p>
+        <div className={`file-box${file?.spec ? ' chosen' : ''}`}>
+          <div className="file-info">
+            <span className="mono">{file?.name ?? 'No file chosen'}</span>
+            {file?.spec ? (
+              <span className="muted">
+                OpenAPI {file.spec.openapi} · {file.spec.title}
+                {file.spec.version ? ` v${file.spec.version}` : ''} · {count}{' '}
+                operations
+                {file.spec.servers[0]
+                  ? ` · servers: ${file.spec.servers[0]}`
+                  : ''}
+              </span>
+            ) : null}
+            {file?.error ? (
+              <span className="error" role="alert">
+                {file.error}
+              </span>
+            ) : null}
+          </div>
+          <label className="file-button">
+            Choose file…
+            <input
+              type="file"
+              aria-label="Spec file"
+              accept=".json,application/json"
+              onChange={(e) => void choose(e.target.files?.[0])}
+            />
+          </label>
+        </div>
+        <p className="label">Group into directories by</p>
+        <div
+          className="segment"
+          role="group"
+          aria-label="Group into directories by"
+        >
+          <button
+            type="button"
+            aria-pressed={grouping === 'tag'}
+            onClick={() => setGrouping('tag')}
+          >
+            Tag
+          </button>
+          <button
+            type="button"
+            aria-pressed={grouping === 'path'}
+            onClick={() => setGrouping('path')}
+          >
+            Path segment
+          </button>
+        </div>
+        <label className="checkbox-row">
+          <input
+            type="checkbox"
+            checked={useEnvironment}
+            onChange={(e) => setUseEnvironment(e.target.checked)}
+          />
+          Use the active environment's baseUrl instead of the spec's server URL
+        </label>
+        {groups ? (
+          <>
+            <p className="label">
+              Preview — {count} templates in {groups.size} directories
+            </p>
+            <div className="import-preview" data-testid="import-preview">
+              {[...groups].map(([directory, ops]) => (
+                <div key={directory} className="preview-dir">
+                  <span className="mono">
+                    {directory}/ <span className="count">{ops.length}</span>
+                  </span>
+                  <span className="badges">
+                    {ops.map((op, i) => (
+                      <MethodBadge key={i} method={op.method} />
+                    ))}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </>
+        ) : null}
+        {importError ? (
+          <p className="error" role="alert">
+            {importError}
+          </p>
+        ) : null}
+        <div className="dialog-footer">
+          <span className="muted">Importing never touches History.</span>
+          <span className="spacer" />
+          <button type="button" onClick={onCancel}>
+            Cancel
+          </button>
+          <button
+            type="button"
+            className="primary"
+            disabled={!file?.spec || count === 0 || busy}
+            onClick={() => void generate()}
+          >
+            Generate {count} templates
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }

@@ -1,0 +1,121 @@
+// Slice 10 (openapi-import): screen 05. An OpenAPI JSON file is previewed by tag or path segment, generated into the
+// Templates tab's tree, and a template opens into the form and sends to the active environment's baseUrl.
+import { expect, test } from '@playwright/test';
+import {
+  type CaptureServer,
+  startCaptureServer,
+} from '../test-support/capture-server';
+import {
+  type TestApp,
+  launchWithTestDatabase,
+  openEnvironments,
+  rowName,
+  showRequest,
+  showSidebarTab,
+} from './support';
+
+let capture: CaptureServer;
+let testApp: TestApp;
+
+const spec = {
+  openapi: '3.1.0',
+  info: { title: 'Orders API', version: '2.4' },
+  servers: [{ url: 'https://staging.api' }],
+  paths: {
+    '/orders': {
+      get: { tags: ['orders'], summary: 'List orders' },
+      post: {
+        tags: ['orders'],
+        requestBody: {
+          content: { 'application/json': { example: { sku: 'PGN-01' } } },
+        },
+      },
+    },
+    '/orders/{id}': { delete: { tags: ['orders'] } },
+    '/customers': { get: { tags: ['customers'] } },
+  },
+};
+
+test.beforeAll(async () => {
+  capture = await startCaptureServer();
+  testApp = await launchWithTestDatabase();
+  await expect(testApp.window.getByTestId('db-status')).toContainText(
+    `up (${testApp.database})`,
+    { timeout: 15_000 },
+  );
+});
+
+test.afterAll(async () => {
+  await testApp?.close();
+  await capture?.close();
+});
+
+const button = (name: string) =>
+  testApp.window.getByRole('button', { name, exact: true });
+const dialog = () =>
+  testApp.window.getByRole('dialog', { name: 'Import templates' });
+const tree = () => testApp.window.getByTestId('templates-tree');
+
+test('a spec is previewed by tag or path segment, and Generate files it into the Templates tree', async () => {
+  const { window } = testApp;
+  await window.getByRole('tab', { name: 'Templates', exact: true }).click();
+  await button('Import OpenAPI / WSDL').click();
+  await dialog()
+    .getByLabel('Spec file')
+    .setInputFiles({
+      name: 'orders-api.json',
+      mimeType: 'application/json',
+      buffer: Buffer.from(JSON.stringify(spec)),
+    });
+  await expect(dialog()).toContainText(
+    'OpenAPI 3.1.0 · Orders API v2.4 · 4 operations',
+  );
+  const preview = dialog().getByTestId('import-preview');
+  await expect(preview).toContainText('orders/ 3');
+  await expect(preview).toContainText('customers/ 1');
+
+  await dialog().getByRole('button', { name: 'Path segment' }).click();
+  await expect(preview).toContainText('orders/ 3');
+  await dialog().getByRole('button', { name: 'Tag' }).click();
+
+  await dialog().getByRole('button', { name: 'Generate 4 templates' }).click();
+  await expect(dialog()).toBeHidden();
+  await expect(tree()).toContainText('Orders API');
+  await expect(
+    tree().getByRole('button', { name: /^GET \/orders\b/ }),
+  ).toBeVisible();
+  await expect(
+    tree().getByRole('button', { name: /^DELETE \/orders\/\{id\}/ }),
+  ).toBeVisible();
+});
+
+test('a template opens into the form and sends to the active environment', async () => {
+  const { window } = testApp;
+  await openEnvironments(window);
+  await window.getByLabel('New environment name').fill('capture');
+  await window.getByLabel('New environment base address').fill(capture.url);
+  await button('Add environment').click();
+  await button('Environments').click();
+  await window
+    .getByLabel('Environment', { exact: true })
+    .selectOption({ label: `capture — ${capture.url}/` });
+
+  await window.getByRole('tab', { name: 'Templates', exact: true }).click();
+  await tree()
+    .getByRole('button', { name: /^POST \/orders\b/ })
+    .click();
+  await expect(window.getByLabel('Method')).toHaveValue('POST');
+  await expect(window.getByLabel('URL')).toHaveValue('/orders');
+  await expect(window.getByLabel('Body text')).toHaveValue(
+    '{\n  "sku": "PGN-01"\n}',
+  );
+  capture.respondWith({ status: 201, body: Buffer.from('made') });
+  await button('Send').click();
+  await expect(window.getByTestId('result')).toContainText('201');
+  expect(capture.requests.at(-1)?.url).toBe('/orders');
+  await showRequest(window);
+  await showSidebarTab(window, 'History');
+  await expect(
+    rowName(window.getByTestId('history').getByRole('listitem').first()),
+  ).toHaveAccessibleName(new RegExp(`^POST ${capture.url}/orders — 201`));
+});

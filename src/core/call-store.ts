@@ -5,6 +5,7 @@
 import { type Db, type Filter, ObjectId } from 'mongodb';
 import { z } from 'zod';
 import { createBodyStore } from './body-store';
+import { authorizationOf } from './headers';
 import {
   type CompletionDoc,
   CompletionDocSchema,
@@ -104,6 +105,131 @@ export function createCallStore(db: Db) {
         inFlight,
         false,
       ),
+
+    /**
+     * Slice 9: search over every call. Filters combine across facets (AND) and within one (OR); text matches the URL,
+     * request header values and inline bodies, ignoring case (bodies stored as files are not searched). Each facet
+     * option counts the calls that match every other active filter. Newest first, at most SEARCH_LIMIT calls.
+     */
+    searchCalls: async (
+      query: SearchQuery,
+      inFlight: ReadonlySet<string>,
+    ): Promise<SearchResult> => {
+      const all = await list({}, 0, inFlight, false);
+      const readable = all.filter(
+        (c): c is Exclude<Call, { state: 'unreadable' }> =>
+          c.state !== 'unreadable',
+      );
+      const facts = readable.map((call) => factsOf(call));
+      const text = query.text?.trim().toLowerCase() ?? '';
+      let textHits: ReadonlySet<string> | null = null;
+      if (text !== '') {
+        const hits = new Set<string>();
+        for (const f of facts) {
+          if (
+            f.url.toLowerCase().includes(text) ||
+            f.headerValues.some((v) => v.toLowerCase().includes(text))
+          ) {
+            hits.add(f.id);
+          }
+        }
+        const rest = facts.map((f) => f.id).filter((id) => !hits.has(id));
+        const decoder = new TextDecoder();
+        const bodyHit = (body: unknown) =>
+          body instanceof Uint8Array &&
+          decoder.decode(body).toLowerCase().includes(text);
+        for await (const doc of sends.find(
+          { _id: { $in: rest }, 'request.body': { $type: 'binData' } },
+          { projection: { 'request.body': 1 }, promoteBuffers: true },
+        )) {
+          if (bodyHit(doc.request.body)) hits.add(String(doc._id));
+        }
+        for await (const doc of completions.find(
+          { sendId: { $in: rest }, 'response.body': { $type: 'binData' } },
+          {
+            projection: { sendId: 1, 'response.body': 1 },
+            promoteBuffers: true,
+          },
+        )) {
+          if (
+            bodyHit((doc as { response?: { body?: unknown } }).response?.body)
+          ) {
+            hits.add(String(doc.sendId));
+          }
+        }
+        textHits = hits;
+      }
+      const from = query.from ? new Date(query.from).getTime() : null;
+      const to = query.to ? new Date(query.to).getTime() : null;
+      const within = (selected: string[] | undefined, value: string) =>
+        !selected || selected.length === 0 || selected.includes(value);
+      const matches = (f: CallFacts, except?: FacetName) =>
+        (except === 'method' || within(query.methods, f.method)) &&
+        (except === 'environment' ||
+          within(query.environmentIds, f.environmentId)) &&
+        (except === 'auth' || within(query.auths, f.auth)) &&
+        (except === 'savedRequest' ||
+          within(query.savedRequestIds, f.savedRequestId)) &&
+        (from === null || f.sentAt >= from) &&
+        (to === null || f.sentAt <= to) &&
+        (textHits === null || textHits.has(f.id));
+
+      const facet = (
+        name: FacetName,
+        valueOf: (f: CallFacts) => string,
+        labelOf: (f: CallFacts) => { label: string; detail?: string },
+      ): FacetOption[] => {
+        const options = new Map<string, FacetOption>();
+        for (const f of facts) {
+          const value = valueOf(f);
+          if (!options.has(value)) {
+            options.set(value, { value, ...labelOf(f), count: 0 });
+          }
+          if (matches(f, name)) {
+            const option = options.get(value) as FacetOption;
+            option.count += 1;
+          }
+        }
+        return [...options.values()];
+      };
+
+      const matched = readable.filter((_call, index) =>
+        matches(facts[index] as CallFacts),
+      );
+      return {
+        calls: matched.slice(0, SEARCH_LIMIT),
+        total: matched.length,
+        of: all.length,
+        facets: {
+          method: facet(
+            'method',
+            (f) => f.method,
+            (f) => ({ label: f.method }),
+          ),
+          environment: facet(
+            'environment',
+            (f) => f.environmentId,
+            (f) =>
+              f.environmentId === ''
+                ? { label: 'No environment' }
+                : { label: f.environmentName, detail: f.environmentBaseUrl },
+          ),
+          auth: facet(
+            'auth',
+            (f) => f.auth,
+            (f) => ({ label: f.auth === '' ? 'No auth header' : f.auth }),
+          ),
+          savedRequest: facet(
+            'savedRequest',
+            (f) => f.savedRequestId,
+            (f) => ({
+              label:
+                f.savedRequestId === '' ? 'No saved request' : f.savedRequestId,
+            }),
+          ),
+        },
+      };
+    },
 
     /**
      * Deletes one call for good (slice 8): its send, its completions and every body file they refer to. Nothing else is
@@ -206,6 +332,64 @@ export function createCallStore(db: Db) {
 }
 
 const RESPONSES_LIMIT = 500;
+const SEARCH_LIMIT = 500;
+
+/** Slice 9: what the History search filters on. `""` in a list means "none" (no environment, no header, …). */
+export interface SearchQuery {
+  text?: string;
+  methods?: string[];
+  environmentIds?: string[];
+  auths?: string[];
+  savedRequestIds?: string[];
+  /** ISO date-times, inclusive. */
+  from?: string;
+  to?: string;
+}
+
+type FacetName = 'method' | 'environment' | 'auth' | 'savedRequest';
+
+export interface FacetOption {
+  value: string;
+  label: string;
+  detail?: string;
+  count: number;
+}
+
+export interface SearchResult {
+  calls: Call[];
+  total: number;
+  of: number;
+  facets: Record<FacetName, FacetOption[]>;
+}
+
+interface CallFacts {
+  id: string;
+  method: string;
+  url: string;
+  headerValues: string[];
+  environmentId: string;
+  environmentName: string;
+  environmentBaseUrl: string;
+  auth: string;
+  savedRequestId: string;
+  sentAt: number;
+}
+
+function factsOf(call: Exclude<Call, { state: 'unreadable' }>): CallFacts {
+  const { send } = call;
+  return {
+    id: send._id,
+    method: send.request.method,
+    url: send.request.url,
+    headerValues: send.request.headers.map(([, value]) => value),
+    environmentId: send.environment?.id ?? '',
+    environmentName: send.environment?.name ?? '',
+    environmentBaseUrl: send.environment?.baseUrl ?? '',
+    auth: authorizationOf(send.request.headers) ?? '',
+    savedRequestId: send.savedRequestId ?? '',
+    sentAt: send.sentAt.getTime(),
+  };
+}
 
 const isStoredFile = (body: unknown): body is { fileId: string } =>
   typeof body === 'object' &&

@@ -41,11 +41,15 @@ import {
   createPartScanner,
   multipartBoundary,
 } from '../core/multipart';
+import { authorizationOf } from '../core/headers';
 import { composeUrl } from '../core/url';
 import { type BodyInput, buildWireRequest } from '../core/wire';
 import {
   BODY_PAGE_BYTES,
   type MutationResult,
+  type FacetOption,
+  type SearchQuery,
+  type SearchResult,
   type RequestForm,
   type SavedRequestListing,
   type EnvironmentView,
@@ -188,7 +192,28 @@ export function App() {
   // The shell (slice 6): which list the sidebar shows, whether the main area shows the request or an opened call, and
   // whether the environments editor is open under the title bar.
   const [sidebarTab, setSidebarTab] = useState<'saved' | 'history'>('history');
-  const [view, setView] = useState<'workspace' | 'call'>('workspace');
+  const [view, setView] = useState<'workspace' | 'call' | 'results'>(
+    'workspace',
+  );
+  // Where "Back" goes from an opened call: the request, or the search results it was opened from (slice 9).
+  const [callReturn, setCallReturn] = useState<'workspace' | 'results'>(
+    'workspace',
+  );
+  // Slice 9: History search. Active while the filters are open or any text or filter is set.
+  const [searchText, setSearchText] = useState('');
+  const [filters, setFilters] = useState<Filters>(NO_FILTERS);
+  const [filtersOpen, setFiltersOpen] = useState(false);
+  const [searchResult, setSearchResult] = useState<SearchResult | null>(null);
+  const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
+  // Bumped when a delete or a resend lands, so lists that History's newest rows do not change are fetched again (code
+  // review of history-search, 1).
+  const [dataVersion, setDataVersion] = useState(0);
+  const [resendState, setResendState] = useState<{
+    busy: boolean;
+    error: string | null;
+  }>({ busy: false, error: null });
+  const searchActive =
+    filtersOpen || searchText.trim() !== '' || hasFilters(filters);
   const [environmentsOpen, setEnvironmentsOpen] = useState(false);
   const choiceSaves = useRef<Promise<void>>(Promise.resolve());
   const [savedRequests, setSavedRequests] = useState<SavedRequestListing[]>([]);
@@ -472,6 +497,10 @@ export function App() {
   const openCall = async (sendId: string) => {
     const thisOpen = ++latestOpen.current;
     endPendingEdit();
+    // From the call view the way back stays as it was (code review of history-search, 3).
+    if (view !== 'call') {
+      setCallReturn(view === 'results' ? 'results' : 'workspace');
+    }
     setView('call');
     setOpenedCurl(null);
     setEditError(null);
@@ -526,7 +555,7 @@ export function App() {
   const shownHistory = history.filter(notHeld);
 
   // The strips refresh when History changes: a send, a replay or a completion lands there first (slice 7).
-  const historyMark = `${history.length}:${history[0]?.state === 'unreadable' ? history[0].id : (history[0]?.send._id ?? '')}:${history.filter((c) => c.state === 'in-flight').length}`;
+  const historyMark = `${dataVersion}:${history.length}:${history[0]?.state === 'unreadable' ? history[0].id : (history[0]?.send._id ?? '')}:${history.filter((c) => c.state === 'in-flight').length}`;
   const resultKey = result?.ok
     ? requestKeyOf(result.send.request.method, result.send.request.url)
     : null;
@@ -565,7 +594,8 @@ export function App() {
     ]);
     if (opened?.send._id === sendId) {
       setOpened(null);
-      setView('workspace');
+      // Only the call view leaves; the results stay (code review of history-search, 2).
+      if (view === 'call') setView(callReturn);
     }
     if (pickedFor?.sendId === sendId) setPickedFor(null);
     const timer = window.setTimeout(() => {
@@ -588,6 +618,7 @@ export function App() {
           return;
         }
         await refreshHistory();
+        setDataVersion((v) => v + 1);
         unhold(sendId);
       })();
     }, UNDO_WINDOW_MS);
@@ -600,6 +631,80 @@ export function App() {
     holdTimers.current.delete(sendId);
     unhold(sendId);
     dropToast(sendId);
+  };
+
+  // Slice 9: the search runs 250 ms after the last change, and again whenever History changes.
+  const searchKey = JSON.stringify([searchText.trim(), filters]);
+  useEffect(() => {
+    if (!searchActive) {
+      setSearchResult(null);
+      setSelected(new Set());
+      return;
+    }
+    let active = true;
+    const timer = window.setTimeout(() => {
+      pigeon
+        .searchCalls(queryOf(searchText, filters))
+        .then((found) => {
+          if (active) setSearchResult(found);
+        })
+        .catch((error: unknown) => {
+          if (active) setSearchResult({ ok: false, message: errorText(error) });
+        });
+    }, 250);
+    return () => {
+      active = false;
+      window.clearTimeout(timer);
+    };
+  }, [searchActive, searchKey, historyMark]);
+  // Turning the search on shows its results; turning it off returns to the request.
+  useEffect(() => {
+    if (searchActive) {
+      setView((current) => (current === 'workspace' ? 'results' : current));
+    } else {
+      setView((current) => (current === 'results' ? 'workspace' : current));
+      setCallReturn('workspace');
+    }
+  }, [searchActive]);
+  const clearSearch = () => {
+    setSearchText('');
+    setFilters(NO_FILTERS);
+    setFiltersOpen(false);
+    setSelected(new Set());
+  };
+  // Resend is a replay: each creates a new record, one after the other (slice 9).
+  const resendCalls = async (sendIds: string[]) => {
+    if (resendState.busy) return;
+    setResendState({ busy: true, error: null });
+    const failures: string[] = [];
+    for (const sendId of sendIds) {
+      try {
+        const done = await pigeon.replay({
+          clientRequestId: crypto.randomUUID(),
+          sendId,
+        });
+        if (!done.ok) failures.push(done.error.message);
+      } catch (error) {
+        failures.push(errorText(error));
+      }
+    }
+    setSelected(new Set());
+    setResendState({
+      busy: false,
+      error:
+        failures.length === 0
+          ? null
+          : `${failures.length} of ${sendIds.length} could not be resent: ${failures[0]}`,
+    });
+    await refreshHistory();
+    setDataVersion((v) => v + 1);
+  };
+
+  const editFromResults = async (sendId: string) => {
+    const got = await pigeon.getCall(sendId).catch(() => null);
+    if (got?.ok && got.call && got.call.state !== 'unreadable') {
+      await editCall(got.call.send);
+    }
   };
 
   // Picking a response loads its completion; the latest is the result itself.
@@ -762,12 +867,38 @@ export function App() {
             className="sidebar-panel"
             hidden={sidebarTab !== 'history'}
           >
-            <HistoryList
-              calls={shownHistory}
-              error={historyError}
-              onOpen={(sendId) => void openCall(sendId)}
-              onDelete={deleteLater}
-            />
+            <div className="search-box">
+              <input
+                type="search"
+                aria-label="Search history"
+                placeholder="Search URL, body or header…"
+                value={searchText}
+                onChange={(e) => setSearchText(e.target.value)}
+              />
+              {searchActive ? null : (
+                <button type="button" onClick={() => setFiltersOpen(true)}>
+                  Filters
+                </button>
+              )}
+            </div>
+            {searchActive ? (
+              <SearchFilters
+                filters={filters}
+                facets={searchResult?.ok ? searchResult.facets : null}
+                savedRequests={savedRequests}
+                showResults={view !== 'results'}
+                onChange={setFilters}
+                onShowResults={() => setView('results')}
+                onClear={clearSearch}
+              />
+            ) : (
+              <HistoryList
+                calls={shownHistory}
+                error={historyError}
+                onOpen={(sendId) => void openCall(sendId)}
+                onDelete={deleteLater}
+              />
+            )}
           </div>
         </aside>
         <main className="main">
@@ -845,13 +976,36 @@ export function App() {
               />
             </div>
           </div>
+          {view === 'results' && searchActive ? (
+            <SearchResults
+              result={searchResult}
+              filters={filters}
+              text={searchText}
+              hidden={held}
+              selected={selected}
+              onSelect={setSelected}
+              onOpen={(sendId) => void openCall(sendId)}
+              onResend={(ids) => void resendCalls(ids)}
+              resendBusy={resendState.busy}
+              resendError={resendState.error}
+              onEdit={(sendId) => void editFromResults(sendId)}
+              onDelete={(calls) => {
+                for (const call of calls) deleteLater(call);
+                setSelected(new Set());
+              }}
+              onClear={clearSearch}
+            />
+          ) : null}
           <div className="call-view" hidden={view !== 'call'}>
             <button
               type="button"
               className="back"
-              onClick={() => setView('workspace')}
+              onClick={() => setView(callReturn)}
             >
-              <span aria-hidden="true">←</span> Back to the request
+              <span aria-hidden="true">←</span>{' '}
+              {callReturn === 'results'
+                ? 'Back to the results'
+                : 'Back to the request'}
             </button>
             <div ref={openedRegion}>
               {openError ? (
@@ -1771,7 +1925,11 @@ function CallPanel({
     call.completion && 'response' in call.completion
       ? call.completion.response
       : null;
-  const auth = headers.find(([n]) => n.toLowerCase() === 'authorization');
+  const authValue = authorizationOf(headers);
+  const auth =
+    authValue === undefined
+      ? undefined
+      : (['authorization', authValue] as const);
   return (
     <section
       data-testid="call-panel"
@@ -2878,4 +3036,424 @@ function outcome(call: Exclude<CallView, { state: 'unreadable' }>): string {
   return 'error' in call.completion
     ? call.completion.error.code
     : String(call.completion.response.status);
+}
+
+// Slice 9: the History search's filters. `""` in a list means "none".
+interface Filters {
+  methods: string[];
+  environmentIds: string[];
+  auths: string[];
+  savedRequestIds: string[];
+  /** yyyy-mm-dd from the date inputs, or ''. */
+  from: string;
+  to: string;
+}
+
+const NO_FILTERS: Filters = {
+  methods: [],
+  environmentIds: [],
+  auths: [],
+  savedRequestIds: [],
+  from: '',
+  to: '',
+};
+
+const hasFilters = (f: Filters) =>
+  f.methods.length > 0 ||
+  f.environmentIds.length > 0 ||
+  f.auths.length > 0 ||
+  f.savedRequestIds.length > 0 ||
+  f.from !== '' ||
+  f.to !== '';
+
+function queryOf(text: string, f: Filters): SearchQuery {
+  return {
+    ...(text.trim() === '' ? {} : { text: text.trim() }),
+    ...(f.methods.length ? { methods: f.methods as Method[] } : {}),
+    ...(f.environmentIds.length ? { environmentIds: f.environmentIds } : {}),
+    ...(f.auths.length ? { auths: f.auths } : {}),
+    ...(f.savedRequestIds.length ? { savedRequestIds: f.savedRequestIds } : {}),
+    // Whole local days, inclusive.
+    // A date the input holds but Date cannot represent is left out (code review of history-search, 7).
+    ...isoOrNothing('from', `${f.from}T00:00:00`, f.from),
+    ...isoOrNothing('to', `${f.to}T23:59:59.999`, f.to),
+  };
+}
+
+function isoOrNothing(
+  key: 'from' | 'to',
+  local: string,
+  raw: string,
+): Partial<Record<'from' | 'to', string>> {
+  if (!raw) return {};
+  const date = new Date(local);
+  return Number.isNaN(date.getTime()) ? {} : { [key]: date.toISOString() };
+}
+
+type FacetKey = 'methods' | 'environmentIds' | 'auths' | 'savedRequestIds';
+
+// A long header value shown as its start and end.
+const shortAuth = (value: string) =>
+  value.length > 22 ? `${value.slice(0, 10)}…${value.slice(-4)}` : value;
+
+function SearchFilters({
+  filters,
+  facets,
+  savedRequests,
+  showResults,
+  onChange,
+  onShowResults,
+  onClear,
+}: {
+  filters: Filters;
+  facets: Extract<SearchResult, { ok: true }>['facets'] | null;
+  savedRequests: SavedRequestListing[];
+  showResults: boolean;
+  onChange: (filters: Filters) => void;
+  onShowResults: () => void;
+  onClear: () => void;
+}) {
+  const toggle = (key: FacetKey, value: string, on: boolean) =>
+    onChange({
+      ...filters,
+      [key]: on
+        ? [...filters[key], value]
+        : filters[key].filter((v) => v !== value),
+    });
+  const savedName = (id: string) =>
+    savedRequests.find((s) => s.id === id)?.name ?? 'Deleted saved request';
+  const section = (
+    title: string,
+    key: FacetKey,
+    options: FacetOption[] | undefined,
+    label: (o: FacetOption) => ReactNode,
+  ) => (
+    <fieldset className="facet">
+      <legend>{title}</legend>
+      <div role="group" aria-label={title}>
+        {(options ?? [])
+          .filter((o) => o.count > 0 || filters[key].includes(o.value))
+          .map((o) => (
+            <label key={o.value} className="facet-option">
+              <input
+                type="checkbox"
+                checked={filters[key].includes(o.value)}
+                onChange={(e) => toggle(key, o.value, e.target.checked)}
+              />
+              <span className="facet-label">{label(o)}</span>
+              <span className="count">{o.count}</span>
+            </label>
+          ))}
+      </div>
+    </fieldset>
+  );
+  const chips: { key: FacetKey; value: string; text: string }[] = [
+    ...filters.methods.map((v) => ({
+      key: 'methods' as const,
+      value: v,
+      text: `Method ${v}`,
+    })),
+    ...filters.environmentIds.map((v) => ({
+      key: 'environmentIds' as const,
+      value: v,
+      text: `Env ${facets?.environment.find((o) => o.value === v)?.label ?? v}`,
+    })),
+    ...filters.auths.map((v) => ({
+      key: 'auths' as const,
+      value: v,
+      text: `Auth ${v === '' ? 'none' : shortAuth(v)}`,
+    })),
+    ...filters.savedRequestIds.map((v) => ({
+      key: 'savedRequestIds' as const,
+      value: v,
+      text: `Saved ${v === '' ? 'none' : savedName(v)}`,
+    })),
+  ];
+  return (
+    <section className="search-filters">
+      <div className="filter-chips">
+        {chips.map((c) => (
+          <span key={`${c.key}:${c.value}`} className="filter-chip">
+            {c.text}
+            <button
+              type="button"
+              aria-label={`Remove ${c.text}`}
+              onClick={() => toggle(c.key, c.value, false)}
+            >
+              ×
+            </button>
+          </span>
+        ))}
+        <span className="spacer" />
+        <button type="button" className="link" onClick={onClear}>
+          Clear all
+        </button>
+      </div>
+      {showResults ? (
+        <button type="button" onClick={onShowResults}>
+          Show results
+        </button>
+      ) : null}
+      {section('Method', 'methods', facets?.method, (o) => (
+        <MethodBadge method={o.value} />
+      ))}
+      {section(
+        'Environment',
+        'environmentIds',
+        facets?.environment,
+        (o) => o.label,
+      )}
+      {section('Auth header', 'auths', facets?.auth, (o) => (
+        <span className={o.value === '' ? undefined : 'mono'} title={o.value}>
+          {o.value === '' ? 'No auth header' : shortAuth(o.value)}
+        </span>
+      ))}
+      {section('Saved request', 'savedRequestIds', facets?.savedRequest, (o) =>
+        o.value === '' ? 'No saved request' : savedName(o.value),
+      )}
+      <fieldset className="facet">
+        <legend>Sent</legend>
+        <div className="date-range">
+          <label>
+            From
+            <input
+              type="date"
+              value={filters.from}
+              onChange={(e) => onChange({ ...filters, from: e.target.value })}
+            />
+          </label>
+          <label>
+            To
+            <input
+              type="date"
+              value={filters.to}
+              onChange={(e) => onChange({ ...filters, to: e.target.value })}
+            />
+          </label>
+        </div>
+      </fieldset>
+    </section>
+  );
+}
+
+// Screen 04: the calls that match, as a table; resend or delete one or a selection.
+function SearchResults({
+  result,
+  filters,
+  text,
+  hidden,
+  selected,
+  onSelect,
+  onOpen,
+  onResend,
+  resendBusy,
+  resendError,
+  onEdit,
+  onDelete,
+  onClear,
+}: {
+  result: SearchResult | null;
+  filters: Filters;
+  text: string;
+  hidden: ReadonlySet<string>;
+  selected: ReadonlySet<string>;
+  onSelect: (ids: ReadonlySet<string>) => void;
+  onOpen: (sendId: string) => void;
+  onResend: (sendIds: string[]) => void;
+  resendBusy: boolean;
+  resendError: string | null;
+  onEdit: (sendId: string) => void;
+  onDelete: (calls: ReadableCall[]) => void;
+  onClear: () => void;
+}) {
+  const calls = (result?.ok ? result.calls : []).filter(
+    (c): c is ReadableCall =>
+      c.state !== 'unreadable' && !hidden.has(c.send._id),
+  );
+  // In-flight calls cannot be resent or deleted, as their row buttons say (code review of history-search, 4).
+  const chosen = calls.filter(
+    (c) => selected.has(c.send._id) && c.state !== 'in-flight',
+  );
+  const facetLabel = (
+    key: 'environment' | 'auth' | 'savedRequest',
+    value: string,
+  ) =>
+    (result?.ok
+      ? result.facets[key].find((o) => o.value === value)?.label
+      : undefined) ?? value;
+  const summary = [
+    filters.methods.join(' or '),
+    filters.environmentIds
+      .map((v) => facetLabel('environment', v))
+      .join(' or '),
+    filters.auths
+      .map((v) =>
+        v === '' ? 'no Authorization' : `Authorization: ${shortAuth(v)}`,
+      )
+      .join(' or '),
+    filters.savedRequestIds.length
+      ? `${filters.savedRequestIds.length} saved request(s)`
+      : '',
+    filters.from || filters.to
+      ? `sent ${filters.from || '…'} – ${filters.to || '…'}`
+      : '',
+    text.trim() ? `contains “${text.trim()}”` : '',
+  ]
+    .filter(Boolean)
+    .join(' · ');
+  const toggle = (id: string, on: boolean) => {
+    const next = new Set(selected);
+    if (on) next.add(id);
+    else next.delete(id);
+    onSelect(next);
+  };
+  const heldCount = result?.ok
+    ? result.calls.filter(
+        (c) => c.state !== 'unreadable' && hidden.has(c.send._id),
+      ).length
+    : 0;
+  return (
+    <section data-testid="search-results" className="search-results">
+      <div className="results-head">
+        <div>
+          <h2>
+            {!result
+              ? 'Searching…'
+              : !result.ok
+                ? 'The search failed'
+                : calls.length === 0
+                  ? 'No calls match'
+                  : `${result.total - heldCount} ${result.total - heldCount === 1 ? 'call matches' : 'calls match'}`}
+          </h2>
+          <p className="summary">
+            {result && !result.ok ? (
+              <span className="error">{result.message}</span>
+            ) : (
+              summary
+            )}
+            {resendError ? (
+              <span className="error" role="alert">
+                {' '}
+                {resendError}
+              </span>
+            ) : null}
+          </p>
+        </div>
+        <span className="spacer" />
+        {chosen.length > 0 ? (
+          <>
+            <span className="muted">{chosen.length} selected</span>
+            <button
+              type="button"
+              className="secondary"
+              disabled={resendBusy}
+              onClick={() => onResend(chosen.map((c) => c.send._id))}
+            >
+              Resend {chosen.length}
+            </button>
+            <button
+              type="button"
+              className="secondary danger"
+              onClick={() => onDelete(chosen)}
+            >
+              Delete {chosen.length}
+            </button>
+          </>
+        ) : null}
+      </div>
+      {result?.ok && calls.length === 0 ? (
+        <div className="empty">
+          <p>Nothing in History matches these filters.</p>
+          <button type="button" onClick={onClear}>
+            Clear filters
+          </button>
+        </div>
+      ) : (
+        <div className="results-scroll">
+          <table className="results-table">
+            <thead>
+              <tr>
+                <th aria-label="Selected" />
+                <th>Method</th>
+                <th>URL</th>
+                <th>Environment</th>
+                <th>Auth header</th>
+                <th>Status</th>
+                <th>Duration</th>
+                <th>Sent</th>
+                <th aria-label="Actions" />
+              </tr>
+            </thead>
+            <tbody>
+              {calls.map((call) => {
+                const { method, url, headers } = call.send.request;
+                const auth = authorizationOf(headers);
+                const id = call.send._id;
+                return (
+                  <tr
+                    key={id}
+                    className={selected.has(id) ? 'selected' : undefined}
+                  >
+                    <td>
+                      <input
+                        type="checkbox"
+                        aria-label={`Select ${method} ${url}`}
+                        checked={selected.has(id)}
+                        onChange={(e) => toggle(id, e.target.checked)}
+                      />
+                    </td>
+                    <td>
+                      <MethodBadge method={method} />
+                    </td>
+                    <td className="url-cell">
+                      <button
+                        type="button"
+                        className="link"
+                        onClick={() => onOpen(id)}
+                      >
+                        <span className="faint">{hostOf(url)}</span>
+                        {pathOf(url)}
+                      </button>
+                    </td>
+                    <td>{call.send.environment?.name ?? '—'}</td>
+                    <td className="mono">{auth ? shortAuth(auth) : '—'}</td>
+                    <td className={`mono ${outcomeClass(call)}`}>
+                      {codeText(call)}
+                    </td>
+                    <td className="mono faint">{durationText(call)}</td>
+                    <td>{call.send.sentAt.toLocaleString()}</td>
+                    <td className="row-actions">
+                      <button
+                        type="button"
+                        onClick={() => onResend([id])}
+                        disabled={call.state === 'in-flight'}
+                      >
+                        Resend
+                      </button>
+                      <button type="button" onClick={() => onEdit(id)}>
+                        Edit
+                      </button>
+                      <button
+                        type="button"
+                        className="danger"
+                        aria-label={`Delete ${method} ${url}`}
+                        disabled={call.state === 'in-flight'}
+                        onClick={() => onDelete([call])}
+                      >
+                        ×
+                      </button>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+      <p className="note">
+        Resend creates a new call; the original stays untouched. Bodies stored
+        as files (over 1 MiB) are not searched.
+      </p>
+    </section>
+  );
 }

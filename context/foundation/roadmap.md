@@ -88,10 +88,6 @@ was added on 2026-11-11 by the author's decision, ahead of slice 6.
 - Monaco editor arrives in slice 3b, where formatting first needs it; slices 1, 2 and 3a show bodies as plain text.
 - Slice 3 was cut in two, bodies first (author, 2026-11-06). Slice 3b must carry T1.8 and T2.6 from its first phase: it is the first time a body renders as anything but text. It also has to show a body held in a file, which is read a page at a time.
 
-**Carried into later slices** from `archive/responses-strip`:
-- Slice 9: store a normalized `request.path` on each send and index `{request.method, request.path, sentAt}`. This
-  replaces `listResponses`'s `$regex` scan, and with it the second derivation of the request key (code review 5 and 6).
-
 **Carried into later slices** from `archive/request-bodies-and-storage`:
 - ~~Slice 4: recheck undici's headers timer with file bodies, and T1.5 for uploaded files.~~ Done in slice 4 (`send.test.ts`, `large-bodies.int.test.ts`).
 - Slice 8 (was 7): delete must find chunks with no file document and finished files no call refers to (T3.9), and recheck the error when a file is removed during a read.
@@ -216,6 +212,10 @@ Not in the target design. Order is set when the author asks for them.
 - **OAuth2 token flows, cookie jar.**
 - **Proxy, client certificates (mTLS), custom CA** — moves into M1 if assumption A1 (work APIs need no proxy) proves false.
 - **WebSocket, gRPC, SSE.**
+- **Search performance** (from `history-search` code review 6): `searchCalls` loads every send and completion
+  summary on each query. Push the facet and date filters into MongoDB, and load completions only for the calls
+  returned. Together with a stored, indexed `request.path` (from `responses-strip`), this replaces `listResponses`'s
+  `$regex` scan.
 - **Editable request body in the code editor** (from `workspace-shell` review F2): screen 01 shows the request body
   in a numbered editor; the form keeps a textarea. Needs the form's text state to live with an editable Monaco model.
 - **Harden the per-launch token against other software on the same machine** (author decision 2026-11-20, after

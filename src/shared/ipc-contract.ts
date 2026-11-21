@@ -16,6 +16,7 @@ export const channels = {
   listCalls: 'pigeon:list-calls',
   listResponses: 'pigeon:list-responses',
   deleteCall: 'pigeon:delete-call',
+  searchCalls: 'pigeon:search-calls',
   dbStatus: 'pigeon:db-status',
   getCall: 'pigeon:get-call',
   replay: 'pigeon:replay',
@@ -265,6 +266,46 @@ export const ListCallsResultSchema = z.discriminatedUnion('ok', [
 ]);
 export type ListCallsResult = z.infer<typeof ListCallsResultSchema>;
 
+/** Slice 9: the History search. `""` in a list means "none" (no environment, no Authorization header, …). */
+const IdList = z.array(z.string().max(4096)).max(500).optional();
+// Authorization values can be long JWTs (code review of history-search, 8).
+const AuthList = z.array(z.string().max(65536)).max(500).optional();
+export const SearchQuerySchema = z.strictObject({
+  text: z.string().max(1024).optional(),
+  methods: z.array(z.enum(METHODS)).max(METHODS.length).optional(),
+  environmentIds: IdList,
+  auths: AuthList,
+  savedRequestIds: IdList,
+  from: z.iso.datetime().optional(),
+  to: z.iso.datetime().optional(),
+});
+export type SearchQuery = z.infer<typeof SearchQuerySchema>;
+
+const FacetOptionSchema = z.strictObject({
+  value: z.string(),
+  label: z.string(),
+  detail: z.string().optional(),
+  count: z.number().int().nonnegative(),
+});
+export type FacetOption = z.infer<typeof FacetOptionSchema>;
+
+export const SearchResultSchema = z.discriminatedUnion('ok', [
+  z.strictObject({
+    ok: z.literal(true),
+    calls: z.array(CallViewSchema),
+    total: z.number().int().nonnegative(),
+    of: z.number().int().nonnegative(),
+    facets: z.strictObject({
+      method: z.array(FacetOptionSchema),
+      environment: z.array(FacetOptionSchema),
+      auth: z.array(FacetOptionSchema),
+      savedRequest: z.array(FacetOptionSchema),
+    }),
+  }),
+  z.strictObject({ ok: z.literal(false), message: z.string() }),
+]);
+export type SearchResult = z.infer<typeof SearchResultSchema>;
+
 /** One opened call, with the full completion including the response body. */
 export const CallDetailSchema = z.discriminatedUnion('state', [
   z.strictObject({
@@ -329,6 +370,7 @@ export interface PigeonApi {
   listResponses: (input: ListResponsesInput) => Promise<ListCallsResult>;
   /** Deletes one call for good, with its body files (slice 8). The UI holds it for Undo before calling this. */
   deleteCall: (sendId: string) => Promise<MutationResult>;
+  searchCalls: (query: SearchQuery) => Promise<SearchResult>;
   replay: (input: ReplayInput) => Promise<SendResult>;
   readBody: (input: ReadBodyInput) => Promise<ReadBodyResult>;
   describeBody: (input: DescribeBodyInput) => Promise<DescribeBodyResult>;

@@ -58,7 +58,7 @@ test('replaying a past call adds a row and leaves the original as recorded', asy
   await button('Send').click();
   await expect(history).toHaveCount(1);
 
-  await history.first().getByRole('button').click();
+  await history.first().getByRole('button').first().click();
   await expect(panel.getByTestId('call-request-headers')).toContainText(
     'Authorization: Bearer t',
   );
@@ -81,10 +81,10 @@ test('replaying a past call adds a row and leaves the original as recorded', asy
   );
 
   // Opening the replay shows its own response, so the panel is reading what was stored.
-  await history.first().getByRole('button').click();
+  await history.first().getByRole('button').first().click();
   await expectBodyText(panel.getByTestId('response-body'), 'second response');
 
-  await history.nth(1).getByRole('button').click();
+  await history.nth(1).getByRole('button').first().click();
   await expectBodyText(panel.getByTestId('response-body'), 'first response');
   await expect(panel.getByTestId('call-request-line')).toHaveText(
     originalRequest,
@@ -109,7 +109,7 @@ test('opening a call brings its panel into view, even from a long history', asyn
     await expect(history).toHaveCount(before + sent);
   }
 
-  await history.first().getByRole('button').click();
+  await history.first().getByRole('button').first().click();
 
   await expect(
     window.getByTestId('call-panel').getByRole('heading', { name: 'Call' }),

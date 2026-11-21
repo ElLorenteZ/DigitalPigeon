@@ -526,6 +526,36 @@ export function registerIpc({ ipcMain, db, dbStatus }: IpcDeps): void {
     }
   });
 
+  // Slice 8: the UI has already held the call for Undo; this deletes it for good, then sweeps body files no call
+  // refers to that are older than an hour (T3.9). A call still in flight here is refused.
+  ipcMain.handle(
+    channels.deleteCall,
+    async (_event, raw: unknown): Promise<MutationResult> => {
+      const sendId = GetCallInputSchema.safeParse(raw);
+      if (!sendId.success) {
+        return { ok: false, message: z.prettifyError(sendId.error) };
+      }
+      if (inFlightSendIds.has(sendId.data)) {
+        return { ok: false, message: 'A call in flight cannot be deleted' };
+      }
+      const database = db();
+      if (!database || dbStatus().status !== 'up') {
+        return { ok: false, message: 'Database not running' };
+      }
+      try {
+        const store = storeFor(database);
+        const { deleted } = await store.deleteCall(sendId.data);
+        if (!deleted) return { ok: false, message: 'Call not found' };
+        await store
+          .sweepOrphanBodies(new Date(Date.now() - 60 * 60 * 1000))
+          .catch(() => undefined);
+        return { ok: true };
+      } catch (error) {
+        return { ok: false, message: message(error) };
+      }
+    },
+  );
+
   ipcMain.handle(
     channels.listResponses,
     async (_event, raw: unknown): Promise<ListCallsResult> => {

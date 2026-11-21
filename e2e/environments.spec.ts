@@ -117,7 +117,7 @@ test('a path goes to the chosen environment, a switch takes effect at once, and 
   expect(b.requests.map((r) => r.url)).toEqual(['/api/orders?x=1']);
   expect(a.requests).toHaveLength(1);
 
-  await history.nth(1).getByRole('button').click();
+  await history.nth(1).getByRole('button').first().click();
   await expect(panel.getByTestId('call-environment')).toHaveText(
     `Environment: alpha — ${a.url}/api`,
   );
@@ -132,8 +132,8 @@ test('a path goes to the chosen environment, a switch takes effect at once, and 
   await expect(select.getByRole('option')).toContainText([
     `alpha2 — ${a.url}/v2`,
   ]);
-  await history.first().getByRole('button').click();
-  await history.nth(1).getByRole('button').click();
+  await history.first().getByRole('button').first().click();
+  await history.nth(1).getByRole('button').first().click();
   await expect(panel.getByTestId('call-environment')).toHaveText(
     `Environment: alpha — ${a.url}/api`,
   );

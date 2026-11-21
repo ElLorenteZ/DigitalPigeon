@@ -145,6 +145,8 @@ async function exportCurl(
 }
 
 const STATUS_POLL_MS = 2000;
+// The Undo window after a delete, as in the design (author 2026-11-11).
+const UNDO_WINDOW_MS = 8000;
 const HISTORY_POLL_MS = 500;
 // ignoreBOM keeps a byte order mark on screen: dropping one would hide bytes the record holds.
 const textDecoder = () => new TextDecoder('utf-8', { ignoreBOM: true });
@@ -157,6 +159,15 @@ export function App() {
   // A response picked from the strip, tagged with the result it was picked under: a pick never outlives its result
   // (code review of responses-strip, 1 and 4).
   const [pickedFor, setPickedFor] = useState<Picked | null>(null);
+  // Slice 8: calls deleted but still inside their Undo window are held here, hidden everywhere, and only deleted in
+  // the store when their timer ends (author 2026-11-11: "held in the app"). A tab closed inside the window deletes
+  // nothing: the call stays.
+  const [held, setHeld] = useState<ReadonlySet<string>>(new Set());
+  const holdTimers = useRef(new Map<string, number>());
+  const [deleteToast, setDeleteToast] = useState<{
+    sendId: string;
+    error?: string;
+  } | null>(null);
   const [inFlightId, setInFlightId] = useState<string | null>(null);
   const [historyError, setHistoryError] = useState<string | null>(null);
   const [form, setForm] = useState<Form>(EMPTY_FORM);
@@ -508,6 +519,9 @@ export function App() {
   const resultRegion = useRef<HTMLDivElement>(null);
 
   const canSend = status?.status === 'up';
+  const notHeld = (call: CallView) =>
+    call.state === 'unreadable' || !held.has(call.send._id);
+  const shownHistory = history.filter(notHeld);
 
   // The strips refresh when History changes: a send, a replay or a completion lands there first (slice 7).
   const historyMark = `${history.length}:${history[0]?.state === 'unreadable' ? history[0].id : (history[0]?.send._id ?? '')}:${history.filter((c) => c.state === 'in-flight').length}`;
@@ -515,7 +529,7 @@ export function App() {
     ? requestKeyOf(result.send.request.method, result.send.request.url)
     : null;
   const responsesList = useResponses(resultKey, historyMark);
-  const responses = responsesList.calls;
+  const responses = responsesList.calls.filter(notHeld);
   // Again when the responses strip first appears: it loads after the result and pushes the body down (slice 7).
   const hasResponses = responses.length > 0;
   useEffect(() => {
@@ -527,6 +541,53 @@ export function App() {
   const otherList = useResponses(openedKey, historyMark);
   const picked =
     result?.ok && pickedFor?.resultId === result.send._id ? pickedFor : null;
+
+  const unhold = (sendId: string) =>
+    setHeld((current) => {
+      const next = new Set(current);
+      next.delete(sendId);
+      return next;
+    });
+  // Hides the call at once and deletes it in the store after the Undo window (slice 8).
+  const deleteLater = (sendId: string) => {
+    if (holdTimers.current.has(sendId)) return;
+    setHeld((current) => new Set(current).add(sendId));
+    setDeleteToast({ sendId });
+    if (opened?.send._id === sendId) {
+      setOpened(null);
+      setView('workspace');
+    }
+    const timer = window.setTimeout(() => {
+      holdTimers.current.delete(sendId);
+      void (async () => {
+        const done = await pigeon.deleteCall(sendId).catch(
+          (error: unknown): MutationResult => ({
+            ok: false,
+            message: errorText(error),
+          }),
+        );
+        if (!done.ok) {
+          unhold(sendId);
+          setDeleteToast({ sendId, error: done.message });
+          return;
+        }
+        await refreshHistory();
+        unhold(sendId);
+        setDeleteToast((current) =>
+          current?.sendId === sendId ? null : current,
+        );
+      })();
+    }, UNDO_WINDOW_MS);
+    holdTimers.current.set(sendId, timer);
+  };
+  const undoDelete = (sendId: string) => {
+    const timer = holdTimers.current.get(sendId);
+    if (timer === undefined) return;
+    window.clearTimeout(timer);
+    holdTimers.current.delete(sendId);
+    unhold(sendId);
+    setDeleteToast(null);
+  };
 
   // Picking a response loads its completion; the latest is the result itself.
   const latestPick = useRef(0);
@@ -689,9 +750,10 @@ export function App() {
             hidden={sidebarTab !== 'history'}
           >
             <HistoryList
-              calls={history}
+              calls={shownHistory}
               error={historyError}
               onOpen={(sendId) => void openCall(sendId)}
+              onDelete={deleteLater}
             />
           </div>
         </aside>
@@ -762,6 +824,7 @@ export function App() {
                       calls={responses}
                       selectedId={picked?.sendId ?? result.send._id}
                       onPick={(id) => void pickResponse(id)}
+                      onDelete={deleteLater}
                     />
                   ) : null
                 }
@@ -794,8 +857,10 @@ export function App() {
                   otherResponses={otherList.calls.filter(
                     (c): c is ReadableCall =>
                       c.state !== 'unreadable' &&
-                      c.send._id !== opened.send._id,
+                      c.send._id !== opened.send._id &&
+                      !held.has(c.send._id),
                   )}
+                  onDelete={() => deleteLater(opened.send._id)}
                   onOpenResponse={(id) => void openCall(id)}
                   onReplay={() => {
                     showRequest();
@@ -816,6 +881,31 @@ export function App() {
           </div>
         </main>
       </div>
+      {deleteToast ? (
+        <div role="status" aria-label="Deleted" className="toast">
+          {deleteToast.error ? (
+            <>
+              <span className="error">
+                Could not delete the call: {deleteToast.error}
+              </span>
+              <button type="button" onClick={() => setDeleteToast(null)}>
+                Dismiss
+              </button>
+            </>
+          ) : (
+            <>
+              <span>Call deleted</span>
+              <button
+                type="button"
+                className="undo"
+                onClick={() => undoDelete(deleteToast.sendId)}
+              >
+                Undo
+              </button>
+            </>
+          )}
+        </div>
+      ) : null}
       <footer className="status-bar">
         <StatusBar status={status} />
         <span className="note">
@@ -1632,6 +1722,7 @@ function CallPanel({
   savedListLoaded,
   otherResponses,
   onOpenResponse,
+  onDelete,
   onReplay,
   onEdit,
   onCopyCurl,
@@ -1645,6 +1736,7 @@ function CallPanel({
   savedListLoaded: boolean;
   otherResponses: ReadableCall[];
   onOpenResponse: (sendId: string) => void;
+  onDelete: () => void;
   onReplay: () => void;
   onEdit: () => void;
   onCopyCurl: () => void;
@@ -1681,6 +1773,14 @@ function CallPanel({
           </p>
         </div>
         <div className="call-actions">
+          <button
+            type="button"
+            className="secondary danger"
+            onClick={onDelete}
+            disabled={call.state === 'in-flight'}
+          >
+            Delete
+          </button>
           <button type="button" className="secondary" onClick={onCopyCurl}>
             Copy call as curl
           </button>
@@ -1947,10 +2047,12 @@ function ResponsesStrip({
   calls,
   selectedId,
   onPick,
+  onDelete,
 }: {
   calls: CallView[];
   selectedId: string;
   onPick: (sendId: string) => void;
+  onDelete: (sendId: string) => void;
 }) {
   const readable = calls.filter(
     (c): c is ReadableCall => c.state !== 'unreadable',
@@ -1962,12 +2064,21 @@ function ResponsesStrip({
         <span>{readable.length} kept</span>
       </span>
       {readable.map((call) => (
-        <ResponseChip
-          key={call.send._id}
-          call={call}
-          pressed={call.send._id === selectedId}
-          onClick={() => onPick(call.send._id)}
-        />
+        <span key={call.send._id} className="chip-group">
+          <ResponseChip
+            call={call}
+            pressed={call.send._id === selectedId}
+            onClick={() => onPick(call.send._id)}
+          />
+          <button
+            type="button"
+            className="chip-delete"
+            aria-label={`Delete response ${codeText(call)} ${call.send.sentAt.toLocaleTimeString()}`}
+            onClick={() => onDelete(call.send._id)}
+          >
+            ×
+          </button>
+        </span>
       ))}
     </div>
   );
@@ -2588,10 +2699,12 @@ function HistoryList({
   calls,
   error,
   onOpen,
+  onDelete,
 }: {
   calls: CallView[];
   error: string | null;
   onOpen: (sendId: string) => void;
+  onDelete: (sendId: string) => void;
 }) {
   // One group per day, in the order days first appear; today is computed once per render (code review of
   // workspace-shell, 5 and 9).
@@ -2649,6 +2762,14 @@ function HistoryList({
                     </span>
                     <span className="duration">{durationText(call)}</span>
                   </span>
+                </button>
+                <button
+                  type="button"
+                  className="row-delete"
+                  aria-label={`Delete ${call.send.request.method} ${call.send.request.url}`}
+                  onClick={() => onDelete(call.send._id)}
+                >
+                  ×
                 </button>
               </li>
             ),

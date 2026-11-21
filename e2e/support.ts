@@ -324,7 +324,8 @@ export async function chooseBodyType(page: Page, type: string): Promise<void> {
 }
 
 /** A history row's whole call (method, URL, outcome, time) is its button's accessible name. */
-export const rowName = (row: Locator): Locator => row.getByRole('button');
+export const rowName = (row: Locator): Locator =>
+  row.getByRole('button').first();
 
 /** Matches a string containing `text`, for accessible names checked by part. */
 export const containing = (text: string): RegExp =>

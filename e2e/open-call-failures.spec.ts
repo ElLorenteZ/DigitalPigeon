@@ -94,7 +94,8 @@ const row = (index: number) =>
     .getByTestId('history')
     .getByRole('listitem')
     .nth(index)
-    .getByRole('button');
+    .getByRole('button')
+    .first();
 const requestLine = () => testApp.window.getByTestId('call-request-line');
 
 test.describe('a failed open does not leave the previous call acting as the opened one', () => {

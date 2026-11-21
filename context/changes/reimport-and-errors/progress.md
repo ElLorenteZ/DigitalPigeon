@@ -63,3 +63,33 @@ $ npx playwright test → 84 passed (1.3m) · npm run test:unit → 383 passed �
 The invalid-file scenario was not red at the e2e layer. Its behaviour came from phase 1, where it was red.
 
 **Drift:** none.
+
+## Code-review fixes: /code-review findings 1–10
+
+- **Executor:** lz-tdd (findings 1, 2, 4, 5, 6 and 7); lz-build (the rest)
+- **Status:** done
+- **Started:** 2026-11-21
+- **Finished:** 2026-11-21
+
+**Changed**
+- 1: an untitled spec is named `Untitled API (filename)` and is never a re-import.
+- 2: templates store their spec key `METHOD path`. A re-import matches on it, whatever URL the template got.
+- 3 and 9: a re-import's template changes go in one `bulkWrite`.
+- 4: `x-*` path keys and null operations are skipped.
+- 5: a re-import keeps the oldest same-titled source and folds slice 10's duplicates into it.
+- 6: sources sort by `createdAt`, which a re-import keeps.
+- 7: the import input carries `mode`. `new` refuses to overwrite ("already imported"), and the dialog then refreshes
+  the list and offers the re-import.
+- 8: the engine's own "(line L column C)" is used when given; otherwise the column is counted without `\r`.
+- 10: the outcome text is pluralized and cleared when the dialog opens.
+
+**Verification**
+
+```
+$ (before) unit: × skips x-* … · × says whether the spec named itself
+           integration: × two untitled specs… · × keeps its id… · × refused unless… · × keeps the source in its place · × collapses duplicates…
+$ (after) unit 15 passed · integration (store + server) 52 passed
+$ npx playwright test → 84 passed (1.3m) · npm run test:unit → 386 passed · typecheck 0 · lint clean
+```
+
+**Drift:** none.

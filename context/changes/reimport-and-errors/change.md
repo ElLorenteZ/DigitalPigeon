@@ -1,11 +1,11 @@
 ---
 change_id: reimport-and-errors
 title: Re-import a spec in place, and say where an invalid file failed
-status: new
+status: closed
 ticket: null
 created: 2026-11-21
 updated: 2026-11-21
-closed: null
+closed: 2026-11-21
 produced-by: lz-change
 ---
 
@@ -25,3 +25,8 @@ or the path that is missing)".
   The dialog shows the error and offers no Generate.
 
 **Explicitly not in this change:** WSDL (slice 12), deleting a source, renaming a source.
+
+## Notes
+
+- Outcome (2026-11-21): closed as done. Both phases are verified, the review verdict is merge, and all 10
+  code-review findings are fixed. Stacked PR on #9.

@@ -234,6 +234,7 @@ describe('operations over HTTP', () => {
       filename: 't.json',
       grouping: 'tag',
       useEnvironment: true,
+      mode: 'new',
     });
     const listedTemplates = (await call(channels.listTemplates)) as {
       sources: { templates: { id: string }[] }[];

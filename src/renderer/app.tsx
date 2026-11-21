@@ -929,7 +929,10 @@ export function App() {
               sources={templateSources}
               error={templatesError}
               outcome={importOutcome}
-              onImport={() => setImportOpen(true)}
+              onImport={() => {
+                setImportOutcome(null);
+                setImportOpen(true);
+              }}
               onOpen={(id) => void openTemplate(id)}
             />
           </div>
@@ -1138,6 +1141,7 @@ export function App() {
       {importOpen ? (
         <ImportDialog
           existingNames={templateSources.map((source) => source.name)}
+          onRefresh={refreshTemplates}
           onCancel={() => setImportOpen(false)}
           onImported={async (outcome) => {
             setImportOutcome(outcome);
@@ -3657,11 +3661,13 @@ function ImportDialog({
   existingNames,
   onCancel,
   onImported,
+  onRefresh,
 }: {
   /** Sources already imported: the same title re-imports in place (slice 11). */
   existingNames: string[];
   onCancel: () => void;
   onImported: (outcome: string) => Promise<void>;
+  onRefresh: () => Promise<void>;
 }) {
   const [file, setFile] = useState<{
     name: string;
@@ -3720,6 +3726,7 @@ function ImportDialog({
         filename: file.name,
         grouping,
         useEnvironment,
+        mode: reimport ? 'reimport' : 'new',
       })
       .catch((error: unknown) => ({
         ok: false as const,
@@ -3728,12 +3735,14 @@ function ImportDialog({
     setBusy(false);
     if (!done.ok) {
       setImportError(done.message);
+      // The list was stale: another source has this title. Refresh it, so the dialog offers the re-import.
+      if (/already imported/.test(done.message)) await onRefresh();
       return;
     }
     await onImported(
       done.reimported
         ? `${done.added} added · ${done.updated} updated · ${done.removed} removed`
-        : `${done.added} templates added`,
+        : `${done.added} ${done.added === 1 ? 'template' : 'templates'} added`,
     );
   };
 

@@ -19,6 +19,8 @@ export interface SpecOperation {
 export interface ParsedSpec {
   openapi: string;
   title: string;
+  /** False when the document has no info.title: it then never matches another spec (code review of reimport-and-errors, 1). */
+  titled: boolean;
   version: string;
   servers: string[];
   operations: SpecOperation[];
@@ -64,6 +66,8 @@ export function parseOpenApi(source: string): ParsedSpec {
 
   const operations: SpecOperation[] = [];
   for (const [path, item] of Object.entries(doc.paths)) {
+    // Specification extensions are not paths (code review of reimport-and-errors, 4).
+    if (path.startsWith('x-')) continue;
     // Where an invalid document failed, by its path (slice 11).
     if (!isObject(item)) {
       throw new SpecError(`paths[${JSON.stringify(path)}] is not an object`);
@@ -71,7 +75,7 @@ export function parseOpenApi(source: string): ParsedSpec {
     const shared = parametersOf(item.parameters);
     for (const method of METHODS) {
       const op = item[method];
-      if (op === undefined) continue;
+      if (op === undefined || op === null) continue;
       if (!isObject(op)) {
         throw new SpecError(
           `paths[${JSON.stringify(path)}].${method} is not an object`,
@@ -93,6 +97,7 @@ export function parseOpenApi(source: string): ParsedSpec {
   return {
     openapi: text(doc.openapi),
     title: text(info.title) || 'Untitled API',
+    titled: text(info.title) !== '',
     version: text(info.version),
     servers,
     operations,
@@ -101,11 +106,18 @@ export function parseOpenApi(source: string): ParsedSpec {
 
 // "line L, column C" from the parser's character position, when it gives one (slice 11).
 function jsonErrorText(source: string, message: string): string {
+  const reported = /\(line (\d+) column (\d+)\)/.exec(message);
   const position = /position (\d+)/.exec(message)?.[1];
-  if (position === undefined) return `The file is not valid JSON: ${message}`;
-  const before = source.slice(0, Number(position));
-  const line = before.split('\n').length;
-  const column = Number(position) - before.lastIndexOf('\n');
+  if (!reported && position === undefined) {
+    return `The file is not valid JSON: ${message}`;
+  }
+  // The engine's own line and column when it gives them; else counted from the position, a CRLF's \r not counted.
+  const before = source.slice(0, Number(position ?? 0));
+  const lastLine = before
+    .slice(before.lastIndexOf('\n') + 1)
+    .replace(/\r/g, '');
+  const line = reported ? Number(reported[1]) : before.split('\n').length;
+  const column = reported ? Number(reported[2]) : lastLine.length + 1;
   const reason = message.replace(/ in JSON at position \d+.*$/, '');
   return `The file is not valid JSON at line ${line}, column ${column}: ${reason}`;
 }

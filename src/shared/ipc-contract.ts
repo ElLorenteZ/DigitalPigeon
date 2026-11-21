@@ -318,6 +318,8 @@ export const ImportOpenApiInputSchema = z.strictObject({
   filename: z.string().max(1024),
   grouping: z.enum(['tag', 'path']),
   useEnvironment: z.boolean(),
+  /** What the dialog showed: 'new' never overwrites a source with the same title (slice 11 code review, 7). */
+  mode: z.enum(['new', 'reimport']),
 });
 export type ImportOpenApiInput = z.infer<typeof ImportOpenApiInputSchema>;
 

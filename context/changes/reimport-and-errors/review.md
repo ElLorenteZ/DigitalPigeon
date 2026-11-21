@@ -31,3 +31,9 @@ Covers plan drift, conventions, lessons and verification. Does **not** cover gen
 ## For the archive record
 
 - A spec's identity is its kind and title, not its file name.
+
+## Host code review
+
+`/code-review openapi-import...reimport-and-errors` ran on 2026-11-21 and reported 10 findings. All are fixed; see the
+ledger. Three of them could lose templates: an untitled spec, the key depending on the URL, and a stale dialog
+overwriting a source.

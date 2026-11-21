@@ -2,7 +2,7 @@
 // one per operation, filed into directories. Templates are form content (WireInput): opening one loads the form,
 // unlinked, and nothing here touches History (roadmap M2 decision).
 import { randomUUID } from 'node:crypto';
-import type { Db } from 'mongodb';
+import type { AnyBulkWriteOperation, Db } from 'mongodb';
 import { groupOperations, parseOpenApi } from './openapi';
 import type { WireInput } from './wire';
 
@@ -13,6 +13,8 @@ export interface TemplateSourceDoc {
   filename: string;
   grouping: 'tag' | 'path';
   importedAt: Date;
+  /** When first imported; the tree keeps this order across re-imports (code review of reimport-and-errors, 6). */
+  createdAt?: Date;
 }
 
 export interface TemplateDoc {
@@ -23,6 +25,8 @@ export interface TemplateDoc {
   directory: string;
   name: string;
   request: WireInput;
+  /** `METHOD path` as the spec states it: what a re-import matches on, whatever the URL became (code review, 2). */
+  key?: string;
 }
 
 export interface TemplateListing {
@@ -57,7 +61,14 @@ export interface ImportInput {
   grouping: 'tag' | 'path';
   /** Send to the active environment's baseUrl: the template URL is the path alone. */
   useEnvironment: boolean;
+  /**
+   * 'new' refuses to overwrite a source with the same title; 'reimport' updates it in place. The caller says which
+   * it showed the user (code review of reimport-and-errors, 7).
+   */
+  mode?: 'new' | 'reimport';
 }
+
+export class ImportConflictError extends Error {}
 
 const joinUrl = (base: string, path: string) =>
   `${base.replace(/\/+$/, '')}/${path.replace(/^\/+/, '')}`;
@@ -96,6 +107,7 @@ export function createTemplateStore(db: Db) {
             order: order++,
             directory,
             name: op.name,
+            key: `${op.method} ${op.path}`,
             request: {
               method: op.method,
               url:
@@ -110,53 +122,76 @@ export function createTemplateStore(db: Db) {
         }
       }
 
-      // The same spec is the same kind and title: it is updated in place (slice 11).
-      const existing = await sources.findOne({
-        kind: 'openapi',
-        name: spec.title,
-      });
-      if (existing) {
-        const keyOf = (t: { request: WireInput }) =>
-          `${t.request.method} ${pathOf(t.request.url)}`;
-        const current = await templates
-          .find({ sourceId: existing._id })
-          .toArray();
+      // The same spec is the same kind and title: it is updated in place (slice 11). An untitled spec is always new.
+      const name = spec.titled
+        ? spec.title
+        : `Untitled API (${input.filename})`;
+      const existing = spec.titled
+        ? await sources
+            .find({ kind: 'openapi', name })
+            .sort({ createdAt: 1, importedAt: 1 })
+            .toArray()
+        : [];
+      const keep = existing[0];
+      if (keep && (input.mode ?? 'reimport') === 'new') {
+        throw new ImportConflictError(
+          `“${name}” is already imported. Choose the file again to re-import it in place.`,
+        );
+      }
+      if (keep) {
+        // Copies left by slice 10, which allowed the same title twice, fold into the oldest (code review, 5).
+        const copies = existing.slice(1).map((s) => s._id);
+        if (copies.length > 0) {
+          await templates.deleteMany({ sourceId: { $in: copies } });
+          await sources.deleteMany({ _id: { $in: copies } });
+        }
+        const keyOf = (t: TemplateDoc) =>
+          t.key ?? `${t.request.method} ${pathOf(t.request.url)}`;
+        const current = await templates.find({ sourceId: keep._id }).toArray();
         const byKey = new Map(current.map((t) => [keyOf(t), t]));
+        const kept = new Set<string>();
+        const writes: AnyBulkWriteOperation<TemplateDoc>[] = [];
         let added = 0;
         let updated = 0;
-        const kept = new Set<string>();
         for (const doc of planned) {
-          const match = byKey.get(keyOf(doc));
+          const match = byKey.get(doc.key as string);
           if (match && !kept.has(match._id)) {
             kept.add(match._id);
-            await templates.replaceOne(
-              { _id: match._id },
-              { ...doc, sourceId: existing._id },
-            );
+            writes.push({
+              replaceOne: {
+                filter: { _id: match._id },
+                replacement: { ...doc, sourceId: keep._id },
+              },
+            });
             updated += 1;
           } else {
-            await templates.insertOne({
-              ...doc,
-              _id: randomUUID(),
-              sourceId: existing._id,
+            writes.push({
+              insertOne: {
+                document: { ...doc, _id: randomUUID(), sourceId: keep._id },
+              },
             });
             added += 1;
           }
         }
         const gone = current.filter((t) => !kept.has(t._id)).map((t) => t._id);
-        if (gone.length > 0) await templates.deleteMany({ _id: { $in: gone } });
+        if (gone.length > 0) {
+          writes.push({ deleteMany: { filter: { _id: { $in: gone } } } });
+        }
+        // One call for every template change (code review, 3 and 9).
+        if (writes.length > 0) await templates.bulkWrite(writes);
         await sources.updateOne(
-          { _id: existing._id },
+          { _id: keep._id },
           {
             $set: {
               filename: input.filename,
               grouping: input.grouping,
               importedAt: new Date(),
+              createdAt: keep.createdAt ?? keep.importedAt,
             },
           },
         );
         return {
-          sourceId: existing._id,
+          sourceId: keep._id,
           count: planned.length,
           reimported: true,
           added,
@@ -177,11 +212,12 @@ export function createTemplateStore(db: Db) {
       try {
         await sources.insertOne({
           _id: sourceId,
-          name: spec.title,
+          name,
           kind: 'openapi',
           filename: input.filename,
           grouping: input.grouping,
           importedAt: new Date(),
+          createdAt: new Date(),
         });
       } catch (error) {
         await templates.deleteMany({ sourceId }).catch(() => undefined);
@@ -199,7 +235,10 @@ export function createTemplateStore(db: Db) {
 
     /** Every source with its templates, in import order then spec order; no request bodies. */
     list: async (): Promise<TemplateSourceListing[]> => {
-      const all = await sources.find({}).sort({ importedAt: 1 }).toArray();
+      const all = await sources
+        .find({})
+        .sort({ createdAt: 1, importedAt: 1 })
+        .toArray();
       const rows = await templates
         .find({}, { projection: { 'request.body': 0 } })
         .sort({ order: 1 })

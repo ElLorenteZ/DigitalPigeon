@@ -7,9 +7,14 @@ import {
   startCaptureServer,
 } from '../test-support/capture-server';
 import {
-  type TestApp,
+  containing,
   expectBodyText,
   launchWithTestDatabase,
+  rowName,
+  showRequest,
+  showRequestTab,
+  showSidebarTab,
+  type TestApp,
 } from './support';
 
 let capture: CaptureServer;
@@ -25,8 +30,15 @@ test.afterAll(async () => {
   await capture?.close();
 });
 
+// Each test starts on the request form with History shown (slice 6: the shell keeps one view at a time).
+test.beforeEach(async () => {
+  await showRequest(testApp.window);
+  await showSidebarTab(testApp.window, 'History');
+});
+
 test('replaying a past call adds a row and leaves the original as recorded', async () => {
   const { window } = testApp;
+  await showSidebarTab(window, 'History');
   const history = window.getByTestId('history').getByRole('listitem');
   const panel = window.getByTestId('call-panel');
   const button = (name: string) =>
@@ -39,6 +51,7 @@ test('replaying a past call adds a row and leaves the original as recorded', asy
 
   capture.respondWith({ status: 200, body: Buffer.from('first response') });
   await window.getByLabel('URL').fill(`${capture.url}/orders?filter[a]=1`);
+  await showRequestTab(testApp.window, 'Headers');
   await button('Add header').click();
   await window.getByLabel('Header name 1').fill('Authorization');
   await window.getByLabel('Header value 1').fill('Bearer t');
@@ -58,8 +71,8 @@ test('replaying a past call adds a row and leaves the original as recorded', asy
   await button('Replay').click();
 
   await expect(history).toHaveCount(2);
-  await expect(history.first()).toContainText(
-    `GET ${capture.url}/orders?filter[a]=1 — 202`,
+  await expect(rowName(history.first())).toHaveAccessibleName(
+    containing(`GET ${capture.url}/orders?filter[a]=1 — 202`),
   );
   expect(capture.requests).toHaveLength(2);
   expect(capture.requests[1]?.url).toBe(capture.requests[0]?.url);
@@ -76,11 +89,14 @@ test('replaying a past call adds a row and leaves the original as recorded', asy
   await expect(panel.getByTestId('call-request-line')).toHaveText(
     originalRequest,
   );
-  await expect(history.nth(1)).toContainText(' — 200');
+  await expect(rowName(history.nth(1))).toHaveAccessibleName(
+    containing(' — 200'),
+  );
 });
 
 test('opening a call brings its panel into view, even from a long history', async () => {
   const { window } = testApp;
+  await showSidebarTab(window, 'History');
   const history = window.getByTestId('history').getByRole('listitem');
   const send = window.getByRole('button', { name: 'Send', exact: true });
 

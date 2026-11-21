@@ -4,7 +4,14 @@
 import { type Server, type ServerResponse, createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { expect, test } from '@playwright/test';
-import { type TestApp, launchWithTestDatabase } from './support';
+import {
+  launchWithTestDatabase,
+  showCall,
+  showRequest,
+  showRequestTab,
+  showSidebarTab,
+  type TestApp,
+} from './support';
 
 let server: Server;
 let serverUrl: string;
@@ -28,6 +35,7 @@ test.beforeAll(async () => {
     `up (${testApp.database})`,
     { timeout: 15_000 },
   );
+  await showSidebarTab(window, 'History');
   const history = window.getByTestId('history').getByRole('listitem');
   await window.getByLabel('URL').fill(`${serverUrl}/long`);
   // Longer than the window, so the panel opens far below the top of the page.
@@ -43,11 +51,18 @@ test.afterAll(async () => {
   server?.close();
 });
 
+// Each test starts on the request form with History shown (slice 6: the shell keeps one view at a time).
+test.beforeEach(async () => {
+  await showRequest(testApp.window);
+  await showSidebarTab(testApp.window, 'History');
+});
+
 const button = (name: string) =>
   testApp.window.getByRole('button', { name, exact: true });
 
 const openFirstRow = async () => {
   const { window } = testApp;
+  await showSidebarTab(window, 'History');
   await window
     .getByTestId('history')
     .getByRole('listitem')
@@ -74,10 +89,12 @@ test('Replay brings Cancel into view while in flight, and then the result', asyn
 
 test('the result of a replay comes into view even below a tall form', async () => {
   // Empty rows are not sent. They make the form taller than the window.
+  await showRequestTab(testApp.window, 'Headers');
   for (let added = 0; added < 25; added += 1)
     await button('Add header').click();
   await openFirstRow();
 
+  await showCall(testApp.window);
   await button('Replay').click();
 
   await expect(testApp.window.getByTestId('result')).toBeInViewport();

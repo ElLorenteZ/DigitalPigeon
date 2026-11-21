@@ -1,0 +1,55 @@
+  bodies.spec.ts › a 17 MiB response can be read to its end with Load more
+  bodies.spec.ts › a body that could not be shown does not leave its error on the next call opened (code review, finding 1)
+  bodies.spec.ts › a Form body typed through rows arrives encoded, and loads back as rows
+  bodies.spec.ts › a large typed body pages in the panel, replays the same bytes, and Edit and curl say why not, in view
+  bodies.spec.ts › a stored JSON response loads page by page, formatted, to its final value
+  bodies.spec.ts › opening the call already shown does not load another page (second review, finding 1)
+  bodies.spec.ts › T2.7 — a call with a body can be opened, replayed and edited, and the original keeps its body
+  bodies.spec.ts › T2.9 — a refused HEAD with a body says so in view, and adds no row
+  bodies.spec.ts › T2.9 — switching a JSON response between Pretty and Raw keeps it in view, and History is one scroll below a 1 MiB response
+  body-safety.spec.ts › a application/json body holding markup shows as text, runs nothing and opens nothing
+  body-safety.spec.ts › a application/xml body holding markup shows as text, runs nothing and opens nothing
+  body-safety.spec.ts › a text/html body holding markup shows as text, runs nothing and opens nothing
+  body-safety.spec.ts › a text/plain body holding markup shows as text, runs nothing and opens nothing
+  edit-and-export.spec.ts › edit a past call, export it as curl, and see a refused header explained
+  environments.spec.ts › a path goes to the chosen environment, a switch takes effect at once, and calls keep the environment they used
+  environments.spec.ts › a refused base URL says why, and deleting the chosen environment leaves None, so a path is refused in view
+  environments.spec.ts › a send while the switch is still being saved goes to the environment the select shows
+  environments.spec.ts › after one choice fails to be stored, a later choice is stored
+  environments.spec.ts › two quick choices store the later one for startup
+  multipart-edit-failures.spec.ts › a change to the form while Edit reads a stored body keeps the change
+  multipart-edit-failures.spec.ts › a failed read during Edit shows the reason and leaves the form as it was
+  multipart-edit-failures.spec.ts › when two Edits overlap, the form holds the later one whichever read finishes last
+  multipart.spec.ts › a 17 MiB file goes through the form and the send handler in full
+  multipart.spec.ts › a picked file is sent, deleted from disk, and replayed with the same bytes
+  multipart.spec.ts › inline: the panel lists the parts, and Edit then Send resends the same body
+  multipart.spec.ts › stored: the panel lists the parts, and Edit then Send resends the same body
+  multipart.spec.ts › the parts editor › a file read for a row removed meanwhile lands nowhere
+  multipart.spec.ts › the parts editor › after a row is removed, no file input shows the removed row’s file
+  multipart.spec.ts › the parts editor › edits made while a file is read are kept, and the file lands in its own row
+  open-call-failures.spec.ts › a failed open does not leave the previous call acting as the opened one › the call to main rejects
+  open-call-failures.spec.ts › a failed open does not leave the previous call acting as the opened one › the database query fails
+  open-call-failures.spec.ts › a page read for a body no longer shown is ignored
+  open-call-failures.spec.ts › when two opens overlap, the last click wins whichever answer arrives last
+  panel-actions.spec.ts › Edit brings the loaded form into view
+  panel-actions.spec.ts › Replay brings Cancel into view while in flight, and then the result
+  panel-actions.spec.ts › the result of a replay comes into view even below a tall form
+  replay.spec.ts › opening a call brings its panel into view, even from a long history
+  replay.spec.ts › replaying a past call adds a row and leaves the original as recorded
+  saved-requests.spec.ts › a call linked to a saved request the list could not load is not called deleted
+  saved-requests.spec.ts › a save that finishes after New leaves the new form unlinked
+  saved-requests.spec.ts › a saved request with a 17 MiB file sends the same bytes after the file is deleted from disk
+  saved-requests.spec.ts › a send from a saved request deleted after it was opened records no link
+  saved-requests.spec.ts › one saved request goes to whichever environment is chosen, and calls keep where they went and where they came from
+  saved-requests.spec.ts › Save is unavailable while a save is in flight, so one press makes one saved request
+  saved-requests.spec.ts › save, find, open, save over, save as new, send with a link back, and delete
+  saved-requests.spec.ts › typing while a saved request opens keeps what was typed
+  saved-requests.spec.ts › when two opens overlap, the form holds the later saved request
+  send-and-record.spec.ts › each send shows its response and adds its own row to history
+  server-unreachable.spec.ts › a delete the server does not answer shows why, and the saved request stays listed
+  server-unreachable.spec.ts › a save the server does not answer shows why, and Save is available again
+  server-unreachable.spec.ts › a status check the server does not answer says so and makes Send unavailable, until it answers again
+  server-unreachable.spec.ts › an environment change the server does not answer shows why
+  smoke.spec.ts › the app window renders the React root
+  smoke.spec.ts › the built UI is served with a Content-Security-Policy header
+  smoke.spec.ts › the CSP blocks an inline script, and the violation is recorded

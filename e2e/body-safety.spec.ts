@@ -8,12 +8,15 @@ import {
   startCaptureServer,
 } from '../test-support/capture-server';
 import {
-  type TestApp,
   bodyLines,
+  chooseBodyType,
   expectNoCspViolations,
   launchWithTestDatabase,
   settle,
   showBodyView,
+  showRequest,
+  showSidebarTab,
+  type TestApp,
 } from './support';
 
 let capture: CaptureServer;
@@ -64,6 +67,12 @@ test.afterAll(async () => {
   await capture?.close();
 });
 
+// Each test starts on the request form with History shown (slice 6: the shell keeps one view at a time).
+test.beforeEach(async () => {
+  await showRequest(testApp.window);
+  await showSidebarTab(testApp.window, 'History');
+});
+
 const flag = () =>
   testApp.window.evaluate(
     () => (window as unknown as { __pwned?: string }).__pwned ?? null,
@@ -78,11 +87,12 @@ for (const [type, body, hasSwitch] of bodies) {
       headers: { 'Content-Type': type },
       body: Buffer.from(body),
     });
+    await showSidebarTab(window, 'History');
     const history = window.getByTestId('history').getByRole('listitem');
     const before = await history.count();
     await window.getByLabel('Method').selectOption('GET');
     await window.getByLabel('URL').fill(`${capture.url}/markup`);
-    await window.getByLabel('Body type').selectOption('none');
+    await chooseBodyType(window, 'none');
     await window.getByRole('button', { name: 'Send' }).click();
     await expect(history).toHaveCount(before + 1);
 

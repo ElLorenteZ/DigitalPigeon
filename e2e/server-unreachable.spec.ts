@@ -4,7 +4,14 @@
 // reason where that action's other failures show. Nothing is left as an unhandled rejection.
 import { expect, test } from '@playwright/test';
 import { channels } from '../src/shared/ipc-contract';
-import { type TestApp, launchWithTestDatabase, stubOperation } from './support';
+import {
+  launchWithTestDatabase,
+  openEnvironments,
+  showRequest,
+  showSidebarTab,
+  stubOperation,
+  type TestApp,
+} from './support';
 
 let testApp: TestApp;
 const errors: string[] = [];
@@ -22,7 +29,9 @@ test.afterAll(async () => {
   await testApp?.close();
 });
 
-test.beforeEach(() => {
+test.beforeEach(async () => {
+  await showRequest(testApp.window);
+  await showSidebarTab(testApp.window, 'History');
   errors.length = 0;
 });
 
@@ -70,6 +79,7 @@ test('a delete the server does not answer shows why, and the saved request stays
   await window.getByLabel('URL').fill('http://127.0.0.1:1/b');
   await window.getByLabel('Saved request name').fill('Kept');
   await button('Save').click();
+  await showSidebarTab(window, 'Saved');
   const saved = window.getByTestId('saved-requests').getByRole('listitem');
   await expect(saved.filter({ hasText: 'Kept' })).toHaveCount(1);
 
@@ -93,6 +103,7 @@ test('a delete the server does not answer shows why, and the saved request stays
 test('an environment change the server does not answer shows why', async () => {
   const { window } = testApp;
   const stub = await stubOperation(window, channels.saveEnvironment, refused);
+  await openEnvironments(window);
   await window.getByLabel('New environment name').fill('local');
   await window
     .getByLabel('New environment base address')

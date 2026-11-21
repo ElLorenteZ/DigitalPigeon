@@ -6,13 +6,18 @@ import {
   startCaptureServer,
 } from '../test-support/capture-server';
 import {
-  type TestApp,
   bodyEdge,
   bodyLines,
+  bodyTypeButton,
   callOperation,
+  chooseBodyType,
   expectBodyText,
   launchWithTestDatabase,
   showBodyView,
+  showCall,
+  showRequest,
+  showSidebarTab,
+  type TestApp,
 } from './support';
 import { channels } from '../src/shared/ipc-contract';
 
@@ -41,6 +46,12 @@ test.afterAll(async () => {
   await capture?.close();
 });
 
+// Each test starts on the request form with History shown (slice 6: the shell keeps one view at a time).
+test.beforeEach(async () => {
+  await showRequest(testApp.window);
+  await showSidebarTab(testApp.window, 'History');
+});
+
 const button = (name: string) =>
   testApp.window.getByRole('button', { name, exact: true });
 const history = () =>
@@ -57,7 +68,7 @@ const fillTextRequest = async (
   const { window } = testApp;
   await window.getByLabel('Method').selectOption(method);
   await window.getByLabel('URL').fill(`${capture.url}${path}`);
-  await window.getByLabel('Body type').selectOption(type);
+  await chooseBodyType(window, type);
   await window.getByLabel('Body text').fill(text);
 };
 
@@ -72,6 +83,7 @@ test('T2.7 — a call with a body can be opened, replayed and edited, and the or
   capture.requests.length = 0;
   capture.respondWith({ status: 200, body: Buffer.from('json response') });
   await fillTextRequest('POST', '/orders', 'json', '{"item":"é"}');
+  await showSidebarTab(testApp.window, 'History');
   const before = await history().count();
   await sendAndSeeNewRow();
 
@@ -102,10 +114,14 @@ test('T2.7 — a call with a body can be opened, replayed and edited, and the or
     capture.requests[0]?.rawHeaders,
   );
 
+  await showCall(testApp.window);
   await button('Edit').click();
   const bodyText = window.getByLabel('Body text');
   await expect(bodyText).toHaveValue('{"item":"é"}');
-  await expect(window.getByLabel('Body type')).toHaveValue('json');
+  await expect(bodyTypeButton(window, 'json')).toHaveAttribute(
+    'aria-pressed',
+    'true',
+  );
   await expect(bodyText).toBeInViewport();
 
   await bodyText.fill('{"item":"changed"}');
@@ -132,7 +148,7 @@ test('a Form body typed through rows arrives encoded, and loads back as rows', a
   capture.requests.length = 0;
   await window.getByLabel('Method').selectOption('POST');
   await window.getByLabel('URL').fill(`${capture.url}/form`);
-  await window.getByLabel('Body type').selectOption('form');
+  await chooseBodyType(window, 'form');
   await expect(window.getByLabel('Form field name 1')).toHaveCount(0);
   await button('Add form field').click();
   await window.getByLabel('Form field name 1').fill('a b');
@@ -146,6 +162,7 @@ test('a Form body typed through rows arrives encoded, and loads back as rows', a
   );
 
   await window.getByLabel('Form field value 1').fill('other');
+  await showSidebarTab(testApp.window, 'History');
   await history().first().getByRole('button').click();
   await expectBodyText(
     panel().getByTestId('call-request-body'),
@@ -159,6 +176,7 @@ test('T2.9 — a refused HEAD with a body says so in view, and adds no row', asy
   const { window } = testApp;
   capture.requests.length = 0;
   await fillTextRequest('HEAD', '/head', 'text', 'not allowed');
+  await showSidebarTab(testApp.window, 'History');
   const before = await history().count();
 
   await button('Send').click();
@@ -187,7 +205,7 @@ test('T2.9 — switching a JSON response between Pretty and Raw keeps it in view
   });
   await window.getByLabel('Method').selectOption('GET');
   await window.getByLabel('URL').fill(`${capture.url}/switch`);
-  await window.getByLabel('Body type').selectOption('none');
+  await chooseBodyType(window, 'none');
   await sendAndSeeNewRow();
 
   const result = window.getByTestId('result');
@@ -219,7 +237,7 @@ test('a body that could not be shown does not leave its error on the next call o
       body: Buffer.from(text),
     });
   await window.getByLabel('Method').selectOption('GET');
-  await window.getByLabel('Body type').selectOption('none');
+  await chooseBodyType(window, 'none');
   respondJson('{"second":2}');
   await window.getByLabel('URL').fill(`${capture.url}/shows`);
   await sendAndSeeNewRow();
@@ -240,6 +258,7 @@ test('a body that could not be shown does not leave its error on the next call o
       }
     };
   });
+  await showSidebarTab(testApp.window, 'History');
   await history().first().getByRole('button').click();
   await expect(panel().getByTestId('call-request-line')).toContainText(
     '/fails-to-show',
@@ -280,9 +299,10 @@ test('a stored JSON response loads page by page, formatted, to its final value',
   });
   await testApp.window.getByLabel('Method').selectOption('GET');
   await testApp.window.getByLabel('URL').fill(`${capture.url}/stored-json`);
-  await testApp.window.getByLabel('Body type').selectOption('none');
+  await chooseBodyType(testApp.window, 'none');
   await sendAndSeeNewRow();
 
+  await showSidebarTab(testApp.window, 'History');
   await history().first().getByRole('button').click();
   const text = panel().getByTestId('response-body');
   const loadMore = panel().getByRole('button', { name: 'Load more' });
@@ -348,9 +368,10 @@ test('a 17 MiB response can be read to its end with Load more', async () => {
   capture.respondWith({ status: 200, body });
   await testApp.window.getByLabel('Method').selectOption('GET');
   await testApp.window.getByLabel('URL').fill(`${capture.url}/large`);
-  await testApp.window.getByLabel('Body type').selectOption('none');
+  await chooseBodyType(testApp.window, 'none');
   await sendAndSeeNewRow();
 
+  await showSidebarTab(testApp.window, 'History');
   await history().first().getByRole('button').click();
   const text = panel().getByTestId('response-body');
   const remaining = panel().getByTestId('response-body-remaining');
@@ -394,8 +415,9 @@ test('opening the call already shown does not load another page (second review, 
   capture.respondWith({ status: 200, body: Buffer.alloc(3 * MIB, 0x61) });
   await testApp.window.getByLabel('Method').selectOption('GET');
   await testApp.window.getByLabel('URL').fill(`${capture.url}/reopen`);
-  await testApp.window.getByLabel('Body type').selectOption('none');
+  await chooseBodyType(testApp.window, 'none');
   await sendAndSeeNewRow();
+  await showSidebarTab(testApp.window, 'History');
   const row = history().first().getByRole('button');
   const remaining = panel().getByTestId('response-body-remaining');
 
@@ -422,6 +444,7 @@ test('a large typed body pages in the panel, replays the same bytes, and Edit an
   await sendAndSeeNewRow();
   expect(capture.requests[0]?.body.toString()).toBe(text);
 
+  await showSidebarTab(testApp.window, 'History');
   await history().first().getByRole('button').click();
   await expect(
     panel().getByTestId('call-request-body-remaining'),
@@ -433,6 +456,7 @@ test('a large typed body pages in the panel, replays the same bytes, and Edit an
     capture.requests[1]?.body.equals(capture.requests[0]?.body as Buffer),
   ).toBe(true);
 
+  await showCall(testApp.window);
   await button('Edit').click();
   const editError = panel().getByTestId('call-edit-error');
   await expect(editError).toContainText('too large to edit');
@@ -440,6 +464,7 @@ test('a large typed body pages in the panel, replays the same bytes, and Edit an
   // The form is left alone.
   await expect(testApp.window.getByLabel('Body text')).toHaveValue(text);
 
+  await showCall(testApp.window);
   await button('Copy call as curl').click();
   const curlError = panel().getByTestId('call-curl-error');
   await expect(curlError).toContainText('too long for a shell command');

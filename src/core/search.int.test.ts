@@ -209,3 +209,71 @@ describe('searchCalls', () => {
     expect(s4?.state).toBe('completed');
   });
 });
+
+// history-grouping, phase 1: the Auth facet follows the author's rule — Authorization, otherwise Cookie, otherwise
+// none — and each option names the header its value came from. Its own database, so the counts above stay exact.
+describe('searchCalls auth facet with Cookie', () => {
+  let cookieDb: TestDb;
+  let cookieStore: ReturnType<typeof createCallStore>;
+  const send = (
+    id: string,
+    day: number,
+    headers: [string, string][],
+  ): SendDoc => ({
+    _id: id,
+    schemaVersion: 1,
+    sentAt: sentAt(day),
+    request: {
+      method: 'GET',
+      url: 'http://a.test/me',
+      headers: [['host', 'a.test'], ...headers],
+      body: null,
+    },
+  });
+
+  beforeAll(async () => {
+    cookieDb = await openTestDb();
+    cookieStore = createCallStore(cookieDb.db);
+    await cookieStore.insertSend(
+      send('k1', 20, [['Cookie', 'session=abc; theme=dark']]),
+    );
+    await cookieStore.insertSend(
+      send('k2', 19, [
+        ['Cookie', 'session=zzz'],
+        ['Authorization', 'Bearer t1'],
+      ]),
+    );
+    await cookieStore.insertSend(send('k3', 18, []));
+  });
+
+  afterAll(async () => {
+    await cookieDb?.drop();
+  });
+
+  test('a Cookie-only call is counted under its Cookie value, labelled Cookie', async () => {
+    const found = await cookieStore.searchCalls({}, new Set());
+    const cookie = found.facets.auth.find(
+      (o) => o.value === 'session=abc; theme=dark',
+    );
+    expect(cookie?.count).toBe(1);
+    expect(cookie?.detail).toBe('Cookie');
+    const bearer = found.facets.auth.find((o) => o.value === 'Bearer t1');
+    expect(bearer?.count).toBe(1);
+    expect(bearer?.detail).toBe('Authorization');
+    // The Cookie of a call that has an Authorization header is not an option.
+    expect(
+      found.facets.auth.find((o) => o.value === 'session=zzz'),
+    ).toBeUndefined();
+    expect(count(found.facets.auth, '')).toBe(1);
+  });
+
+  test('filtering by a Cookie value returns the calls sent with it', async () => {
+    const found = await cookieStore.searchCalls(
+      { auths: ['session=abc; theme=dark'] },
+      new Set(),
+    );
+    expect(ids(found.calls)).toEqual(['k1']);
+    const none = await cookieStore.searchCalls({ auths: [''] }, new Set());
+    expect(ids(none.calls)).toEqual(['k3']);
+  });
+});

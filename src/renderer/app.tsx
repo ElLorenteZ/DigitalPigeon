@@ -41,7 +41,8 @@ import {
   createPartScanner,
   multipartBoundary,
 } from '../core/multipart';
-import { authorizationOf } from '../core/headers';
+import { authOf } from '../core/headers';
+import { requestKeyOf } from '../core/request-key';
 import {
   type ParsedSpec,
   groupOperations,
@@ -619,7 +620,10 @@ export function App() {
   // The strips refresh when History changes: a send, a replay or a completion lands there first (slice 7).
   const historyMark = `${dataVersion}:${history.length}:${history[0]?.state === 'unreadable' ? history[0].id : (history[0]?.send._id ?? '')}:${history.filter((c) => c.state === 'in-flight').length}`;
   const resultKey = result?.ok
-    ? requestKeyOf(result.send.request.method, result.send.request.url)
+    ? requestKeyOf(
+        result.send.request.method as Method,
+        result.send.request.url,
+      )
     : null;
   const responsesList = useResponses(resultKey, historyMark);
   const responses = responsesList.calls.filter(notHeld);
@@ -629,7 +633,10 @@ export function App() {
     if (result) resultRegion.current?.scrollIntoView({ block: 'nearest' });
   }, [result, hasResponses]);
   const openedKey = opened
-    ? requestKeyOf(opened.send.request.method, opened.send.request.url)
+    ? requestKeyOf(
+        opened.send.request.method as Method,
+        opened.send.request.url,
+      )
     : null;
   const otherList = useResponses(openedKey, historyMark);
   const picked =
@@ -2030,11 +2037,7 @@ function CallPanel({
     call.completion && 'response' in call.completion
       ? call.completion.response
       : null;
-  const authValue = authorizationOf(headers);
-  const auth =
-    authValue === undefined
-      ? undefined
-      : (['authorization', authValue] as const);
+  const auth = authOf(headers);
   return (
     <section
       data-testid="call-panel"
@@ -2120,7 +2123,7 @@ function CallPanel({
         ) : null}
         {auth ? (
           <span className="chip mono">
-            Authorization: {abbreviate(auth[1])}
+            {auth.header}: {abbreviate(auth.value)}
           </span>
         ) : null}
       </div>
@@ -2269,20 +2272,6 @@ function ResultView({
       )}
     </section>
   );
-}
-
-// The request a call answers: its method and URL path (query, fragment and host left out; slice 7).
-function requestKeyOf(method: string, url: string) {
-  let path = '/';
-  try {
-    path = new URL(url).pathname || '/';
-  } catch {
-    path = url.split(/[?#]/)[0] || '/';
-  }
-  return {
-    method: method as Method,
-    path: path.startsWith('/') ? path : `/${path}`,
-  };
 }
 
 type Picked = {
@@ -3310,7 +3299,9 @@ function SearchFilters({
       )}
       {section('Auth header', 'auths', facets?.auth, (o) => (
         <span className={o.value === '' ? undefined : 'mono'} title={o.value}>
-          {o.value === '' ? 'No auth header' : shortAuth(o.value)}
+          {o.value === ''
+            ? 'No auth header'
+            : `${o.detail ? `${o.detail}: ` : ''}${shortAuth(o.value)}`}
         </span>
       ))}
       {section('Saved request', 'savedRequestIds', facets?.savedRequest, (o) =>
@@ -3392,9 +3383,13 @@ function SearchResults({
       .map((v) => facetLabel('environment', v))
       .join(' or '),
     filters.auths
-      .map((v) =>
-        v === '' ? 'no Authorization' : `Authorization: ${shortAuth(v)}`,
-      )
+      .map((v) => {
+        if (v === '') return 'no auth header';
+        const header = result?.ok
+          ? result.facets.auth.find((o) => o.value === v)?.detail
+          : undefined;
+        return `${header ?? 'auth'}: ${shortAuth(v)}`;
+      })
       .join(' or '),
     filters.savedRequestIds.length
       ? `${filters.savedRequestIds.length} saved request(s)`
@@ -3492,7 +3487,7 @@ function SearchResults({
             <tbody>
               {calls.map((call) => {
                 const { method, url, headers } = call.send.request;
-                const auth = authorizationOf(headers);
+                const auth = authOf(headers);
                 const id = call.send._id;
                 return (
                   <tr
@@ -3521,7 +3516,11 @@ function SearchResults({
                       </button>
                     </td>
                     <td>{call.send.environment?.name ?? '—'}</td>
-                    <td className="mono">{auth ? shortAuth(auth) : '—'}</td>
+                    <td className="mono">
+                      {auth && auth.value !== ''
+                        ? `${auth.header}: ${shortAuth(auth.value)}`
+                        : '—'}
+                    </td>
                     <td className={`mono ${outcomeClass(call)}`}>
                       {codeText(call)}
                     </td>

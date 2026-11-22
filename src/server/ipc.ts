@@ -36,6 +36,9 @@ import {
   GetCallResultSchema,
   type ListCallsResult,
   ListCallsResultSchema,
+  ListRequestGroupsInputSchema,
+  type ListRequestGroupsResult,
+  ListRequestGroupsResultSchema,
   ListResponsesInputSchema,
   type SearchResult,
   type ImportResult,
@@ -540,6 +543,34 @@ export function registerIpc({ ipcMain, db, dbStatus }: IpcDeps): void {
     }
   });
 
+  // History grouped by request (history-grouping): every call, grouped in the store; the same database-down and
+  // failure handling as listCalls.
+  ipcMain.handle(
+    channels.listRequestGroups,
+    async (_event, raw: unknown): Promise<ListRequestGroupsResult> => {
+      const input = ListRequestGroupsInputSchema.safeParse(raw);
+      if (!input.success) {
+        return { ok: false, message: z.prettifyError(input.error) };
+      }
+      const database = db();
+      if (!database || dbStatus().status !== 'up') {
+        return { ok: true, groups: [] };
+      }
+      try {
+        const groups = await storeFor(database).listRequestGroups(
+          inFlightSendIds,
+          input.data,
+        );
+        return ListRequestGroupsResultSchema.parse({
+          ok: true,
+          groups: groups.map((g) => ({ ...g, latest: toView(g.latest) })),
+        });
+      } catch (error) {
+        return { ok: false, message: message(error) };
+      }
+    },
+  );
+
   // Slice 8: the UI has already held the call for Undo; this deletes it for good, then sweeps body files nothing
   // refers to (T3.9). A call still in flight here is refused.
   let lastSweep = 0;
@@ -702,6 +733,7 @@ export function registerIpc({ ipcMain, db, dbStatus }: IpcDeps): void {
           input.data.method,
           input.data.path,
           inFlightSendIds,
+          input.data.auth,
         );
         return ListCallsResultSchema.parse({
           ok: true,

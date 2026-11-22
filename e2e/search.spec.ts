@@ -12,6 +12,7 @@ import {
   callOperation,
   launchWithTestDatabase,
   showRequest,
+  showRequestTab,
   showSidebarTab,
   stubOperation,
 } from './support';
@@ -186,4 +187,31 @@ test('a resend that fails says so', async () => {
   await resultRows().first().getByRole('button', { name: 'Resend' }).click();
   await expect(results()).toContainText('replay refused');
   await stub.restore();
+});
+
+// history-grouping, phase 1: a call sent with a Cookie and no Authorization is filed under its Cookie, and every
+// place that shows the value says it is a Cookie.
+test('a call sent with only a Cookie is labelled Cookie in the facet, the table and the summary', async () => {
+  const { window } = testApp;
+  await showRequest(window);
+  capture.respondWith({ status: 200, body: Buffer.from('me') });
+  await window.getByLabel('Method').selectOption('GET');
+  await window.getByLabel('URL').fill(`${capture.url}/me`);
+  await showRequestTab(window, 'Headers');
+  await button('Add header').click();
+  await window.getByLabel('Header name 1').fill('Cookie');
+  await window.getByLabel('Header value 1').fill('session=abc123');
+  await button('Send').click();
+  await expect(window.getByTestId('result')).toContainText('200');
+
+  await showSidebarTab(window, 'History');
+  await searchBox().fill('/me');
+  await expect(resultRows()).toHaveCount(1);
+  const option = facet('Auth header', 'Cookie: session=abc123');
+  await expect(option).toBeVisible();
+  await expect(resultRows().first()).toContainText('Cookie: session=abc123');
+
+  await option.check();
+  await expect(results()).toContainText('Cookie: session=abc123');
+  await expect(results()).not.toContainText('Authorization: session');
 });

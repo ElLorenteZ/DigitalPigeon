@@ -15,6 +15,7 @@ export const channels = {
   cancel: 'pigeon:cancel',
   listCalls: 'pigeon:list-calls',
   listResponses: 'pigeon:list-responses',
+  listRequestGroups: 'pigeon:list-request-groups',
   deleteCall: 'pigeon:delete-call',
   searchCalls: 'pigeon:search-calls',
   importOpenApi: 'pigeon:import-openapi',
@@ -114,10 +115,15 @@ export type ReplayInput = z.infer<typeof ReplayInputSchema>;
 
 export const GetCallInputSchema = z.string().min(1);
 
-/** The responses to one request: same method and URL path; query, fragment and host are not part of the key (slice 7). */
+/**
+ * The responses to one request: same method and URL path; query, fragment and host are not part of the key (slice 7).
+ * `auth` narrows them to the calls sent with that Authorization, otherwise Cookie, value; `''` means none; absent means
+ * every auth (history-grouping). Bounded like a search's auth values.
+ */
 export const ListResponsesInputSchema = z.strictObject({
   method: z.enum(METHODS),
   path: z.string().startsWith('/').max(8192),
+  auth: z.string().max(65536).optional(),
 });
 export type ListResponsesInput = z.infer<typeof ListResponsesInputSchema>;
 
@@ -269,6 +275,44 @@ export const ListCallsResultSchema = z.discriminatedUnion('ok', [
   z.strictObject({ ok: z.literal(false), message: z.string() }),
 ]);
 export type ListCallsResult = z.infer<typeof ListCallsResultSchema>;
+
+/**
+ * History grouped by request (history-grouping): one group per method and URL path, and per Authorization, otherwise
+ * Cookie, value when `splitByAuth`; over every call. `auth` is null when not split, and for calls with no auth header.
+ */
+export const ListRequestGroupsInputSchema = z.strictObject({
+  splitByAuth: z.boolean(),
+});
+export type ListRequestGroupsInput = z.infer<
+  typeof ListRequestGroupsInputSchema
+>;
+
+const RequestGroupSchema = z.strictObject({
+  method: z.string(),
+  path: z.string(),
+  auth: z
+    .strictObject({
+      header: z.enum(['Authorization', 'Cookie']),
+      value: z.string(),
+    })
+    .nullable(),
+  count: z.number().int().positive(),
+  /** The group's newest call, without bodies. */
+  latest: z.strictObject({
+    state: z.enum(['completed', 'in-flight', 'interrupted']),
+    send: SendSummarySchema,
+    completion: CompletionSummarySchema.nullable(),
+  }),
+});
+export type RequestGroup = z.infer<typeof RequestGroupSchema>;
+
+export const ListRequestGroupsResultSchema = z.discriminatedUnion('ok', [
+  z.strictObject({ ok: z.literal(true), groups: z.array(RequestGroupSchema) }),
+  z.strictObject({ ok: z.literal(false), message: z.string() }),
+]);
+export type ListRequestGroupsResult = z.infer<
+  typeof ListRequestGroupsResultSchema
+>;
 
 /** Slice 9: the History search. `""` in a list means "none" (no environment, no Authorization header, …). */
 const IdList = z.array(z.string().max(4096)).max(500).optional();
@@ -451,6 +495,9 @@ export interface PigeonApi {
   dbStatus: () => Promise<DbStatusView>;
   getCall: (sendId: string) => Promise<GetCallResult>;
   listResponses: (input: ListResponsesInput) => Promise<ListCallsResult>;
+  listRequestGroups: (
+    input: ListRequestGroupsInput,
+  ) => Promise<ListRequestGroupsResult>;
   /** Deletes one call for good, with its body files (slice 8). The UI holds it for Undo before calling this. */
   deleteCall: (sendId: string) => Promise<MutationResult>;
   searchCalls: (query: SearchQuery) => Promise<SearchResult>;

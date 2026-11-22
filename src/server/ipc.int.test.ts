@@ -243,3 +243,48 @@ test('a driver failure while loading the environment for a send reports the data
   });
   expect(capture.requests).toHaveLength(0);
 });
+
+// history-grouping, phase 4: listRequestGroups answers like listCalls when the database is down or a query fails,
+// and refuses input that is not { splitByAuth: boolean }.
+test('request groups: empty while the database is down, a message when the query fails, a refusal for bad input', async () => {
+  const register = (
+    db: () => import('mongodb').Db | undefined,
+    status: 'up' | 'down',
+  ) => {
+    const local = new Map<string, Handler>();
+    registerIpc({
+      ipcMain: {
+        handle: (channel: string, handler: Handler) =>
+          local.set(channel, handler),
+      } as Registrar,
+      db,
+      dbStatus: () => ({ status, configPath: '' }),
+    });
+    return (input: unknown) =>
+      local.get(channels.listRequestGroups)?.(null, input);
+  };
+
+  const down = register(() => undefined, 'down');
+  expect(await down({ splitByAuth: false })).toEqual({ ok: true, groups: [] });
+
+  const { MongoError } = await import('mongodb');
+  const failing = {
+    collection: () => ({
+      find: () => {
+        throw new MongoError('connection lost');
+      },
+    }),
+  } as unknown as import('mongodb').Db;
+  const lost = register(() => failing, 'up');
+  expect(await lost({ splitByAuth: true })).toEqual({
+    ok: false,
+    message: expect.stringContaining('connection lost'),
+  });
+
+  expect(
+    await call(channels.listRequestGroups, { splitByAuth: 'yes' }),
+  ).toMatchObject({ ok: false });
+  expect(
+    await call(channels.listRequestGroups, { splitByAuth: false }),
+  ).toMatchObject({ ok: true });
+});

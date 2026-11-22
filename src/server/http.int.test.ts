@@ -259,6 +259,9 @@ describe('operations over HTTP', () => {
       [channels.searchCalls]: await call(channels.searchCalls, {
         methods: ['POST'],
       }),
+      [channels.listRequestGroups]: await call(channels.listRequestGroups, {
+        splitByAuth: true,
+      }),
       [channels.listResponses]: await call(channels.listResponses, {
         method: 'POST',
         path: '/',
@@ -324,6 +327,33 @@ describe('operations over HTTP', () => {
         }
       ).calls.map((c) => c.send._id),
     ).toContain(sent.send._id);
+    // history-grouping: `auth` narrows the responses. The send above is deleted by now; its replay, which carried no
+    // auth header either, is still a response to POST /.
+    const replayId = (answers[channels.replay] as { send: { _id: string } })
+      .send._id;
+    const responseIds = async (auth: string) =>
+      (
+        (await call(channels.listResponses, {
+          method: 'POST',
+          path: '/',
+          auth,
+        })) as { calls: { send: { _id: string } }[] }
+      ).calls.map((c) => c.send._id);
+    expect(await responseIds('')).toContain(replayId);
+    expect(await responseIds('Bearer nobody')).toEqual([]);
+    // history-grouping: the send above went to POST <capture>/ with no auth header, so it is in the POST / group.
+    expect(
+      (
+        answers[channels.listRequestGroups] as {
+          groups: {
+            method: string;
+            path: string;
+            auth: unknown;
+            count: number;
+          }[];
+        }
+      ).groups.find((g) => g.method === 'POST' && g.path === '/'),
+    ).toMatchObject({ auth: null, count: 1 });
     expect(answers[channels.dbStatus]).toEqual({
       status: 'up',
       configPath: '',

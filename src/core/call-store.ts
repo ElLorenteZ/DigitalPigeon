@@ -5,7 +5,8 @@
 import { type Db, type Filter, ObjectId } from 'mongodb';
 import { z } from 'zod';
 import { createBodyStore } from './body-store';
-import { authorizationOf } from './headers';
+import { type Auth, authOf } from './headers';
+import { requestKeyOf } from './request-key';
 import {
   type CompletionDoc,
   CompletionDocSchema,
@@ -89,22 +90,70 @@ export function createCallStore(db: Db) {
 
     /**
      * The responses to one request: every call with this method and URL path, newest first, without bodies (slice 7).
-     * The query string, fragment and host are not part of the key. At most RESPONSES_LIMIT calls.
+     * The query string, fragment and host are not part of the key; the path is compared as `requestKeyOf` writes it,
+     * the function the renderer names requests with. With `auth`, only calls sent with that auth (`authOf`'s value;
+     * `''` for none) are kept (history-grouping). At most RESPONSES_LIMIT calls.
      */
-    listResponses: (
+    listResponses: async (
       method: string,
       path: string,
       inFlight: ReadonlySet<string>,
-    ): Promise<Call[]> =>
-      list(
-        {
-          'request.method': method,
-          'request.url': { $regex: pathPattern(path) },
-        },
-        RESPONSES_LIMIT,
-        inFlight,
-        false,
-      ),
+      auth?: string,
+    ): Promise<Call[]> => {
+      const ids: string[] = [];
+      for await (const raw of sends
+        .find(
+          { 'request.method': method },
+          { projection: { 'request.url': 1, 'request.headers': 1, sentAt: 1 } },
+        )
+        .sort({ sentAt: -1 })) {
+        if (ids.length >= RESPONSES_LIMIT) break;
+        const { url, headers } =
+          (raw as { request?: Partial<SendDoc['request']> }).request ?? {};
+        if (
+          typeof url !== 'string' ||
+          requestKeyOf(method, url).path !== path
+        ) {
+          continue;
+        }
+        if (
+          auth !== undefined &&
+          (!Array.isArray(headers) || (authOf(headers)?.value ?? '') !== auth)
+        ) {
+          continue;
+        }
+        ids.push(String(raw._id));
+      }
+      return list({ _id: { $in: ids } }, 0, inFlight, false);
+    },
+
+    /**
+     * History grouped by request (history-grouping): one group per method and URL path (`requestKeyOf`), and per auth
+     * value (`authOf`) when `splitByAuth`, over every call, not only the newest 200. Each group has its count and its
+     * newest call, without bodies; groups are ordered by that call, newest first. Unreadable calls have no key and are
+     * in no group.
+     */
+    listRequestGroups: async (
+      inFlight: ReadonlySet<string>,
+      { splitByAuth }: { splitByAuth: boolean },
+    ): Promise<RequestGroup[]> => {
+      const groups = new Map<string, RequestGroup>();
+      for (const call of await list({}, 0, inFlight, false)) {
+        if (call.state === 'unreadable') continue;
+        const { method, url, headers } = call.send.request;
+        const { path } = requestKeyOf(method, url);
+        const auth = splitByAuth ? (authOf(headers) ?? null) : null;
+        const key = JSON.stringify([method, path, auth?.value ?? null]);
+        const group = groups.get(key);
+        if (group) {
+          group.count += 1;
+        } else {
+          // Calls arrive newest first, so the first call of a group is its newest.
+          groups.set(key, { method, path, auth, count: 1, latest: call });
+        }
+      }
+      return [...groups.values()];
+    },
 
     /**
      * Slice 9: search over every call. Filters combine across facets (AND) and within one (OR); text matches the URL,
@@ -217,7 +266,10 @@ export function createCallStore(db: Db) {
           auth: facet(
             'auth',
             (f) => f.auth,
-            (f) => ({ label: f.auth === '' ? 'No auth header' : f.auth }),
+            (f) =>
+              f.auth === ''
+                ? { label: 'No auth header' }
+                : { label: f.auth, detail: f.authHeader },
           ),
           savedRequest: facet(
             'savedRequest',
@@ -334,6 +386,15 @@ export function createCallStore(db: Db) {
 const RESPONSES_LIMIT = 500;
 const SEARCH_LIMIT = 500;
 
+/** One request in History grouped by request (history-grouping). `auth` is set only when grouped by auth too. */
+export interface RequestGroup {
+  method: string;
+  path: string;
+  auth: Auth | null;
+  count: number;
+  latest: Exclude<Call, { state: 'unreadable' }>;
+}
+
 /** Slice 9: what the History search filters on. `""` in a list means "none" (no environment, no header, …). */
 export interface SearchQuery {
   text?: string;
@@ -371,12 +432,15 @@ interface CallFacts {
   environmentName: string;
   environmentBaseUrl: string;
   auth: string;
+  /** The header `auth` came from; `''` when there is none. */
+  authHeader: '' | 'Authorization' | 'Cookie';
   savedRequestId: string;
   sentAt: number;
 }
 
 function factsOf(call: Exclude<Call, { state: 'unreadable' }>): CallFacts {
   const { send } = call;
+  const auth = authOf(send.request.headers);
   return {
     id: send._id,
     method: send.request.method,
@@ -385,7 +449,8 @@ function factsOf(call: Exclude<Call, { state: 'unreadable' }>): CallFacts {
     environmentId: send.environment?.id ?? '',
     environmentName: send.environment?.name ?? '',
     environmentBaseUrl: send.environment?.baseUrl ?? '',
-    auth: authorizationOf(send.request.headers) ?? '',
+    auth: auth?.value ?? '',
+    authHeader: auth?.header ?? '',
     savedRequestId: send.savedRequestId ?? '',
     sentAt: send.sentAt.getTime(),
   };
@@ -395,16 +460,6 @@ const isStoredFile = (body: unknown): body is { fileId: string } =>
   typeof body === 'object' &&
   body !== null &&
   typeof (body as { fileId?: unknown }).fileId === 'string';
-
-const escapeRegExp = (text: string) =>
-  text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-
-/** Matches an absolute URL whose path is exactly `path`; `/` also matches a URL with no path. */
-function pathPattern(path: string): string {
-  const root = path === '' || path === '/';
-  const pathPart = root ? '/?' : escapeRegExp(path);
-  return `^[A-Za-z][A-Za-z0-9+.-]*://[^/?#]*${pathPart}(?:[?#]|$)`;
-}
 
 function toCall<Send extends SendDoc | SendSummary>(
   rawSend: unknown,

@@ -213,10 +213,9 @@ choice survives a reload. A2 held for this phase: the whole suite passed with no
 ## Phase 5 — History, the strips and search follow the selected environment
 
 - **Executor:** lz-e2e
-- **Status:** in-progress — every automated check passes; the plan's done-when also needs the author's look at History
-  with an environment selected (T3.2, manual). Screenshots are listed below.
+- **Status:** done
 - **Started:** 2026-11-23
-- **Finished:** —
+- **Finished:** 2026-11-23
 
 **Risks:** with an environment selected, History, request groups, the strip or Other responses show another
 environment's calls; a list fetched for one environment appears after switching to another; selecting an environment
@@ -283,7 +282,8 @@ $ npx vitest run --project unit && npx vitest run --project integration
       Tests  390 passed (390)
 ```
 
-PASS for every automated criterion. Manual T3.2 look outstanding. Screenshots (throwaway spec, deleted after):
+PASS for every automated criterion. T3.2 manual look: done by the author on 2026-11-23 against the screenshots below —
+"I looked, it's fine". Screenshots (throwaway spec, deleted after):
 `/private/tmp/claude-501/-Users-lorentez-Developer-DigitalPigeon/4732e474-11c5-41c5-a080-962fe00a65a7/scratchpad/env-selected.png`
 (staging selected after a detected send: History by request lists staging's 3 calls; an unmatched call on screen, the
 strip reads "2 kept · staging — this call is not in staging"),

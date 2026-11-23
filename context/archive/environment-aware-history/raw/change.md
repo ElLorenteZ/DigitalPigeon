@@ -1,11 +1,11 @@
 ---
 change_id: environment-aware-history
 title: Detect a call's environment from its URL, and show History for the selected environment
-status: new
+status: closed
 ticket: null
 created: 2026-11-23
 updated: 2026-11-23
-closed: null
+closed: 2026-11-23
 produced-by: lz-change
 ---
 
@@ -46,3 +46,6 @@ Author's clarification (2026-11-23), choosing from the options offered:
   - What happens when two environments match, or none does.
   - Whether "History for the selected environment" is the History sidebar list, the responses strip, or both.
   - How it interacts with `history-grouping`'s request mode (branch `history-grouping`, PR not yet opened).
+- Closed 2026-11-23: all 5 phases verified (Phase 5 T3.2 look by the author); review merge-with-fixes, both fixes done;
+  merged into `main` as `6cc8c9f` (with history-grouping and slices 7–12), directly at the author's request.
+  General correctness not reviewed (`/code-review` not run).

@@ -57,7 +57,7 @@ General correctness has NOT been reviewed. Run the host code reviewer (`/code-re
 - **Where:** working tree on branch `environment-aware-history` (created from `a43ff5f`)
 - **Category:** verification
 - **Finding:** Both changes edit `src/renderer/app.tsx`. history-grouping's Phase 3 and 5 hunks and this change's hunks sit in one file, so this change cannot be committed by file selection alone. history-grouping also has open review fixes (its `review.md` F1–F3).
-- **Disposition:** fix now
+- **Disposition:** fix now — done: history-grouping committed as `af7a187`, this change as `254447c` on top; merged into `main` as `6cc8c9f`.
 - **Because:** Commit order decides whether either change's history reads correctly: history-grouping's fixes and commit first (on `history-grouping`), then this change on top.
 
 ### F2 — Phase 5's done-when needs the author's look at History with an environment selected (T3.2)
@@ -66,7 +66,7 @@ General correctness has NOT been reviewed. Run the host code reviewer (`/code-re
 - **Where:** `context/changes/environment-aware-history/progress.md` (Phase 5 status)
 - **Category:** verification
 - **Finding:** Every automated criterion passes. The manual look the plan makes part of done has not happened. The ledger states this, and the phase is not marked done.
-- **Disposition:** fix now (the author's act)
+- **Disposition:** fix now (the author's act) — done 2026-11-23: "I looked, it's fine".
 - **Because:** The plan makes it part of done. Screenshots: `/private/tmp/claude-501/-Users-lorentez-Developer-DigitalPigeon/4732e474-11c5-41c5-a080-962fe00a65a7/scratchpad/env-selected.png`, `/private/tmp/claude-501/-Users-lorentez-Developer-DigitalPigeon/4732e474-11c5-41c5-a080-962fe00a65a7/scratchpad/env-all.png`.
 
 ### F3 — A phase's routing entry reads as its status

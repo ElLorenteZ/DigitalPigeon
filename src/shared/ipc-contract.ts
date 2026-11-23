@@ -14,6 +14,14 @@ export const channels = {
   send: 'pigeon:send',
   cancel: 'pigeon:cancel',
   listCalls: 'pigeon:list-calls',
+  listResponses: 'pigeon:list-responses',
+  listRequestGroups: 'pigeon:list-request-groups',
+  deleteCall: 'pigeon:delete-call',
+  searchCalls: 'pigeon:search-calls',
+  importOpenApi: 'pigeon:import-openapi',
+  importWsdl: 'pigeon:import-wsdl',
+  listTemplates: 'pigeon:list-templates',
+  getTemplate: 'pigeon:get-template',
   dbStatus: 'pigeon:db-status',
   getCall: 'pigeon:get-call',
   replay: 'pigeon:replay',
@@ -106,6 +114,26 @@ export const ReplayInputSchema = z.strictObject({
 export type ReplayInput = z.infer<typeof ReplayInputSchema>;
 
 export const GetCallInputSchema = z.string().min(1);
+
+/**
+ * The responses to one request: same method and URL path; query, fragment and host are not part of the key (slice 7).
+ * `auth` narrows them to the calls sent with that Authorization, otherwise Cookie, value; `''` means none; absent means
+ * every auth (history-grouping). Bounded like a search's auth values.
+ */
+/** History for one environment, or every call with no input (environment-aware-history). */
+export const ListCallsInputSchema = z
+  .strictObject({ environmentId: z.string().min(1).optional() })
+  .optional();
+export type ListCallsInput = z.infer<typeof ListCallsInputSchema>;
+
+export const ListResponsesInputSchema = z.strictObject({
+  method: z.enum(METHODS),
+  path: z.string().startsWith('/').max(8192),
+  auth: z.string().max(65536).optional(),
+  /** Only calls recorded under this environment; absent for every call (environment-aware-history). */
+  environmentId: z.string().min(1).optional(),
+});
+export type ListResponsesInput = z.infer<typeof ListResponsesInputSchema>;
 
 /** The most one readBody call returns: the display page, equal to the inline limit (plan.md). */
 export const BODY_PAGE_BYTES = 1024 * 1024;
@@ -256,6 +284,164 @@ export const ListCallsResultSchema = z.discriminatedUnion('ok', [
 ]);
 export type ListCallsResult = z.infer<typeof ListCallsResultSchema>;
 
+/**
+ * History grouped by request (history-grouping): one group per method and URL path, and per Authorization, otherwise
+ * Cookie, value when `splitByAuth`; over every call. `auth` is null when not split, and for calls with no auth header.
+ */
+export const ListRequestGroupsInputSchema = z.strictObject({
+  splitByAuth: z.boolean(),
+  environmentId: z.string().min(1).optional(),
+});
+export type ListRequestGroupsInput = z.infer<
+  typeof ListRequestGroupsInputSchema
+>;
+
+const RequestGroupSchema = z.strictObject({
+  method: z.string(),
+  path: z.string(),
+  auth: z
+    .strictObject({
+      header: z.enum(['Authorization', 'Cookie']),
+      value: z.string(),
+    })
+    .nullable(),
+  count: z.number().int().positive(),
+  /** The group's newest call, without bodies. */
+  latest: z.strictObject({
+    state: z.enum(['completed', 'in-flight', 'interrupted']),
+    send: SendSummarySchema,
+    completion: CompletionSummarySchema.nullable(),
+  }),
+});
+export type RequestGroup = z.infer<typeof RequestGroupSchema>;
+
+export const ListRequestGroupsResultSchema = z.discriminatedUnion('ok', [
+  z.strictObject({ ok: z.literal(true), groups: z.array(RequestGroupSchema) }),
+  z.strictObject({ ok: z.literal(false), message: z.string() }),
+]);
+export type ListRequestGroupsResult = z.infer<
+  typeof ListRequestGroupsResultSchema
+>;
+
+/** Slice 9: the History search. `""` in a list means "none" (no environment, no Authorization header, …). */
+const IdList = z.array(z.string().max(4096)).max(500).optional();
+// Authorization values can be long JWTs (code review of history-search, 8).
+const AuthList = z.array(z.string().max(65536)).max(500).optional();
+export const SearchQuerySchema = z.strictObject({
+  text: z.string().max(1024).optional(),
+  methods: z.array(z.enum(METHODS)).max(METHODS.length).optional(),
+  environmentIds: IdList,
+  auths: AuthList,
+  savedRequestIds: IdList,
+  from: z.iso.datetime().optional(),
+  to: z.iso.datetime().optional(),
+});
+export type SearchQuery = z.infer<typeof SearchQuerySchema>;
+
+const FacetOptionSchema = z.strictObject({
+  value: z.string(),
+  label: z.string(),
+  detail: z.string().optional(),
+  count: z.number().int().nonnegative(),
+});
+export type FacetOption = z.infer<typeof FacetOptionSchema>;
+
+export const SearchResultSchema = z.discriminatedUnion('ok', [
+  z.strictObject({
+    ok: z.literal(true),
+    calls: z.array(CallViewSchema),
+    total: z.number().int().nonnegative(),
+    of: z.number().int().nonnegative(),
+    facets: z.strictObject({
+      method: z.array(FacetOptionSchema),
+      environment: z.array(FacetOptionSchema),
+      auth: z.array(FacetOptionSchema),
+      savedRequest: z.array(FacetOptionSchema),
+    }),
+  }),
+  z.strictObject({ ok: z.literal(false), message: z.string() }),
+]);
+export type SearchResult = z.infer<typeof SearchResultSchema>;
+
+/** Slice 10: importing an OpenAPI JSON file as request templates. The server parses it again. */
+/** Code review of openapi-import, 9: its own schema, not the call id's. */
+export const GetTemplateInputSchema = z.string().min(1).max(64);
+
+export const ImportOpenApiInputSchema = z.strictObject({
+  text: z.string().max(20 * 1024 * 1024),
+  filename: z.string().max(1024),
+  grouping: z.enum(['tag', 'path']),
+  useEnvironment: z.boolean(),
+  /** What the dialog showed: 'new' never overwrites a source with the same title (slice 11 code review, 7). */
+  mode: z.enum(['new', 'reimport']),
+});
+export type ImportOpenApiInput = z.infer<typeof ImportOpenApiInputSchema>;
+
+/** Slice 12: importing a WSDL file as SOAP templates, filed by port. */
+export const ImportWsdlInputSchema = z.strictObject({
+  text: z.string().max(20 * 1024 * 1024),
+  filename: z.string().max(1024),
+  mode: z.enum(['new', 'reimport']),
+});
+export type ImportWsdlInput = z.infer<typeof ImportWsdlInputSchema>;
+
+export const ImportResultSchema = z.discriminatedUnion('ok', [
+  z.strictObject({
+    ok: z.literal(true),
+    sourceId: z.string(),
+    count: z.number().int().nonnegative(),
+    reimported: z.boolean(),
+    added: z.number().int().nonnegative(),
+    updated: z.number().int().nonnegative(),
+    removed: z.number().int().nonnegative(),
+  }),
+  z.strictObject({ ok: z.literal(false), message: z.string() }),
+]);
+export type ImportResult = z.infer<typeof ImportResultSchema>;
+
+const TemplateListingSchema = z.strictObject({
+  id: z.string(),
+  directory: z.string(),
+  name: z.string(),
+  method: z.string(),
+  path: z.string(),
+  badge: z.string(),
+});
+export type TemplateListing = z.infer<typeof TemplateListingSchema>;
+
+const TemplateSourceSchema = z.strictObject({
+  id: z.string(),
+  name: z.string(),
+  kind: z.enum(['openapi', 'wsdl']),
+  importedAt: z.date(),
+  templates: z.array(TemplateListingSchema),
+});
+export type TemplateSource = z.infer<typeof TemplateSourceSchema>;
+
+export const ListTemplatesResultSchema = z.discriminatedUnion('ok', [
+  z.strictObject({
+    ok: z.literal(true),
+    sources: z.array(TemplateSourceSchema),
+  }),
+  z.strictObject({ ok: z.literal(false), message: z.string() }),
+]);
+export type ListTemplatesResult = z.infer<typeof ListTemplatesResultSchema>;
+
+export const GetTemplateResultSchema = z.discriminatedUnion('ok', [
+  z.strictObject({
+    ok: z.literal(true),
+    template: z
+      .strictObject({
+        id: z.string(),
+        name: z.string(),
+        request: RequestFormSchema,
+      })
+      .nullable(),
+  }),
+  z.strictObject({ ok: z.literal(false), message: z.string() }),
+]);
+export type GetTemplateResult = z.infer<typeof GetTemplateResultSchema>;
+
 /** One opened call, with the full completion including the response body. */
 export const CallDetailSchema = z.discriminatedUnion('state', [
   z.strictObject({
@@ -314,9 +500,20 @@ export type DbStatusView = z.infer<typeof DbStatusViewSchema>;
 export interface PigeonApi {
   send: (input: SendInput) => Promise<SendResult>;
   cancel: (clientRequestId: string) => Promise<void>;
-  listCalls: () => Promise<ListCallsResult>;
+  listCalls: (input?: ListCallsInput) => Promise<ListCallsResult>;
   dbStatus: () => Promise<DbStatusView>;
   getCall: (sendId: string) => Promise<GetCallResult>;
+  listResponses: (input: ListResponsesInput) => Promise<ListCallsResult>;
+  listRequestGroups: (
+    input: ListRequestGroupsInput,
+  ) => Promise<ListRequestGroupsResult>;
+  /** Deletes one call for good, with its body files (slice 8). The UI holds it for Undo before calling this. */
+  deleteCall: (sendId: string) => Promise<MutationResult>;
+  searchCalls: (query: SearchQuery) => Promise<SearchResult>;
+  importOpenApi: (input: ImportOpenApiInput) => Promise<ImportResult>;
+  importWsdl: (input: ImportWsdlInput) => Promise<ImportResult>;
+  listTemplates: () => Promise<ListTemplatesResult>;
+  getTemplate: (id: string) => Promise<GetTemplateResult>;
   replay: (input: ReplayInput) => Promise<SendResult>;
   readBody: (input: ReadBodyInput) => Promise<ReadBodyResult>;
   describeBody: (input: DescribeBodyInput) => Promise<DescribeBodyResult>;

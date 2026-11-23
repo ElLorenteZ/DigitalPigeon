@@ -29,16 +29,16 @@ was added on 2026-11-11 by the author's decision, ahead of slice 6.
 - [x] Sending the same unchanged request twice produces two call records, each with its own timestamp. *(slice 1: `call-store.int.test.ts`, `send.int.test.ts` T1.1, e2e journey shows two rows)*
 - [x] A call record's content does not change after it is written; edit-and-send creates a new record and the original is unchanged when viewed again. *(slice 1: insert-only store, no update or delete; slice 2: `replay.int.test.ts` T1.1, `e2e/edit-and-export.spec.ts`)*
 - [x] An exact replay sends the same method, URL, headers and body as the recorded request, and creates a new record. *(slices 2 and 3a: holds for no body and for JSON, XML, text and form bodies, `replay.int.test.ts` T1.3; multipart is slice 4; slice 4: multipart, inline and stored, `send.int.test.ts`, `replay.int.test.ts`)*
-- [ ] A call record disappears only after the user deletes it, one at a time or in bulk.
+- [x] A call record disappears only after the user deletes it, one at a time or in bulk. *(slice 8: one at a time, `e2e/delete.spec.ts`; slice 9: a selection, `e2e/search.spec.ts`; T1.7)*
 - [x] A call record shows the request as sent, response status, response headers, full response body and timing. *(slice 2: the panel shows all of these; slice 3a: a body over 16 MB is stored in full, T1.5, and read to its end with Load more, `e2e/bodies.spec.ts`; slice 3b: shown in a read-only Monaco editor. Renderer memory limits how far a very large body can be paged, T3.10)*
 - [x] JSON and XML request and response bodies are shown pretty-printed. *(slice 3b: Pretty by default with a Raw switch, chosen from the recorded `Content-Type`; formatted page by page up to 17 MiB with stored bytes unchanged, `src/core/body-format.ts` unit tests, `e2e/bodies.spec.ts`; T1.8 guarded by `e2e/body-safety.spec.ts`)*
 - [x] JSON, XML, plain-text, form-urlencoded and multipart requests can each be sent and are recorded. *(slice 3a: all but multipart, `send.int.test.ts` T1.2, T1.3; multipart is slice 4; slice 4: multipart on 6 methods, `send.int.test.ts`, `e2e/multipart.spec.ts`)*
 - [x] A recorded multipart call can be replayed after the uploaded file is deleted from its original location. *(slice 4: T1.4, `replay.int.test.ts` inline and GridFS, `e2e/multipart.spec.ts`)*
-- [ ] History can be narrowed by environment, by saved request, by date range, and by a search term in URL or body.
-- [ ] History can be narrowed by HTTP method (one or several) and by the `Authorization` header value sent; filters combine, and each option shows its count.
-- [ ] A request shows every response it has received, newest first, and any one of them can be deleted without affecting the others.
-- [ ] A call can be resent from History, one at a time or as a selection; each resend creates a new record.
-- [ ] A deleted call can be restored with Undo for a few seconds, then it is gone permanently.
+- [x] History can be narrowed by environment, by saved request, by date range, and by a search term in URL or body. *(slice 9: `src/core/search.int.test.ts`, `e2e/search.spec.ts`; bodies stored as files, over 1 MiB, are not searched)*
+- [x] History can be narrowed by HTTP method (one or several) and by the `Authorization` header value sent; filters combine, and each option shows its count. *(slice 9: `search.int.test.ts` faceted counts, `e2e/search.spec.ts`)*
+- [x] A request shows every response it has received, newest first, and any one of them can be deleted without affecting the others. *(slice 7: `e2e/responses.spec.ts`; slice 8: delete from a chip, `e2e/delete.spec.ts`; only the target is removed, T1.7)*
+- [x] A call can be resent from History, one at a time or as a selection; each resend creates a new record. *(slice 9: `e2e/search.spec.ts`, originals deep-equal after)*
+- [x] A deleted call can be restored with Undo for a few seconds, then it is gone permanently. *(slice 8: `e2e/delete.spec.ts`; `call-store.int.test.ts` `deleteCall`, T1.7)*
 - [x] The app shows the target design's shell: the circuit-trace pigeon logo, title bar with the active environment, sidebar tabs, and the status bar. *(slice 6: `e2e/shell.spec.ts`; screenshots compared with screens 01 and 02, `archive/workspace-shell`)*
 - [x] Switching the active environment changes the `baseUrl` a saved request is sent to. *(slice 5: `e2e/saved-requests.spec.ts` outcome scenario, `e2e/environments.spec.ts`, `send.int.test.ts`, `url.test.ts` T2.5)*
 - [x] A request exported as curl, run in a terminal, sends the same method, URL, headers and body. *(slices 2 and 3a: holds for no body and for JSON, XML, text and form bodies with a command up to 900 KiB, on macOS, `curl.int.test.ts` T2.4; a longer command is refused with the reason; multipart is slice 4; slice 4: a text-only multipart body, `curl.int.test.ts`; a binary file part is refused with the reason, as a command over 900 KiB is)*
@@ -55,9 +55,9 @@ was added on 2026-11-11 by the author's decision, ahead of slice 6.
 | 5 | Saved requests and environments | Save a request and edit it later; define environments (name + `baseUrl`), switch the active one, and the same saved request goes to the other `baseUrl`; calls link back to their saved request | done | `saved-requests-and-environments` |
 | 5b | Desktop to local web app | One command starts a Node server bound to `127.0.0.1`; opening its address in a browser shows the app working as it does today (send, history, preview, replay, curl export, bodies, multipart, saved requests, environments); the Electron shell is gone; every existing e2e journey passes in a plain browser; a request to the server from another origin, or without the per-launch token, is refused and nothing is sent or recorded | done | `local-web-app` |
 | 6 | Workspace shell in the design | The app looks like screens 01 and 02: the logo in the title bar, the environment selector in the title bar, a sidebar with Saved and History tabs (Templates appears in M2), request above response, the status bar; every existing e2e journey still passes | done | `workspace-shell` |
-| 7 | Responses to this request | Send the same method and path three times and the response panel shows three response chips, newest selected; pick one to view it; the call record lists the other responses of its request | next | `responses-strip` |
-| 8 | Delete with undo | Delete one response from the strip, the history list or the call record; it disappears, an Undo toast restores it for a few seconds, then it is gone permanently along with its stored bodies and file copies | later | — |
-| 9 | Search, filter, resend | Screen 04: search text plus method, environment, `Authorization` header and date facets with counts, results table, resend one or a selection, delete a selection; an empty result says so and offers to clear filters | later | — |
+| 7 | Responses to this request | Send the same method and path three times and the response panel shows three response chips, newest selected; pick one to view it; the call record lists the other responses of its request | done | `responses-strip` |
+| 8 | Delete with undo | Delete one response from the strip, the history list or the call record; it disappears, an Undo toast restores it for a few seconds, then it is gone permanently along with its stored bodies and file copies | done | `delete-with-undo` |
+| 9 | Search, filter, resend | Screen 04: search text plus method, environment, `Authorization` header and date facets with counts, results table, resend one or a selection, delete a selection; an empty result says so and offers to clear filters | done | `history-search` |
 
 **Order rationale:**
 - Slice 1 goes first because it is both the thinnest end-to-end path and the riskiest. Recording the request exactly as it went over the wire through `undici` (T1.2, T1.3) underpins every later slice. It also carries the groundwork that has no visible outcome of its own:
@@ -184,6 +184,11 @@ was added on 2026-11-11 by the author's decision, ahead of slice 6.
   - 10 code-review findings, all fixed, 4 of them with new e2e scenarios
 
   Renderer-only slices are faster than slices that touch undici or storage.
+- **Slices 7–9** (2026-11-21), the same day: renderer and query work, with no new undici shapes. Each code review still
+  found 9–10 issues. One was a data-loss blocker: the orphan sweep would have deleted saved requests' bodies.
+- **M1 status (2026-11-21):** all 11 slices are built. Every exit criterion is met except the author's own judgement
+  (two weeks without Postman/Insomnia). M1 closes when the author says so. Slices 6–9 are PRs #5–#8, stacked on one
+  another and waiting for the author to merge them.
 - **Merged:** slices 1, 2 and 3a reached `main` together on 2026-11-07, at `15c97c9`, with no pull request (author's
   instruction). "Done" here now means closed, archived and merged. Slice 3b reached `main` through PR #3 on
   2026-11-08. Slice 4 reached `main` at `7ab1f65` on 2026-11-09, fast-forwarded with no pull request (author's
@@ -194,13 +199,38 @@ was added on 2026-11-11 by the author's decision, ahead of slice 6.
 
 ### M2 — Templates from OpenAPI and WSDL (design screen 05)
 
-Next after M1, because it is the rest of the target design. Slices named, not detailed; detail them when M1 closes.
-- **OpenAPI import**: choose a JSON file, preview, generate one template per operation into directories by tag or path
-  segment; the Templates tab shows the tree; a template opens into the form and sends with the active `baseUrl`.
-- **Re-import and errors**: re-importing updates templates in place without touching History; an invalid file imports
-  nothing and shows where it failed (screen 03, row 3).
-- **WSDL import and SOAP send**: spike WSDL parsing first (`tech-stack.md`); templates filed by service and port; a SOAP
-  operation sends and is recorded like any other call.
+Cut on 2026-11-21, before M1 closed. The author's instruction "continue … finish when roadmap will be finished"
+outranks the rule "detail it when M1 closes". M1 waits only on the author's own judgement.
+
+**Exit criteria**, from `prd.md`:
+- [x] Importing an OpenAPI JSON file creates one request template per operation, filed into directories by tag or by
+  first path segment, with a preview before generating. *(slice 10: `openapi.test.ts`, `template-store.int.test.ts`,
+  `e2e/templates.spec.ts`)*
+- [x] Importing a WSDL file creates one template per operation, filed by service and port, and a SOAP template sends
+  and is recorded like any other call. *(slice 12: `wsdl.test.ts`, `wsdl.int.test.ts` on the wire,
+  `e2e/templates.spec.ts`)*
+- [x] An invalid file imports nothing and shows where it failed. *(slice 11: `openapi.test.ts`, `e2e/templates.spec.ts`; WSDL errors in slice 12)*
+- [x] Re-importing the same spec updates its templates in place and does not change History. *(slice 11: `template-store.int.test.ts`, `e2e/templates.spec.ts`)*
+- [x] The sidebar has three tabs: Templates (directories), Saved and History. *(slice 10: `e2e/templates.spec.ts`)*
+
+| # | Slice | Observable outcome | Status | Change |
+|---|---|---|---|---|
+| 10 | OpenAPI import | Choose an OpenAPI JSON file; the dialog previews directories by tag or path segment; Generate fills the Templates tab tree (source → directory → operation); a template opens into the form and sends to the active environment's `baseUrl` | done | `openapi-import` |
+| 11 | Re-import and errors | Importing the same spec again updates its templates in place, adding new operations and removing gone ones, with History unchanged; an invalid file imports nothing and the dialog says where it failed (JSON position, or the path that is missing) | done | `reimport-and-errors` |
+| 12 | WSDL import and SOAP send | Spike WSDL parsing first. A WSDL file previews and generates one template per operation, filed by service and port; a SOAP template sends a `POST` with `SOAPAction` and an envelope, recorded like any call | done | `wsdl-import` |
+
+**M2 status (2026-11-21):** all 3 slices are built, and every exit criterion is met. Slices 10–12 are PRs #9–#11,
+stacked on M1's #5–#8 and waiting for the author to merge them. M2 closes with M1, which waits only on the author's
+judgement. Calibration: the 3 slices took one day. Every code review found 9–10 issues; for WSDL, five came from
+real-world shapes the spike's fixture did not have.
+
+**Order rationale:** OpenAPI first, because it is the most common format and proves the template store, the tree and
+the import dialog. Re-import and errors come second, on a store that already exists. WSDL comes last, because it is
+the riskiest (`tech-stack.md`: weaker JS tooling) and is spiked before planning.
+
+**Decision (PRD open question), confirmed by the author on 2026-11-22:** a template opens into the form unlinked, as
+Edit of a call does. Save then makes a saved request from it. Templates are not edited in place; re-import replaces
+them. Built that way in slice 10 (`archive/openapi-import`).
 
 ### Not ordered yet
 
@@ -212,6 +242,10 @@ Not in the target design. Order is set when the author asks for them.
 - **OAuth2 token flows, cookie jar.**
 - **Proxy, client certificates (mTLS), custom CA** — moves into M1 if assumption A1 (work APIs need no proxy) proves false.
 - **WebSocket, gRPC, SSE.**
+- **Search performance** (from `history-search` code review 6): `searchCalls` loads every send and completion
+  summary on each query. Push the facet and date filters into MongoDB, and load completions only for the calls
+  returned. Together with a stored, indexed `request.path` (from `responses-strip`), this replaces `listResponses`'s
+  `$regex` scan.
 - **Editable request body in the code editor** (from `workspace-shell` review F2): screen 01 shows the request body
   in a numbered editor; the form keeps a textarea. Needs the form's text state to live with an editable Monaco model.
 - **Harden the per-launch token against other software on the same machine** (author decision 2026-11-20, after

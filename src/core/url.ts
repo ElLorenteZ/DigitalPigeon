@@ -77,3 +77,36 @@ export function pathFor(
   const path = url.slice(base.length);
   return composeUrl(path, environment) === url ? path : undefined;
 }
+
+/**
+ * The environment a full URL was sent to (environment-aware-history): the one whose baseUrl it starts with, by
+ * `pathFor`'s rule, compared as the URL parser writes the URL. The longest baseUrl wins; among equal ones, the selected
+ * environment, otherwise the first given. A path, or a URL that does not parse, has none.
+ */
+export function environmentForUrl<E extends { id: string; baseUrl: string }>(
+  url: string,
+  environments: readonly E[],
+  selectedId: string | null,
+): E | undefined {
+  if (isPath(url)) return undefined;
+  let href: string;
+  try {
+    href = new URL(url).href;
+  } catch {
+    return undefined;
+  }
+  let best: E | undefined;
+  let bestLength = -1;
+  for (const environment of environments) {
+    if (pathFor(href, environment) === undefined) continue;
+    const length = withoutTrailingSlashes(environment.baseUrl).length;
+    if (
+      length > bestLength ||
+      (length === bestLength && environment.id === selectedId)
+    ) {
+      best = environment;
+      bestLength = length;
+    }
+  }
+  return best;
+}

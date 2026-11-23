@@ -4,7 +4,12 @@ import { randomUUID } from 'node:crypto';
 import type { Db } from 'mongodb';
 import { z } from 'zod';
 import type { EnvironmentSnapshot } from './call-schema';
-import { NoActiveEnvironmentError, checkBaseUrl, isPath } from './url';
+import {
+  NoActiveEnvironmentError,
+  checkBaseUrl,
+  environmentForUrl,
+  isPath,
+} from './url';
 
 export class EnvironmentNotFoundError extends Error {
   constructor(readonly id: string) {
@@ -114,15 +119,17 @@ export function createEnvironmentStore(db: Db) {
 }
 
 /**
- * The environment a send uses, loaded by the id its select showed (plan revision 2, B1). A full URL uses none,
- * whatever is chosen (review R1). A path needs one that still exists; both refusals come before anything is recorded.
+ * The environment a send uses, loaded by the id its select showed (plan revision 2, B1). A path needs one that still
+ * exists; both refusals come before anything is recorded. A full URL gets the environment whose baseUrl it starts with
+ * (`environmentForUrl`), the chosen id only breaking ties; this supersedes review R1, under which a full URL used none
+ * (environment-aware-history).
  */
 export async function resolveEnvironment(
-  store: Pick<ReturnType<typeof createEnvironmentStore>, 'get'>,
+  store: Pick<ReturnType<typeof createEnvironmentStore>, 'get' | 'list'>,
   id: string | null,
   url: string,
 ): Promise<EnvironmentSnapshot | undefined> {
-  if (!isPath(url)) return undefined;
+  if (!isPath(url)) return environmentForUrl(url, await store.list(), id);
   if (id === null) throw new NoActiveEnvironmentError();
   const environment = await store.get(id);
   if (!environment) throw new EnvironmentNotFoundError(id);

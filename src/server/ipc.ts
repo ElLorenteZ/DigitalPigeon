@@ -5,6 +5,7 @@ import type { Db } from 'mongodb';
 import { z } from 'zod';
 import type { CompletionDoc, SendDoc, StoredBody } from '../core/call-schema';
 import { type Call, createCallStore } from '../core/call-store';
+import { createTemplateStore } from '../core/template-store';
 import {
   CallNotReplayableError,
   DatabaseUnavailableError,
@@ -34,7 +35,23 @@ import {
   GetCallInputSchema,
   GetCallResultSchema,
   type ListCallsResult,
+  ListCallsInputSchema,
   ListCallsResultSchema,
+  ListRequestGroupsInputSchema,
+  type ListRequestGroupsResult,
+  ListRequestGroupsResultSchema,
+  ListResponsesInputSchema,
+  type SearchResult,
+  type ImportResult,
+  ImportOpenApiInputSchema,
+  ImportWsdlInputSchema,
+  type ListTemplatesResult,
+  ListTemplatesResultSchema,
+  type GetTemplateResult,
+  GetTemplateResultSchema,
+  GetTemplateInputSchema,
+  SearchQuerySchema,
+  SearchResultSchema,
   BODY_PAGE_BYTES,
   ActiveEnvironmentInputSchema,
   type GetSavedRequestResult,
@@ -63,6 +80,8 @@ import {
 } from '../shared/ipc-contract';
 
 const HISTORY_LIMIT = 200;
+const SWEEP_EVERY_MS = 60 * 60 * 1000;
+const SWEEP_AGE_MS = 24 * 60 * 60 * 1000;
 
 /** Where operations are registered: one handler per channel, called with an unused event and the raw input. */
 export interface Registrar {
@@ -508,22 +527,235 @@ export function registerIpc({ ipcMain, db, dbStatus }: IpcDeps): void {
 
   // A database that drops between heartbeats makes the query fail; that becomes a message, not a
   // rejected invoke (review #3).
-  ipcMain.handle(channels.listCalls, async (): Promise<ListCallsResult> => {
-    const database = db();
-    if (!database || dbStatus().status !== 'up') return { ok: true, calls: [] };
-    try {
-      const calls = await storeFor(database).listCalls(
-        HISTORY_LIMIT,
-        inFlightSendIds,
-      );
-      return ListCallsResultSchema.parse({
-        ok: true,
-        calls: calls.map(toView),
-      });
-    } catch (error) {
-      return { ok: false, message: message(error) };
-    }
-  });
+  ipcMain.handle(
+    channels.listCalls,
+    async (_event, raw: unknown): Promise<ListCallsResult> => {
+      const input = ListCallsInputSchema.safeParse(raw);
+      if (!input.success) {
+        return { ok: false, message: z.prettifyError(input.error) };
+      }
+      const database = db();
+      if (!database || dbStatus().status !== 'up')
+        return { ok: true, calls: [] };
+      try {
+        const environmentId = input.data?.environmentId;
+        const calls = await storeFor(database).listCalls(
+          HISTORY_LIMIT,
+          inFlightSendIds,
+          environmentId === undefined ? {} : { environmentId },
+        );
+        return ListCallsResultSchema.parse({
+          ok: true,
+          calls: calls.map(toView),
+        });
+      } catch (error) {
+        return { ok: false, message: message(error) };
+      }
+    },
+  );
+
+  // History grouped by request (history-grouping): every call, grouped in the store; the same database-down and
+  // failure handling as listCalls.
+  ipcMain.handle(
+    channels.listRequestGroups,
+    async (_event, raw: unknown): Promise<ListRequestGroupsResult> => {
+      const input = ListRequestGroupsInputSchema.safeParse(raw);
+      if (!input.success) {
+        return { ok: false, message: z.prettifyError(input.error) };
+      }
+      const database = db();
+      if (!database || dbStatus().status !== 'up') {
+        return { ok: true, groups: [] };
+      }
+      try {
+        const groups = await storeFor(database).listRequestGroups(
+          inFlightSendIds,
+          input.data,
+        );
+        return ListRequestGroupsResultSchema.parse({
+          ok: true,
+          groups: groups.map((g) => ({ ...g, latest: toView(g.latest) })),
+        });
+      } catch (error) {
+        return { ok: false, message: message(error) };
+      }
+    },
+  );
+
+  // Slice 8: the UI has already held the call for Undo; this deletes it for good, then sweeps body files nothing
+  // refers to (T3.9). A call still in flight here is refused.
+  let lastSweep = 0;
+  ipcMain.handle(
+    channels.deleteCall,
+    async (_event, raw: unknown): Promise<MutationResult> => {
+      const sendId = GetCallInputSchema.safeParse(raw);
+      if (!sendId.success) {
+        return { ok: false, message: z.prettifyError(sendId.error) };
+      }
+      if (inFlightSendIds.has(sendId.data)) {
+        return { ok: false, message: 'A call in flight cannot be deleted' };
+      }
+      const database = db();
+      if (!database || dbStatus().status !== 'up') {
+        return { ok: false, message: 'Database not running' };
+      }
+      try {
+        const store = storeFor(database);
+        const { deleted } = await store.deleteCall(sendId.data);
+        if (!deleted) return { ok: false, message: 'Call not found' };
+        // At most once an hour, and only for data older than a day: an upload can run long before its file document
+        // exists (code review of delete-with-undo, 8 and 9).
+        if (Date.now() - lastSweep >= SWEEP_EVERY_MS) {
+          lastSweep = Date.now();
+          await store
+            .sweepOrphanBodies(new Date(Date.now() - SWEEP_AGE_MS))
+            .catch(() => undefined);
+        }
+        return { ok: true };
+      } catch (error) {
+        return { ok: false, message: message(error) };
+      }
+    },
+  );
+
+  // Slice 10: request templates from imported specs. An invalid spec stores nothing and says why.
+  ipcMain.handle(
+    channels.importOpenApi,
+    async (_event, raw: unknown): Promise<ImportResult> => {
+      const input = ImportOpenApiInputSchema.safeParse(raw);
+      if (!input.success) {
+        return { ok: false, message: z.prettifyError(input.error) };
+      }
+      const database = db();
+      if (!database || dbStatus().status !== 'up') {
+        return { ok: false, message: 'Database not running' };
+      }
+      try {
+        const done = await createTemplateStore(database).importOpenApi(
+          input.data,
+        );
+        return { ok: true, ...done };
+      } catch (error) {
+        return { ok: false, message: message(error) };
+      }
+    },
+  );
+
+  ipcMain.handle(
+    channels.importWsdl,
+    async (_event, raw: unknown): Promise<ImportResult> => {
+      const input = ImportWsdlInputSchema.safeParse(raw);
+      if (!input.success) {
+        return { ok: false, message: z.prettifyError(input.error) };
+      }
+      const database = db();
+      if (!database || dbStatus().status !== 'up') {
+        return { ok: false, message: 'Database not running' };
+      }
+      try {
+        const done = await createTemplateStore(database).importWsdl(input.data);
+        return { ok: true, ...done };
+      } catch (error) {
+        return { ok: false, message: message(error) };
+      }
+    },
+  );
+
+  ipcMain.handle(
+    channels.listTemplates,
+    async (): Promise<ListTemplatesResult> => {
+      const database = db();
+      if (!database || dbStatus().status !== 'up') {
+        return { ok: true, sources: [] };
+      }
+      try {
+        return ListTemplatesResultSchema.parse({
+          ok: true,
+          sources: await createTemplateStore(database).list(),
+        });
+      } catch (error) {
+        return { ok: false, message: message(error) };
+      }
+    },
+  );
+
+  ipcMain.handle(
+    channels.getTemplate,
+    async (_event, raw: unknown): Promise<GetTemplateResult> => {
+      const id = GetTemplateInputSchema.safeParse(raw);
+      if (!id.success) {
+        return { ok: false, message: z.prettifyError(id.error) };
+      }
+      const database = db();
+      if (!database || dbStatus().status !== 'up') {
+        return { ok: false, message: 'Database not running' };
+      }
+      try {
+        return GetTemplateResultSchema.parse({
+          ok: true,
+          template: await createTemplateStore(database).get(id.data),
+        });
+      } catch (error) {
+        return { ok: false, message: message(error) };
+      }
+    },
+  );
+
+  ipcMain.handle(
+    channels.searchCalls,
+    async (_event, raw: unknown): Promise<SearchResult> => {
+      const query = SearchQuerySchema.safeParse(raw ?? {});
+      if (!query.success) {
+        return { ok: false, message: z.prettifyError(query.error) };
+      }
+      const database = db();
+      if (!database || dbStatus().status !== 'up') {
+        return { ok: false, message: 'Database not running' };
+      }
+      try {
+        const found = await storeFor(database).searchCalls(
+          query.data,
+          inFlightSendIds,
+        );
+        return SearchResultSchema.parse({
+          ok: true,
+          ...found,
+          calls: found.calls.map(toView),
+        });
+      } catch (error) {
+        return { ok: false, message: message(error) };
+      }
+    },
+  );
+
+  ipcMain.handle(
+    channels.listResponses,
+    async (_event, raw: unknown): Promise<ListCallsResult> => {
+      const input = ListResponsesInputSchema.safeParse(raw);
+      if (!input.success) {
+        return { ok: false, message: z.prettifyError(input.error) };
+      }
+      const database = db();
+      if (!database || dbStatus().status !== 'up') {
+        return { ok: true, calls: [] };
+      }
+      try {
+        const calls = await storeFor(database).listResponses(
+          input.data.method,
+          input.data.path,
+          inFlightSendIds,
+          input.data.auth,
+          input.data.environmentId,
+        );
+        return ListCallsResultSchema.parse({
+          ok: true,
+          calls: calls.map(toView),
+        });
+      } catch (error) {
+        return { ok: false, message: message(error) };
+      }
+    },
+  );
 
   ipcMain.handle(
     channels.dbStatus,

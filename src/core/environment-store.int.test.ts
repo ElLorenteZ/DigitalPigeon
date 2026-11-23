@@ -1,4 +1,5 @@
 // Environments and the active one, against a real MongoDB (plan.md, phase 1).
+import { randomUUID } from 'node:crypto';
 import {
   afterAll,
   beforeAll,
@@ -125,7 +126,7 @@ describe('the active environment', () => {
   });
 });
 
-// The send names the environment its select shows; main loads it by id (plan revision 2, B1; review R1).
+// The send names the environment its select shows; main loads it by id (plan revision 2, B1); a full URL gets the environment it starts with (environment-aware-history).
 describe('resolveEnvironment', () => {
   test('a path with an environment gives its snapshot as stored', async () => {
     const env = await store().create({
@@ -139,15 +140,44 @@ describe('resolveEnvironment', () => {
     });
   });
 
-  test('a full URL records no environment, even with one chosen or a deleted one named', async () => {
+  // environment-aware-history, phase 2: supersedes review R1 ("a full URL records no environment").
+  test('a full URL gives the environment whose baseUrl it starts with, whichever is chosen', async () => {
+    const host = `https://${randomUUID()}.test`;
+    const match = await store().create({ name: 'm', baseUrl: `${host}/v1` });
+    const other = await store().create({
+      name: 'o',
+      baseUrl: 'https://b.test',
+    });
+    expect(
+      await resolveEnvironment(store(), other.id, `${host}/v1/orders?x=1`),
+    ).toEqual(match);
+    expect(
+      await resolveEnvironment(store(), null, `${host}/v1/orders`),
+    ).toEqual(match);
+  });
+
+  test('a full URL under no baseUrl gives none', async () => {
     const env = await store().create({ name: 'a', baseUrl: 'https://a.test' });
     expect(
-      await resolveEnvironment(store(), env.id, 'https://b.test/x'),
+      await resolveEnvironment(
+        store(),
+        env.id,
+        `https://${randomUUID()}.test/x`,
+      ),
     ).toBeUndefined();
-    await store().delete(env.id);
-    expect(
-      await resolveEnvironment(store(), env.id, 'https://b.test/x'),
-    ).toBeUndefined();
+  });
+
+  test('with the chosen environment deleted, a full URL is not refused and still gets its match', async () => {
+    const host = `https://${randomUUID()}.test`;
+    const match = await store().create({ name: 'm', baseUrl: host });
+    const chosen = await store().create({
+      name: 'c',
+      baseUrl: 'https://c.test',
+    });
+    await store().delete(chosen.id);
+    expect(await resolveEnvironment(store(), chosen.id, `${host}/x`)).toEqual(
+      match,
+    );
   });
 
   test('a path with no environment is refused', async () => {

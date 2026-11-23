@@ -23,6 +23,7 @@ import {
 import { type TestDb, openTestDb } from '../../test-support/test-db';
 import { channels } from '../shared/ipc-contract';
 import { decode, encode } from '../shared/wire-codec';
+import { BILLING } from '../../test-support/wsdl-fixture';
 import { type PigeonServer, createServer } from './http';
 
 const TOKEN = 'f'.repeat(64);
@@ -225,10 +226,46 @@ describe('operations over HTTP', () => {
       },
     })) as { ok: boolean; id: string };
 
+    const imported = await call(channels.importOpenApi, {
+      text: JSON.stringify({
+        openapi: '3.0.0',
+        info: { title: 'T' },
+        paths: { '/x': { get: {} } },
+      }),
+      filename: 't.json',
+      grouping: 'tag',
+      useEnvironment: true,
+      mode: 'new',
+    });
+    const listedTemplates = (await call(channels.listTemplates)) as {
+      sources: { templates: { id: string }[] }[];
+    };
+
     const answers: Record<string, unknown> = {
       [channels.send]: sent,
       [channels.cancel]: await call(channels.cancel, 'nothing-in-flight'),
       [channels.listCalls]: await call(channels.listCalls),
+      [channels.importOpenApi]: imported,
+      [channels.importWsdl]: await call(channels.importWsdl, {
+        text: BILLING,
+        filename: 'billing.wsdl',
+        mode: 'new',
+      }),
+      [channels.listTemplates]: listedTemplates,
+      [channels.getTemplate]: await call(
+        channels.getTemplate,
+        listedTemplates.sources[0]?.templates[0]?.id,
+      ),
+      [channels.searchCalls]: await call(channels.searchCalls, {
+        methods: ['POST'],
+      }),
+      [channels.listRequestGroups]: await call(channels.listRequestGroups, {
+        splitByAuth: true,
+      }),
+      [channels.listResponses]: await call(channels.listResponses, {
+        method: 'POST',
+        path: '/',
+      }),
       [channels.dbStatus]: await call(channels.dbStatus),
       [channels.getCall]: await call(channels.getCall, sent.send._id),
       [channels.replay]: await call(channels.replay, {
@@ -264,9 +301,84 @@ describe('operations over HTTP', () => {
         channels.deleteSavedRequest,
         saved.id,
       ),
+      [channels.deleteCall]: await call(channels.deleteCall, sent.send._id),
     };
 
     expect(Object.keys(answers).sort()).toEqual(Object.values(channels).sort());
+    expect(
+      (answers[channels.searchCalls] as { ok: boolean; total: number }).total,
+    ).toBeGreaterThanOrEqual(1);
+    expect(answers[channels.importWsdl]).toMatchObject({ ok: true, count: 4 });
+    // Slice 10: the imported template lists and opens.
+    expect(answers[channels.getTemplate]).toMatchObject({
+      ok: true,
+      template: { request: { method: 'GET', url: '/x' } },
+    });
+    // Deleted last: the send is gone, and its replay is not (slice 8).
+    expect(answers[channels.deleteCall]).toEqual({ ok: true });
+    expect(
+      ((await call(channels.getCall, sent.send._id)) as { call: unknown }).call,
+    ).toBeNull();
+    // The send above went to POST <capture>/ and is one of its own responses (slice 7).
+    expect(
+      (
+        answers[channels.listResponses] as {
+          calls: { send: { _id: string } }[];
+        }
+      ).calls.map((c) => c.send._id),
+    ).toContain(sent.send._id);
+    // history-grouping: `auth` narrows the responses. The send above is deleted by now; its replay, which carried no
+    // auth header either, is still a response to POST /.
+    const replayId = (answers[channels.replay] as { send: { _id: string } })
+      .send._id;
+    const responseIds = async (auth: string) =>
+      (
+        (await call(channels.listResponses, {
+          method: 'POST',
+          path: '/',
+          auth,
+        })) as { calls: { send: { _id: string } }[] }
+      ).calls.map((c) => c.send._id);
+    expect(await responseIds('')).toContain(replayId);
+    expect(await responseIds('Bearer nobody')).toEqual([]);
+    // environment-aware-history, phase 4: an environment narrows History, responses and groups; with no input,
+    // listCalls answers with every call, as above.
+    const listedIds = (answer: unknown) =>
+      (answer as { calls: { send: { _id: string } }[] }).calls.map(
+        (c) => c.send._id,
+      );
+    expect(listedIds(await call(channels.listCalls))).toContain(replayId);
+    expect(
+      listedIds(await call(channels.listCalls, { environmentId: 'none-such' })),
+    ).toEqual([]);
+    expect(
+      listedIds(
+        await call(channels.listResponses, {
+          method: 'POST',
+          path: '/',
+          environmentId: 'none-such',
+        }),
+      ),
+    ).toEqual([]);
+    expect(
+      await call(channels.listRequestGroups, {
+        splitByAuth: false,
+        environmentId: 'none-such',
+      }),
+    ).toEqual({ ok: true, groups: [] });
+    // history-grouping: the send above went to POST <capture>/ with no auth header, so it is in the POST / group.
+    expect(
+      (
+        answers[channels.listRequestGroups] as {
+          groups: {
+            method: string;
+            path: string;
+            auth: unknown;
+            count: number;
+          }[];
+        }
+      ).groups.find((g) => g.method === 'POST' && g.path === '/'),
+    ).toMatchObject({ auth: null, count: 1 });
     expect(answers[channels.dbStatus]).toEqual({
       status: 'up',
       configPath: '',

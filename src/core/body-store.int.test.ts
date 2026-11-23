@@ -235,11 +235,14 @@ test('a written file holds exactly the bytes, read by another client of the buck
   expect(sha(Buffer.concat(parts))).toBe(sha(body));
 });
 
-test('the body store offers no way to remove a finished file', async () => {
+// Slice 8: `remove` exists for call deletion and the orphan sweep (call-store.int.test.ts, T1.7, T3.9). Nothing else
+// in the body store removes or rewrites a finished file.
+test('the body store removes a finished file only through remove', async () => {
   expect(Object.keys(store()).sort()).toEqual([
     'openUpload',
     'readAll',
     'readRange',
+    'remove',
     'writeBytes',
   ]);
   const ref = await store().writeBytes(patterned(CHUNK));

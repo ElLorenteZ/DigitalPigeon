@@ -6,6 +6,7 @@ import {
   NoActiveEnvironmentError,
   checkBaseUrl,
   composeUrl,
+  environmentForUrl,
   pathFor,
 } from './url';
 import { buildWireRequest } from './wire';
@@ -125,4 +126,61 @@ describe('a path with dot segments', () => {
       );
     },
   );
+});
+
+// environment-aware-history, phase 1: the environment a full URL was sent to, decided by the baseUrl it starts with.
+describe('environmentForUrl', () => {
+  const e = (id: string, baseUrl: string) => ({ id, name: id, baseUrl });
+  const root = e('root', 'http://h.test/');
+  const api = e('api', 'http://h.test/api');
+  const id = (found: { id: string } | undefined) => found?.id;
+
+  test('no environments, a path, or an unparseable URL → none', () => {
+    expect(environmentForUrl('http://h.test/x', [], null)).toBeUndefined();
+    expect(environmentForUrl('/x', [root], null)).toBeUndefined();
+    expect(environmentForUrl('http://', [root], null)).toBeUndefined();
+  });
+
+  test('a URL under a baseUrl matches it; another host or scheme does not', () => {
+    expect(id(environmentForUrl('http://h.test/x?q=1', [root], null))).toBe(
+      'root',
+    );
+    expect(
+      environmentForUrl('http://other.test/x', [root], null),
+    ).toBeUndefined();
+    expect(environmentForUrl('https://h.test/x', [root], null)).toBeUndefined();
+  });
+
+  test('the longest matching baseUrl wins, and a prefix must end at a segment', () => {
+    expect(
+      id(environmentForUrl('http://h.test/api/x', [root, api], null)),
+    ).toBe('api');
+    expect(id(environmentForUrl('http://h.test/apix', [api, root], null))).toBe(
+      'root',
+    );
+    expect(
+      environmentForUrl('http://h.test/apix', [api], null),
+    ).toBeUndefined();
+  });
+
+  test('the typed URL is compared as the parser writes it (A1)', () => {
+    expect(id(environmentForUrl('HTTP://H.TEST:80/x', [root], null))).toBe(
+      'root',
+    );
+  });
+
+  test('the baseUrl itself, with no trailing slash, is not under it; with one, it is', () => {
+    expect(environmentForUrl('http://h.test/api', [api], null)).toBeUndefined();
+    expect(id(environmentForUrl('http://h.test/api/', [api], null))).toBe(
+      'api',
+    );
+  });
+
+  test('environments with one baseUrl: the selected one, otherwise the first given', () => {
+    const a = e('a', 'http://h.test/');
+    const b = e('b', 'http://h.test/');
+    expect(id(environmentForUrl('http://h.test/x', [a, b], 'b'))).toBe('b');
+    expect(id(environmentForUrl('http://h.test/x', [a, b], 'gone'))).toBe('a');
+    expect(id(environmentForUrl('http://h.test/x', [a, b], null))).toBe('a');
+  });
 });

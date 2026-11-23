@@ -15,6 +15,7 @@ import {
   launchWithTestDatabase,
   openEnvironments,
   rowName,
+  settle,
   showRequest,
   showSidebarTab,
   stubOperation,
@@ -30,12 +31,14 @@ const activeId = async () =>
 
 let a: CaptureServer;
 let b: CaptureServer;
+let c: CaptureServer;
 let testApp: TestApp;
 const errors: string[] = [];
 
 test.beforeAll(async () => {
   a = await startCaptureServer();
   b = await startCaptureServer();
+  c = await startCaptureServer();
   testApp = await launchWithTestDatabase();
   testApp.window.on('console', (message) => {
     if (message.type() === 'error') errors.push(message.text());
@@ -51,6 +54,7 @@ test.afterAll(async () => {
   await testApp?.close();
   await a?.close();
   await b?.close();
+  await c?.close();
 });
 
 // Each test starts on the request form with History shown (slice 6: the shell keeps one view at a time).
@@ -93,7 +97,7 @@ test('a path goes to the chosen environment, a switch takes effect at once, and 
   await addEnvironment('alpha', `${a.url}/api`);
   await addEnvironment('beta', `${b.url}/api/`);
   await expect(select.getByRole('option')).toHaveText([
-    'None',
+    'All',
     `alpha — ${a.url}/api`,
     `beta — ${b.url}/api/`,
   ]);
@@ -110,14 +114,17 @@ test('a path goes to the chosen environment, a switch takes effect at once, and 
   // B1: no wait between the switch and the send.
   await select.selectOption({ label: `beta — ${b.url}/api/` });
   await button('Send').click();
-  await expect(history).toHaveCount(2);
+  // History lists the chosen environment's calls (environment-aware-history).
   await expect(rowName(history.first())).toHaveAccessibleName(
     containing(`GET ${b.url}/api/orders?x=1`),
   );
+  await expect(history).toHaveCount(1);
   expect(b.requests.map((r) => r.url)).toEqual(['/api/orders?x=1']);
   expect(a.requests).toHaveLength(1);
+  await select.selectOption({ label: 'All' });
+  await expect(history).toHaveCount(2);
 
-  await history.nth(1).getByRole('button').click();
+  await history.nth(1).getByRole('button').first().click();
   await expect(panel.getByTestId('call-environment')).toHaveText(
     `Environment: alpha — ${a.url}/api`,
   );
@@ -132,8 +139,8 @@ test('a path goes to the chosen environment, a switch takes effect at once, and 
   await expect(select.getByRole('option')).toContainText([
     `alpha2 — ${a.url}/v2`,
   ]);
-  await history.first().getByRole('button').click();
-  await history.nth(1).getByRole('button').click();
+  await history.first().getByRole('button').first().click();
+  await history.nth(1).getByRole('button').first().click();
   await expect(panel.getByTestId('call-environment')).toHaveText(
     `Environment: alpha — ${a.url}/api`,
   );
@@ -148,7 +155,7 @@ test('a path goes to the chosen environment, a switch takes effect at once, and 
   expect(errors).toEqual([]);
 });
 
-test('a refused base URL says why, and deleting the chosen environment leaves None, so a path is refused in view', async () => {
+test('a refused base URL says why, and deleting the chosen environment leaves All, so a path is refused in view', async () => {
   const { window } = testApp;
   const select = window.getByLabel('Environment', { exact: true });
   await showSidebarTab(window, 'History');
@@ -163,7 +170,14 @@ test('a refused base URL says why, and deleting the chosen environment leaves No
   await select.selectOption({ label: `gone — ${b.url}/gone` });
   await button(`Delete environment ${await rowOf('gone')}`).click();
   await expect(select).toHaveValue('');
+  // environment-aware-history, phase 3: "All" replaces "None"; a path is still refused with it.
+  await expect(select.locator('option:checked')).toHaveText('All');
 
+  // The select now shows All: wait for History to list every call before counting (environment-aware-history).
+  const all = (await callOperation(window, channels.listCalls)) as {
+    calls: unknown[];
+  };
+  await expect(history).toHaveCount(all.calls.length);
   const rowsBefore = await history.count();
   await window.getByLabel('URL').fill('/orders');
   await button('Send').click();
@@ -180,6 +194,85 @@ test('a refused base URL says why, and deleting the chosen environment leaves No
     'choose an environment',
   );
   expect(errors).toEqual([]);
+});
+
+// environment-aware-history, phase 3: a full URL is recorded under the environment whose base address it starts with,
+// and the select moves to that environment; a URL under none leaves the select as it was; a choice made while the send
+// is in flight is kept. Matching itself is tested in url.test.ts and environment-store.int.test.ts.
+test('a full URL under an environment moves the select to it and records it; a URL under none leaves the select', async () => {
+  const { window } = testApp;
+  const select = window.getByLabel('Environment', { exact: true });
+  await showSidebarTab(window, 'History');
+  const history = window.getByTestId('history').getByRole('listitem');
+  const panel = window.getByTestId('call-panel');
+  await addEnvironment('detected', `${c.url}/det`);
+  await select.selectOption({ label: 'All' });
+
+  await window.getByLabel('URL').fill(`${c.url}/det/orders`);
+  await button('Send').click();
+  await expect(select.locator('option:checked')).toHaveText(
+    `detected — ${c.url}/det`,
+  );
+  const detectedId = await select.inputValue();
+  await expect(rowName(history.first())).toHaveAccessibleName(
+    containing(`GET ${c.url}/det/orders`),
+  );
+  await history.first().getByRole('button').first().click();
+  await expect(panel.getByTestId('call-environment')).toHaveText(
+    `Environment: detected — ${c.url}/det`,
+  );
+
+  // The choice is stored like a manual one: a reload opens on it.
+  await expect.poll(() => activeId()).toBe(detectedId);
+  await window.reload();
+  await expect(window.getByTestId('db-status')).toContainText('up', {
+    timeout: 15_000,
+  });
+  await expect(select).toHaveValue(detectedId);
+
+  // A URL under no environment: recorded with none, and the select stays.
+  await showRequest(window);
+  await window.getByLabel('URL').fill(`${c.url}/elsewhere`);
+  await button('Send').click();
+  await expect(window.getByTestId('result')).toContainText('200');
+  await expect(select).toHaveValue(detectedId);
+  expect(errors).toEqual([]);
+});
+
+test('a choice made while a full-URL send is in flight is kept when the send is recorded', async () => {
+  const { window } = testApp;
+  const select = window.getByLabel('Environment', { exact: true });
+  await showSidebarTab(window, 'History');
+  const history = window.getByTestId('history').getByRole('listitem');
+  const panel = window.getByTestId('call-panel');
+  await addEnvironment('heldmatch', `${c.url}/held`);
+  await addEnvironment('picked', `${b.url}/picked`);
+  await select.selectOption({ label: 'All' });
+
+  const held = gate();
+  const send = await stubOperation(window, channels.send, async (_i, real) => {
+    await held.wait();
+    return real();
+  });
+  try {
+    await window.getByLabel('URL').fill(`${c.url}/held/x`);
+    await button('Send').click();
+    await select.selectOption({ label: `picked — ${b.url}/picked` });
+    const pickedId = await select.inputValue();
+    held.release();
+    await expect(window.getByTestId('result')).toContainText('200');
+    await settle(window);
+    await expect(select).toHaveValue(pickedId);
+    // The call is still recorded under the environment its URL starts with; History lists it under All.
+    await select.selectOption({ label: 'All' });
+    await history.first().getByRole('button').first().click();
+    await expect(panel.getByTestId('call-environment')).toHaveText(
+      `Environment: heldmatch — ${c.url}/held`,
+    );
+  } finally {
+    held.release();
+    await send.restore();
+  }
 });
 
 // Code review #5: the startup choice is stored in the order the choices were made.
@@ -273,12 +366,12 @@ test('a send while the switch is still being saved goes to the environment the s
     return { ok: true };
   });
 
-  const rowsBefore = await history.count();
   b.requests.length = 0;
   await select.selectOption({ label: `second — ${b.url}/second` });
   await window.getByLabel('URL').fill('/held');
   await button('Send').click();
-  await expect(history).toHaveCount(rowsBefore + 1);
+  // History lists second's calls (environment-aware-history): second was created above, so this send is its only one.
+  await expect(history).toHaveCount(1);
   expect(b.requests.map((r) => r.url)).toEqual(['/second/held']);
 
   save.release();

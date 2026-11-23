@@ -3,6 +3,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   GetCallResultSchema,
+  ListRequestGroupsResultSchema,
   ReadBodyResultSchema,
   SendInputSchema,
   SendResultSchema,
@@ -100,6 +101,35 @@ describe('wire codec: contract values survive the trip', () => {
     // The sample itself must be valid before the round trip can say anything.
     expect(parsed.success, parsed.error?.message).toBe(true);
     expect(SendInputSchema.parse(roundTrip(value))).toEqual(parsed.data);
+  });
+
+  it("request groups keep their newest call's timestamps as Date (history-grouping)", () => {
+    const { body: _sendBody, ...summarySend } = send.request;
+    const { body: _responseBody, ...summaryResponse } = completion.response;
+    const latest = {
+      state: 'completed' as const,
+      send: { ...send, request: summarySend },
+      completion: { ...completion, response: summaryResponse },
+    };
+    const value = {
+      ok: true as const,
+      groups: [
+        {
+          method: 'POST',
+          path: '/echo',
+          auth: { header: 'Cookie' as const, value: 'session=x' },
+          count: 3,
+          latest,
+        },
+        { method: 'GET', path: '/', auth: null, count: 1, latest },
+      ],
+    };
+    const parsed = ListRequestGroupsResultSchema.safeParse(value);
+    expect(parsed.success, parsed.error?.message).toBe(true);
+    const back = ListRequestGroupsResultSchema.parse(roundTrip(value));
+    expect(back).toEqual(value);
+    if (!back.ok) throw new Error('shape');
+    expect(back.groups[0]?.latest.send.sentAt).toBeInstanceOf(Date);
   });
 
   it('an empty Uint8Array stays an empty Uint8Array', () => {

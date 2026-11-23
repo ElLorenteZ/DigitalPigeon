@@ -14,6 +14,7 @@ import {
   Component,
   type ErrorInfo,
   type ReactNode,
+  type Ref,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -41,11 +42,24 @@ import {
   createPartScanner,
   multipartBoundary,
 } from '../core/multipart';
-import { composeUrl } from '../core/url';
+import { type Auth, authOf } from '../core/headers';
+import { requestKeyOf } from '../core/request-key';
+import {
+  type ParsedSpec,
+  groupOperations,
+  parseOpenApi,
+} from '../core/openapi';
+import { type ParsedWsdl, groupPorts, parseWsdl } from '../core/wsdl';
+import { composeUrl, isPath } from '../core/url';
 import { type BodyInput, buildWireRequest } from '../core/wire';
 import {
   BODY_PAGE_BYTES,
   type MutationResult,
+  type FacetOption,
+  type SearchQuery,
+  type SearchResult,
+  type TemplateSource,
+  type GetTemplateResult,
   type RequestForm,
   type SavedRequestListing,
   type EnvironmentView,
@@ -53,6 +67,7 @@ import {
   type CallDetail,
   type CallView,
   type DbStatusView,
+  type RequestGroup,
   METHODS,
   type SendInput,
   type SendResult,
@@ -145,14 +160,36 @@ async function exportCurl(
 }
 
 const STATUS_POLL_MS = 2000;
+// The Undo window after a delete, as in the design (author 2026-11-11).
+const UNDO_WINDOW_MS = 8000;
 const HISTORY_POLL_MS = 500;
 // ignoreBOM keeps a byte order mark on screen: dropping one would hide bytes the record holds.
 const textDecoder = () => new TextDecoder('utf-8', { ignoreBOM: true });
 
 export function App() {
   const [status, setStatus] = useState<StatusView | null>(null);
-  const [history, setHistory] = useState<CallView[]>([]);
+  // History for the environment it was fetched for ('' = All), so a list for one environment is never shown under
+  // another (environment-aware-history; T2.10).
+  const [historyList, setHistoryList] = useState<{
+    environmentId: string;
+    calls: CallView[];
+  }>({ environmentId: '', calls: [] });
   const [result, setResult] = useState<SendResult | null>(null);
+  // Slice 7: the responses to the request of the result shown, and the one picked from them (null: the latest).
+  // A response picked from the strip, tagged with the result it was picked under: a pick never outlives its result
+  // (code review of responses-strip, 1 and 4).
+  const [pickedFor, setPickedFor] = useState<Picked | null>(null);
+  // Slice 8: calls deleted but still inside their Undo window are held here, hidden everywhere, and only deleted in
+  // the store when their timer ends (author 2026-11-11: "held in the app"). A tab closed inside the window deletes
+  // nothing: the call stays.
+  const [held, setHeld] = useState<ReadonlySet<string>>(new Set());
+  const holdTimers = useRef(new Map<string, number>());
+  // One toast per pending delete, and one per failed delete (code review of delete-with-undo, 4).
+  const [deleteToasts, setDeleteToasts] = useState<
+    { sendId: string; label: string; error?: string }[]
+  >([]);
+  const dropToast = (sendId: string) =>
+    setDeleteToasts((current) => current.filter((t) => t.sendId !== sendId));
   const [inFlightId, setInFlightId] = useState<string | null>(null);
   const [historyError, setHistoryError] = useState<string | null>(null);
   const [form, setForm] = useState<Form>(EMPTY_FORM);
@@ -168,10 +205,48 @@ export function App() {
     null,
   );
   const environment = environments.find((e) => e.id === environmentId);
+  // The select's value now, for code that runs after an await (environment-aware-history).
+  const currentEnvironment = useRef(environmentId);
+  currentEnvironment.current = environmentId;
+  const history =
+    historyList.environmentId === (environmentId ?? '')
+      ? historyList.calls
+      : [];
   // The shell (slice 6): which list the sidebar shows, whether the main area shows the request or an opened call, and
   // whether the environments editor is open under the title bar.
-  const [sidebarTab, setSidebarTab] = useState<'saved' | 'history'>('history');
-  const [view, setView] = useState<'workspace' | 'call'>('workspace');
+  const [sidebarTab, setSidebarTab] = useState<
+    'templates' | 'saved' | 'history'
+  >('history');
+  // Slice 10: templates imported from specs, and the import dialog.
+  const [templateSources, setTemplateSources] = useState<TemplateSource[]>([]);
+  const [templatesError, setTemplatesError] = useState<string | null>(null);
+  const [importOpen, setImportOpen] = useState(false);
+  const [importOutcome, setImportOutcome] = useState<string | null>(null);
+  const [view, setView] = useState<'workspace' | 'call' | 'results'>(
+    'workspace',
+  );
+  // Where "Back" goes from an opened call: the request, or the search results it was opened from (slice 9).
+  const [callReturn, setCallReturn] = useState<'workspace' | 'results'>(
+    'workspace',
+  );
+  // Slice 9: History search. Active while the filters are open or any text or filter is set.
+  const [searchText, setSearchText] = useState('');
+  const [filters, setFilters] = useState<Filters>(NO_FILTERS);
+  // Search's environment follows the select until the user chooses in the environment facet or removes its chip; any
+  // select change and Clear return to following (environment-aware-history). Kept out of `filters`, which turn search on.
+  const [searchFollowsSelect, setSearchFollowsSelect] = useState(true);
+  const [filtersOpen, setFiltersOpen] = useState(false);
+  const [searchResult, setSearchResult] = useState<SearchResult | null>(null);
+  const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
+  // Bumped when a delete or a resend lands, so lists that History's newest rows do not change are fetched again (code
+  // review of history-search, 1).
+  const [dataVersion, setDataVersion] = useState(0);
+  const [resendState, setResendState] = useState<{
+    busy: boolean;
+    error: string | null;
+  }>({ busy: false, error: null });
+  const searchActive =
+    filtersOpen || searchText.trim() !== '' || hasFilters(filters);
   const [environmentsOpen, setEnvironmentsOpen] = useState(false);
   const choiceSaves = useRef<Promise<void>>(Promise.resolve());
   const [savedRequests, setSavedRequests] = useState<SavedRequestListing[]>([]);
@@ -235,9 +310,14 @@ export function App() {
   // Never rejects: a failure is shown above the list (review #3).
   const refreshHistory = useCallback(async () => {
     try {
-      const listed = await pigeon.listCalls();
+      const asked = currentEnvironment.current;
+      const listed = await pigeon.listCalls(
+        asked === null ? undefined : { environmentId: asked },
+      );
+      // A list for an environment no longer selected is dropped; the switch fetches its own.
+      if (currentEnvironment.current !== asked) return;
       if (listed.ok) {
-        setHistory(listed.calls);
+        setHistoryList({ environmentId: asked ?? '', calls: listed.calls });
         setHistoryError(null);
       } else {
         setHistoryError(listed.message);
@@ -266,9 +346,10 @@ export function App() {
     };
   }, []);
 
+  // Again whenever the select changes: History shows the selected environment's calls, or every call for All.
   useEffect(() => {
     if (status?.status === 'up') void refreshHistory();
-  }, [status?.status, refreshHistory]);
+  }, [status?.status, refreshHistory, environmentId]);
 
   useEffect(() => {
     if (status?.status === 'up') void refreshEnvironments(false);
@@ -277,6 +358,23 @@ export function App() {
   useEffect(() => {
     if (status?.status === 'up') void refreshSaved();
   }, [status?.status, refreshSaved]);
+
+  const refreshTemplates = useCallback(async () => {
+    try {
+      const listed = await pigeon.listTemplates();
+      if (listed.ok) {
+        setTemplateSources(listed.sources);
+        setTemplatesError(null);
+      } else {
+        setTemplatesError(listed.message);
+      }
+    } catch (error) {
+      setTemplatesError(errorText(error));
+    }
+  }, []);
+  useEffect(() => {
+    if (status?.status === 'up') void refreshTemplates();
+  }, [status?.status, refreshTemplates]);
 
   // The send document is inserted in main shortly after Send is pressed; re-fetch while the send
   // is in flight so its row appears as "in flight".
@@ -305,6 +403,9 @@ export function App() {
     } finally {
       setInFlightId(null);
       await refreshHistory();
+      // A send changes what the filtered views list even when the History list it filters does not (environment-aware-
+      // history, A3): every view keyed on historyMark refetches.
+      setDataVersion((v) => v + 1);
     }
   };
 
@@ -368,6 +469,36 @@ export function App() {
     setFormLink(null);
     setSavedName('');
     setForm({ ...loaded, method: loaded.method as Method });
+    setFormCurl(null);
+    showRequest();
+  };
+
+  // A template opens into the form unlinked, as Edit of a call does (roadmap M2 decision).
+  // The latest open or form change wins, as for saved requests (T2.10; code review of openapi-import, 3).
+  const openTemplate = async (id: string) => {
+    endPendingEdit();
+    const thisOpen = ++latestSavedOpen.current;
+    const got = await pigeon.getTemplate(id).catch(
+      (error: unknown): GetTemplateResult => ({
+        ok: false,
+        message: errorText(error),
+      }),
+    );
+    if (thisOpen !== latestSavedOpen.current) return;
+    if (!got.ok || !got.template) {
+      setTemplatesError(
+        got.ok ? 'That template no longer exists' : got.message,
+      );
+      return;
+    }
+    setTemplatesError(null);
+    formIdentity.current += 1;
+    setFormLink(null);
+    setSavedName('');
+    setForm({
+      ...got.template.request,
+      method: got.template.request.method as Method,
+    });
     setFormCurl(null);
     showRequest();
   };
@@ -455,6 +586,10 @@ export function App() {
   const openCall = async (sendId: string) => {
     const thisOpen = ++latestOpen.current;
     endPendingEdit();
+    // From the call view the way back stays as it was (code review of history-search, 3).
+    if (view !== 'call') {
+      setCallReturn(view === 'results' ? 'results' : 'workspace');
+    }
     setView('call');
     setOpenedCurl(null);
     setEditError(null);
@@ -502,12 +637,326 @@ export function App() {
     }
   }, [requestScroll]);
   const resultRegion = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    if (result) resultRegion.current?.scrollIntoView({ block: 'nearest' });
-  }, [result]);
 
   const canSend = status?.status === 'up';
+  const notHeld = (call: CallView) =>
+    call.state === 'unreadable' || !held.has(call.send._id);
+  const shownHistory = history.filter(notHeld);
+
+  // The strips refresh when History changes: a send, a replay or a completion lands there first (slice 7).
+  const historyMark = `${dataVersion}:${history.length}:${history[0]?.state === 'unreadable' ? history[0].id : (history[0]?.send._id ?? '')}:${history.filter((c) => c.state === 'in-flight').length}`;
+  // "Split by auth" narrows both strips to the calls sent with the same auth (history-grouping).
+  const [splitPreference, setSplitPreference] = usePreference(
+    'dp.splitByAuth',
+    ['false', 'true'],
+    'false',
+  );
+  const splitByAuth = splitPreference === 'true';
+  const resultAuth = result?.ok
+    ? (authOf(result.send.request.headers) ?? null)
+    : null;
+  const resultKey = result?.ok
+    ? {
+        ...requestKeyOf(
+          result.send.request.method as Method,
+          result.send.request.url,
+        ),
+        ...(splitByAuth ? { auth: resultAuth?.value ?? '' } : {}),
+      }
+    : null;
+  // The strips and groups follow the select: only calls recorded under the selected environment (environment-aware-
+  // history). Absent for All.
+  const inSelected = environmentId === null ? {} : { environmentId };
+  const responsesList = useResponses(
+    resultKey && { ...resultKey, ...inSelected },
+    historyMark,
+  );
+  // The call on screen when it is not recorded under the selected environment: the strip leaves it out and says so.
+  const resultOutside =
+    result?.ok && environment && result.send.environment?.id !== environment.id
+      ? environment.name
+      : undefined;
+  const responses = responsesList.calls.filter(notHeld);
+  // Again when the responses strip first appears: it loads after the result and pushes the body down (slice 7).
+  const hasResponses = responses.length > 0;
+  useEffect(() => {
+    if (result) resultRegion.current?.scrollIntoView({ block: 'nearest' });
+  }, [result, hasResponses]);
+  // History grouped by request, the default, or by day; kept in this browser (history-grouping).
+  const [grouping, setGrouping] = usePreference(
+    'dp.history.grouping',
+    ['request', 'day'],
+    'request',
+  );
+  const groupsList = useRequestGroups(
+    grouping === 'request',
+    splitByAuth,
+    environmentId,
+    historyMark,
+  );
+  // One group is expanded at a time; its calls are listed as a strip's are, tagged with its key (T2.10).
+  const [expandedGroup, setExpandedGroup] = useState<{
+    method: Method;
+    path: string;
+    auth?: string;
+  } | null>(null);
+  const expandedText = expandedGroup ? groupKeyText(expandedGroup) : '';
+  const expandedOpen =
+    expandedGroup !== null &&
+    grouping === 'request' &&
+    (groupsList.groups ?? []).some(
+      (g) => groupText(g, splitByAuth) === expandedText,
+    );
+  const expandedList = useResponses(
+    expandedOpen ? { ...expandedGroup, ...inSelected } : null,
+    historyMark,
+  );
+  const openedAuth = opened
+    ? (authOf(opened.send.request.headers) ?? null)
+    : null;
+  const openedKey = opened
+    ? {
+        ...requestKeyOf(
+          opened.send.request.method as Method,
+          opened.send.request.url,
+        ),
+        ...(splitByAuth ? { auth: openedAuth?.value ?? '' } : {}),
+      }
+    : null;
+  const otherList = useResponses(
+    openedKey && { ...openedKey, ...inSelected },
+    historyMark,
+  );
+  const picked =
+    result?.ok && pickedFor?.resultId === result.send._id ? pickedFor : null;
+
+  const unhold = (sendId: string) =>
+    setHeld((current) => {
+      const next = new Set(current);
+      next.delete(sendId);
+      return next;
+    });
+  // Hides the call at once and deletes it in the store after the Undo window (slice 8).
+  const deleteLater = (call: {
+    state: ReadableCall['state'];
+    send: { _id: string; request: { method: string; url: string } };
+  }) => {
+    const sendId = call.send._id;
+    if (holdTimers.current.has(sendId) || call.state === 'in-flight') return;
+    const label = `${call.send.request.method} ${requestKeyOf(call.send.request.method, call.send.request.url).path}`;
+    setHeld((current) => new Set(current).add(sendId));
+    setDeleteToasts((current) => [
+      ...current.filter((t) => t.sendId !== sendId),
+      { sendId, label },
+    ]);
+    if (opened?.send._id === sendId) {
+      setOpened(null);
+      // Only the call view leaves; the results stay (code review of history-search, 2).
+      if (view === 'call') setView(callReturn);
+    }
+    if (pickedFor?.sendId === sendId) setPickedFor(null);
+    const timer = window.setTimeout(() => {
+      holdTimers.current.delete(sendId);
+      // The window has passed: Undo is no longer offered (code review of delete-with-undo, 5).
+      dropToast(sendId);
+      void (async () => {
+        const done = await pigeon.deleteCall(sendId).catch(
+          (error: unknown): MutationResult => ({
+            ok: false,
+            message: errorText(error),
+          }),
+        );
+        if (!done.ok) {
+          unhold(sendId);
+          setDeleteToasts((current) => [
+            ...current,
+            { sendId, label, error: done.message },
+          ]);
+          return;
+        }
+        await refreshHistory();
+        setDataVersion((v) => v + 1);
+        unhold(sendId);
+      })();
+    }, UNDO_WINDOW_MS);
+    holdTimers.current.set(sendId, timer);
+  };
+  const undoDelete = (sendId: string) => {
+    const timer = holdTimers.current.get(sendId);
+    if (timer === undefined) return;
+    window.clearTimeout(timer);
+    holdTimers.current.delete(sendId);
+    unhold(sendId);
+    dropToast(sendId);
+  };
+
+  const searchFilters: Filters = searchFollowsSelect
+    ? {
+        ...filters,
+        environmentIds: environmentId === null ? [] : [environmentId],
+      }
+    : filters;
+  const changeSearchFilters = (next: Filters) => {
+    const sameEnvironment =
+      next.environmentIds.join('\n') ===
+      searchFilters.environmentIds.join('\n');
+    if (searchFollowsSelect && sameEnvironment) {
+      setFilters({ ...next, environmentIds: [] });
+    } else {
+      setSearchFollowsSelect(false);
+      setFilters(next);
+    }
+  };
+  useEffect(() => {
+    setSearchFollowsSelect(true);
+    setFilters((current) =>
+      current.environmentIds.length === 0
+        ? current
+        : { ...current, environmentIds: [] },
+    );
+  }, [environmentId]);
+  // Slice 9: the search runs 250 ms after the last change, and again whenever History changes.
+  const searchKey = JSON.stringify([searchText.trim(), searchFilters]);
+  useEffect(() => {
+    if (!searchActive) {
+      setSearchResult(null);
+      setSelected(new Set());
+      return;
+    }
+    let active = true;
+    const timer = window.setTimeout(() => {
+      pigeon
+        .searchCalls(queryOf(searchText, searchFilters))
+        .then((found) => {
+          if (active) setSearchResult(found);
+        })
+        .catch((error: unknown) => {
+          if (active) setSearchResult({ ok: false, message: errorText(error) });
+        });
+    }, 250);
+    return () => {
+      active = false;
+      window.clearTimeout(timer);
+    };
+  }, [searchActive, searchKey, historyMark]);
+  // Turning the search on shows its results; turning it off returns to the request.
+  useEffect(() => {
+    if (searchActive) {
+      setView((current) => (current === 'workspace' ? 'results' : current));
+    } else {
+      setView((current) => (current === 'results' ? 'workspace' : current));
+      setCallReturn('workspace');
+    }
+  }, [searchActive]);
+  const clearSearch = () => {
+    setSearchText('');
+    setFilters(NO_FILTERS);
+    setSearchFollowsSelect(true);
+    setFiltersOpen(false);
+    setSelected(new Set());
+  };
+  // Resend is a replay: each creates a new record, one after the other (slice 9).
+  const resendCalls = async (sendIds: string[]) => {
+    if (resendState.busy) return;
+    setResendState({ busy: true, error: null });
+    const failures: string[] = [];
+    for (const sendId of sendIds) {
+      try {
+        const done = await pigeon.replay({
+          clientRequestId: crypto.randomUUID(),
+          sendId,
+        });
+        if (!done.ok) failures.push(done.error.message);
+      } catch (error) {
+        failures.push(errorText(error));
+      }
+    }
+    setSelected(new Set());
+    setResendState({
+      busy: false,
+      error:
+        failures.length === 0
+          ? null
+          : `${failures.length} of ${sendIds.length} could not be resent: ${failures[0]}`,
+    });
+    await refreshHistory();
+    setDataVersion((v) => v + 1);
+  };
+
+  const editFromResults = async (sendId: string) => {
+    const got = await pigeon.getCall(sendId).catch(() => null);
+    if (got?.ok && got.call && got.call.state !== 'unreadable') {
+      await editCall(got.call.send);
+    }
+  };
+
+  // Picking a response loads its completion; the latest is the result itself.
+  const latestPick = useRef(0);
+  const pickResponse = async (sendId: string) => {
+    if (!result?.ok) return;
+    const resultId = result.send._id;
+    const thisPick = ++latestPick.current;
+    if (sendId === resultId) {
+      setPickedFor(null);
+      return;
+    }
+    setPickedFor({ resultId, sendId, completion: null, state: 'loading' });
+    let next: Picked;
+    try {
+      const got = await pigeon.getCall(sendId);
+      const call = got.ok ? got.call : null;
+      next =
+        call && call.state !== 'unreadable'
+          ? {
+              resultId,
+              sendId,
+              completion: call.completion ?? null,
+              state: call.state,
+            }
+          : {
+              resultId,
+              sendId,
+              completion: null,
+              state: 'failed',
+              message: !got.ok
+                ? got.message
+                : call
+                  ? call.error
+                  : 'Call not found',
+            };
+    } catch (error) {
+      next = {
+        resultId,
+        sendId,
+        completion: null,
+        state: 'failed',
+        message: errorText(error),
+      };
+    }
+    if (thisPick === latestPick.current) setPickedFor(next);
+  };
+
   const inFlight = inFlightId !== null;
+
+  // environment-aware-history: a full URL recorded under an environment moves the select to it, as a choice would, unless
+  // the select was changed while the send was in flight (the user's choice wins; state after an await, slice 5).
+  const followDetected = (
+    sent: SendResult,
+    url: string,
+    sentWith: string | null,
+  ) => {
+    if (!sent.ok || isPath(url)) return;
+    const detected = sent.send.environment?.id;
+    if (
+      detected === undefined ||
+      detected === sentWith ||
+      currentEnvironment.current !== sentWith ||
+      !environments.some((e) => e.id === detected)
+    ) {
+      return;
+    }
+    chooseEnvironment(detected);
+  };
 
   const chooseEnvironment = (id: string | null) => {
     setEnvironmentId(id);
@@ -538,7 +987,7 @@ export function App() {
           value={environmentId ?? ''}
           onChange={(e) => chooseEnvironment(e.target.value || null)}
         >
-          <option value="">None</option>
+          <option value="">All</option>
           {environments.map((e) => (
             <option key={e.id} value={e.id}>
               {e.name} — {e.baseUrl}
@@ -583,6 +1032,16 @@ export function App() {
             <button
               type="button"
               role="tab"
+              id="tab-templates"
+              aria-selected={sidebarTab === 'templates'}
+              aria-controls="panel-templates"
+              onClick={() => setSidebarTab('templates')}
+            >
+              Templates
+            </button>
+            <button
+              type="button"
+              role="tab"
               id="tab-saved"
               aria-selected={sidebarTab === 'saved'}
               aria-controls="panel-saved"
@@ -600,6 +1059,24 @@ export function App() {
             >
               History
             </button>
+          </div>
+          <div
+            role="tabpanel"
+            id="panel-templates"
+            aria-labelledby="tab-templates"
+            className="sidebar-panel"
+            hidden={sidebarTab !== 'templates'}
+          >
+            <TemplatesTree
+              sources={templateSources}
+              error={templatesError}
+              outcome={importOutcome}
+              onImport={() => {
+                setImportOutcome(null);
+                setImportOpen(true);
+              }}
+              onOpen={(id) => void openTemplate(id)}
+            />
           </div>
           <div
             role="tabpanel"
@@ -621,11 +1098,64 @@ export function App() {
             className="sidebar-panel"
             hidden={sidebarTab !== 'history'}
           >
-            <HistoryList
-              calls={history}
-              error={historyError}
-              onOpen={(sendId) => void openCall(sendId)}
-            />
+            <div className="search-box">
+              <input
+                type="search"
+                aria-label="Search history"
+                placeholder="Search URL, body or header…"
+                value={searchText}
+                onChange={(e) => setSearchText(e.target.value)}
+              />
+              {searchActive ? null : (
+                <button type="button" onClick={() => setFiltersOpen(true)}>
+                  Filters
+                </button>
+              )}
+            </div>
+            {searchActive ? (
+              <SearchFilters
+                filters={searchFilters}
+                facets={searchResult?.ok ? searchResult.facets : null}
+                savedRequests={savedRequests}
+                showResults={view !== 'results'}
+                onChange={changeSearchFilters}
+                onShowResults={() => setView('results')}
+                onClear={clearSearch}
+              />
+            ) : (
+              <HistoryList
+                calls={shownHistory}
+                error={historyError}
+                onOpen={(sendId) => void openCall(sendId)}
+                onDelete={deleteLater}
+                grouping={grouping}
+                onGrouping={setGrouping}
+                splitByAuth={splitByAuth}
+                onSplitByAuth={(on) =>
+                  setSplitPreference(on ? 'true' : 'false')
+                }
+                groups={groupsList}
+                expandedText={expandedOpen ? expandedText : ''}
+                expandedCalls={expandedList.calls.filter(
+                  (c): c is ReadableCall =>
+                    c.state !== 'unreadable' && notHeld(c),
+                )}
+                expandedError={expandedList.error}
+                onExpand={(g) =>
+                  setExpandedGroup((current) => {
+                    const next = {
+                      method: g.method as Method,
+                      path: g.path,
+                      ...(splitByAuth ? { auth: g.auth?.value ?? '' } : {}),
+                    };
+                    return current &&
+                      groupKeyText(current) === groupKeyText(next)
+                      ? null
+                      : next;
+                  })
+                }
+              />
+            )}
           </div>
         </aside>
         <main className="main">
@@ -656,14 +1186,18 @@ export function App() {
                 canSend={canSend}
                 inFlight={inFlight}
                 onSend={() =>
-                  run((clientRequestId) =>
-                    pigeon.send({
+                  run(async (clientRequestId) => {
+                    const request = requestOf(form);
+                    const sentWith = environmentId;
+                    const sent = await pigeon.send({
                       clientRequestId,
-                      ...requestOf(form),
+                      ...request,
                       environmentId,
                       ...(formLink ? { savedRequestId: formLink.id } : {}),
-                    }),
-                  )
+                    });
+                    followDetected(sent, request.url, sentWith);
+                    return sent;
+                  })
                 }
                 onCancel={() => inFlightId && pigeon.cancel(inFlightId)}
                 onCopyCurl={async () =>
@@ -681,16 +1215,65 @@ export function App() {
               <CurlView testId="form-curl" outcome={formCurl} />
             </div>
             <div ref={resultRegion}>
-              <ResultView result={result} />
+              <ResultView
+                result={result}
+                picked={picked}
+                deleted={result?.ok === true && held.has(result.send._id)}
+                strip={
+                  responsesList.error ? (
+                    <p data-testid="responses-error" className="error">
+                      Responses to this request could not be loaded:{' '}
+                      {responsesList.error}
+                    </p>
+                  ) : result?.ok &&
+                    (responses.length > 0 || resultOutside !== undefined) ? (
+                    <ResponsesStrip
+                      calls={responses}
+                      selectedId={picked?.sendId ?? result.send._id}
+                      onPick={(id) => void pickResponse(id)}
+                      onDelete={deleteLater}
+                      splitByAuth={splitByAuth}
+                      auth={resultAuth}
+                      outside={resultOutside}
+                      onSplitByAuth={(on) =>
+                        setSplitPreference(on ? 'true' : 'false')
+                      }
+                    />
+                  ) : null
+                }
+              />
             </div>
           </div>
+          {view === 'results' && searchActive ? (
+            <SearchResults
+              result={searchResult}
+              filters={searchFilters}
+              text={searchText}
+              hidden={held}
+              selected={selected}
+              onSelect={setSelected}
+              onOpen={(sendId) => void openCall(sendId)}
+              onResend={(ids) => void resendCalls(ids)}
+              resendBusy={resendState.busy}
+              resendError={resendState.error}
+              onEdit={(sendId) => void editFromResults(sendId)}
+              onDelete={(calls) => {
+                for (const call of calls) deleteLater(call);
+                setSelected(new Set());
+              }}
+              onClear={clearSearch}
+            />
+          ) : null}
           <div className="call-view" hidden={view !== 'call'}>
             <button
               type="button"
               className="back"
-              onClick={() => setView('workspace')}
+              onClick={() => setView(callReturn)}
             >
-              <span aria-hidden="true">←</span> Back to the request
+              <span aria-hidden="true">←</span>{' '}
+              {callReturn === 'results'
+                ? 'Back to the results'
+                : 'Back to the request'}
             </button>
             <div ref={openedRegion}>
               {openError ? (
@@ -707,6 +1290,15 @@ export function App() {
                   editLoading={editLoading}
                   savedRequests={savedRequests}
                   savedListLoaded={savedListLoaded}
+                  otherResponses={otherList.calls.filter(
+                    (c): c is ReadableCall =>
+                      c.state !== 'unreadable' &&
+                      c.send._id !== opened.send._id &&
+                      !held.has(c.send._id),
+                  )}
+                  otherAuth={splitByAuth ? openedAuth : undefined}
+                  onDelete={() => deleteLater(opened)}
+                  onOpenResponse={(id) => void openCall(id)}
                   onReplay={() => {
                     showRequest();
                     void run((clientRequestId) =>
@@ -726,6 +1318,57 @@ export function App() {
           </div>
         </main>
       </div>
+      {importOpen ? (
+        <ImportDialog
+          existingNames={templateSources.map(
+            (source) => `${source.kind}:${source.name}`,
+          )}
+          onRefresh={refreshTemplates}
+          onCancel={() => setImportOpen(false)}
+          onImported={async (outcome) => {
+            setImportOutcome(outcome);
+            setImportOpen(false);
+            setSidebarTab('templates');
+            await refreshTemplates();
+          }}
+        />
+      ) : null}
+      {deleteToasts.length > 0 ? (
+        <div className="toasts">
+          {deleteToasts.map((t) => (
+            <div
+              key={`${t.sendId}:${t.error ? 'error' : 'held'}`}
+              role="status"
+              aria-label="Deleted"
+              className="toast"
+            >
+              {t.error ? (
+                <>
+                  <span className="error">
+                    Could not delete {t.label}: {t.error}
+                  </span>
+                  <button type="button" onClick={() => dropToast(t.sendId)}>
+                    Dismiss
+                  </button>
+                </>
+              ) : (
+                <>
+                  <span>
+                    Call deleted · <code>{t.label}</code>
+                  </span>
+                  <button
+                    type="button"
+                    className="undo"
+                    onClick={() => undoDelete(t.sendId)}
+                  >
+                    Undo
+                  </button>
+                </>
+              )}
+            </div>
+          ))}
+        </div>
+      ) : null}
       <footer className="status-bar">
         <StatusBar status={status} />
         <span className="note">
@@ -1540,6 +2183,10 @@ function CallPanel({
   editLoading,
   savedRequests,
   savedListLoaded,
+  otherResponses,
+  otherAuth,
+  onOpenResponse,
+  onDelete,
   onReplay,
   onEdit,
   onCopyCurl,
@@ -1551,6 +2198,11 @@ function CallPanel({
   editLoading: boolean;
   savedRequests: SavedRequestListing[];
   savedListLoaded: boolean;
+  otherResponses: ReadableCall[];
+  /** Set when the other responses are split by auth: the auth they share, `null` for none. */
+  otherAuth?: Auth | null;
+  onOpenResponse: (sendId: string) => void;
+  onDelete: () => void;
   onReplay: () => void;
   onEdit: () => void;
   onCopyCurl: () => void;
@@ -1560,7 +2212,7 @@ function CallPanel({
     call.completion && 'response' in call.completion
       ? call.completion.response
       : null;
-  const auth = headers.find(([n]) => n.toLowerCase() === 'authorization');
+  const auth = authOf(headers);
   return (
     <section
       data-testid="call-panel"
@@ -1587,6 +2239,14 @@ function CallPanel({
           </p>
         </div>
         <div className="call-actions">
+          <button
+            type="button"
+            className="secondary danger"
+            onClick={onDelete}
+            disabled={call.state === 'in-flight'}
+          >
+            Delete
+          </button>
           <button type="button" className="secondary" onClick={onCopyCurl}>
             Copy call as curl
           </button>
@@ -1638,10 +2298,25 @@ function CallPanel({
         ) : null}
         {auth ? (
           <span className="chip mono">
-            Authorization: {abbreviate(auth[1])}
+            {auth.header}: {abbreviate(auth.value)}
           </span>
         ) : null}
       </div>
+      {otherResponses.length > 0 ? (
+        <div data-testid="other-responses" className="other-responses">
+          <span className="label">
+            Other responses to {method} {requestKeyOf(method, url).path}
+            {otherAuth === undefined ? null : ` · ${authLabel(otherAuth)}`}
+          </span>
+          {otherResponses.map((other) => (
+            <ResponseChip
+              key={other.send._id}
+              call={other}
+              onClick={() => onOpenResponse(other.send._id)}
+            />
+          ))}
+        </div>
+      ) : null}
       {editLoading ? (
         <p data-testid="call-edit-status">Loading the call into the form…</p>
       ) : null}
@@ -1716,7 +2391,19 @@ function stateText(state: Opened['state']): string {
   return 'Completed';
 }
 
-function ResultView({ result }: { result: SendResult | null }) {
+function ResultView({
+  result,
+  picked,
+  deleted,
+  strip,
+}: {
+  result: SendResult | null;
+  /** The response on screen is held for deletion (code review of delete-with-undo, 2). */
+  deleted: boolean;
+  /** A response picked from the strip, while it loads and after. */
+  picked: Picked | null;
+  strip: ReactNode;
+}) {
   if (!result) return null;
   if (!result.ok) {
     return (
@@ -1736,13 +2423,276 @@ function ResultView({ result }: { result: SendResult | null }) {
       </section>
     );
   }
+  const shown = picked ? picked.completion : result.completion;
+  if (deleted && !picked) {
+    return (
+      <section data-testid="result">
+        {strip}
+        <p className="empty">This response was deleted. Undo keeps it.</p>
+      </section>
+    );
+  }
   return (
     <section data-testid="result">
-      <CompletionView
-        key={result.completion._id}
-        completion={result.completion}
-      />
+      {shown ? (
+        <CompletionView key={shown._id} completion={shown} strip={strip} />
+      ) : (
+        <>
+          {strip}
+          {picked ? (
+            <p className="empty" data-testid="picked-state">
+              {pickedText(picked)}
+            </p>
+          ) : null}
+        </>
+      )}
     </section>
+  );
+}
+
+type Picked = {
+  resultId: string;
+  sendId: string;
+  completion: CompletionDoc | null;
+  state: 'loading' | 'failed' | ReadableCall['state'];
+  message?: string;
+};
+
+// What the response area says for a picked call with no completion to show (code review of responses-strip, 3).
+function pickedText(picked: Picked): string {
+  if (picked.state === 'loading') return 'Loading the response…';
+  if (picked.state === 'in-flight') return 'In flight: no response yet';
+  if (picked.state === 'failed') {
+    return `The response could not be loaded: ${picked.message ?? ''}`;
+  }
+  return 'No response was recorded for this call';
+}
+
+// The responses to one request, tagged with it: a list for another request, or for an earlier failure, is never
+// returned for this one (code review of responses-strip, 2 and 7).
+function useResponses(
+  key: {
+    method: Method;
+    path: string;
+    auth?: string;
+    environmentId?: string;
+  } | null,
+  refresh: string,
+): { calls: CallView[]; error: string | null } {
+  const text = key
+    ? `${key.method} ${key.path}${key.auth === undefined ? '' : `\n${key.auth}`}\n@${key.environmentId ?? ''}`
+    : '';
+  const [state, setState] = useState<{
+    key: string;
+    calls: CallView[];
+    error: string | null;
+  }>({ key: '', calls: [], error: null });
+  useEffect(() => {
+    if (!key) return;
+    let active = true;
+    pigeon
+      .listResponses(key)
+      .then((listed) => {
+        if (!active) return;
+        setState(
+          listed.ok
+            ? { key: text, calls: listed.calls, error: null }
+            : { key: text, calls: [], error: listed.message },
+        );
+      })
+      .catch((error: unknown) => {
+        if (active) setState({ key: text, calls: [], error: errorText(error) });
+      });
+    return () => {
+      active = false;
+    };
+    // `key` is a new object on each render; its text identifies it.
+  }, [text, refresh]);
+  return state.key === text && key
+    ? { calls: state.calls, error: state.error }
+    : { calls: [], error: null };
+}
+
+// History grouped by request (history-grouping), tagged with the split it was asked for: a list fetched with the other
+// split is never shown. Refetched when History changes, as the strips are.
+type RequestGroupsState = {
+  groups: RequestGroup[] | null;
+  error: string | null;
+};
+function useRequestGroups(
+  enabled: boolean,
+  splitByAuth: boolean,
+  environmentId: string | null,
+  refresh: string,
+): RequestGroupsState {
+  const text = enabled ? `${splitByAuth}\n@${environmentId ?? ''}` : '';
+  const [state, setState] = useState<{
+    key: string;
+    groups: RequestGroup[] | null;
+    error: string | null;
+  }>({ key: '', groups: null, error: null });
+  useEffect(() => {
+    if (!enabled) return;
+    let active = true;
+    pigeon
+      .listRequestGroups({
+        splitByAuth,
+        ...(environmentId === null ? {} : { environmentId }),
+      })
+      .then((listed) => {
+        if (!active) return;
+        setState(
+          listed.ok
+            ? { key: text, groups: listed.groups, error: null }
+            : { key: text, groups: null, error: listed.message },
+        );
+      })
+      .catch((error: unknown) => {
+        if (active) {
+          setState({ key: text, groups: null, error: errorText(error) });
+        }
+      });
+    return () => {
+      active = false;
+    };
+    // `text` stands for `enabled`, `splitByAuth` and `environmentId`.
+  }, [text, refresh]);
+  return state.key === text && enabled
+    ? { groups: state.groups, error: state.error }
+    : { groups: null, error: null };
+}
+
+// The text that names a group's key: method, path and, when split, the auth value.
+const groupKeyText = (key: { method: string; path: string; auth?: string }) =>
+  `${key.method} ${key.path}${key.auth === undefined ? '' : `\n${key.auth}`}`;
+const groupText = (g: RequestGroup, splitByAuth: boolean) =>
+  groupKeyText({
+    method: g.method,
+    path: g.path,
+    ...(splitByAuth ? { auth: g.auth?.value ?? '' } : {}),
+  });
+
+// A view preference kept in this browser (history-grouping). localStorage can be blocked or empty: every read and write
+// is guarded, and a stored value that is not one of `allowed` reads as the default.
+function usePreference<T extends string>(
+  key: string,
+  allowed: readonly T[],
+  fallback: T,
+): [T, (next: T) => void] {
+  const [value, setValue] = useState<T>(() => {
+    try {
+      const stored = localStorage.getItem(key);
+      return allowed.find((a) => a === stored) ?? fallback;
+    } catch {
+      return fallback;
+    }
+  });
+  const set = useCallback(
+    (next: T) => {
+      setValue(next);
+      try {
+        localStorage.setItem(key, next);
+      } catch {
+        // Kept for this page only.
+      }
+    },
+    [key],
+  );
+  return [value, set];
+}
+
+// How a split by auth is named: the header and the start and end of its value, or "no auth".
+const authLabel = (auth: Auth | null) =>
+  auth ? `${auth.header}: ${abbreviate(auth.value)}` : 'no auth';
+
+// "Responses to this request" (screen 01): one chip per response, newest first, the one shown pressed. "Split by auth"
+// keeps the responses sent with this call's auth (history-grouping).
+function ResponsesStrip({
+  calls,
+  selectedId,
+  onPick,
+  onDelete,
+  splitByAuth,
+  auth,
+  outside,
+  onSplitByAuth,
+}: {
+  calls: CallView[];
+  selectedId: string;
+  onPick: (sendId: string) => void;
+  onDelete: (call: ReadableCall) => void;
+  splitByAuth: boolean;
+  auth: Auth | null;
+  /** The selected environment's name when the call on screen is not recorded under it (environment-aware-history). */
+  outside?: string | undefined;
+  onSplitByAuth: (on: boolean) => void;
+}) {
+  const readable = calls.filter(
+    (c): c is ReadableCall => c.state !== 'unreadable',
+  );
+  return (
+    <div data-testid="responses-strip" className="responses-strip">
+      <span className="strip-label">
+        <strong>Responses to this request</strong>
+        <span>
+          {readable.length} kept
+          {splitByAuth ? ` · ${authLabel(auth)}` : ''}
+          {outside === undefined
+            ? ''
+            : ` · ${outside} — this call is not in ${outside}`}
+        </span>
+      </span>
+      <button
+        type="button"
+        className="strip-toggle"
+        aria-pressed={splitByAuth}
+        onClick={() => onSplitByAuth(!splitByAuth)}
+      >
+        Split by auth
+      </button>
+      {readable.map((call) => (
+        <span key={call.send._id} className="chip-group">
+          <ResponseChip
+            call={call}
+            pressed={call.send._id === selectedId}
+            onClick={() => onPick(call.send._id)}
+          />
+          <button
+            type="button"
+            className="chip-delete"
+            aria-label={`Delete response ${codeText(call)} ${call.send.sentAt.toLocaleTimeString()}`}
+            disabled={call.state === 'in-flight'}
+            onClick={() => onDelete(call)}
+          >
+            ×
+          </button>
+        </span>
+      ))}
+    </div>
+  );
+}
+
+function ResponseChip({
+  call,
+  pressed,
+  onClick,
+}: {
+  call: ReadableCall;
+  pressed?: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      className="response-chip"
+      aria-pressed={pressed}
+      onClick={onClick}
+    >
+      <span className={`dot ${outcomeClass(call)}`} aria-hidden="true" />
+      <span className={`code ${outcomeClass(call)}`}>{codeText(call)}</span>
+      <span className="time">{call.send.sentAt.toLocaleTimeString()}</span>
+      <span className="duration">{durationText(call)}</span>
+    </button>
   );
 }
 
@@ -1751,8 +2701,11 @@ function ResultView({ result }: { result: SendResult | null }) {
 function CompletionView({
   completion,
   heading = true,
+  strip = null,
 }: {
   completion: CompletionDoc;
+  /** The responses strip, under the header (slice 7). */
+  strip?: ReactNode;
   /** The call record names the column itself, so it leaves this heading out. */
   heading?: boolean;
 }) {
@@ -1765,6 +2718,7 @@ function CompletionView({
           {heading ? <h2>Response</h2> : null}
           <span className="status-pill err">{completion.error.code}</span>
         </div>
+        {strip}
         <p data-testid="response-error">
           {completion.error.code}: {completion.error.message} ({duration})
         </p>
@@ -1790,6 +2744,7 @@ function CompletionView({
           Recorded · {completion.completedAt.toLocaleString()}
         </span>
       </div>
+      {strip}
       <div role="tablist" aria-label="Response" className="tabs">
         <button
           type="button"
@@ -2332,74 +3287,223 @@ function HistoryList({
   calls,
   error,
   onOpen,
+  onDelete,
+  grouping,
+  onGrouping,
+  splitByAuth,
+  onSplitByAuth,
+  groups,
+  expandedText,
+  expandedCalls,
+  expandedError,
+  onExpand,
 }: {
   calls: CallView[];
   error: string | null;
   onOpen: (sendId: string) => void;
+  onDelete: (call: ReadableCall) => void;
+  grouping: 'request' | 'day';
+  onGrouping: (grouping: 'request' | 'day') => void;
+  splitByAuth: boolean;
+  onSplitByAuth: (on: boolean) => void;
+  groups: RequestGroupsState;
+  /** The expanded group's key text; `''` when none is expanded. */
+  expandedText: string;
+  expandedCalls: ReadableCall[];
+  expandedError: string | null;
+  onExpand: (group: RequestGroup) => void;
 }) {
+  const byRequest = grouping === 'request';
   // One group per day, in the order days first appear; today is computed once per render (code review of
   // workspace-shell, 5 and 9).
   const today = startOfDay(new Date());
-  const groups = new Map<string, CallView[]>();
+  const days = new Map<string, CallView[]>();
   for (const call of calls) {
     const day =
       call.state === 'unreadable'
         ? 'Unreadable'
         : dayLabel(call.send.sentAt, today);
-    groups.set(day, [...(groups.get(day) ?? []), call]);
+    days.set(day, [...(days.get(day) ?? []), call]);
   }
+  // By request, the count is all of history; by day, the calls loaded (history-grouping).
+  const count = byRequest
+    ? (groups.groups ?? []).reduce((sum, g) => sum + g.count, 0)
+    : calls.length;
+  const shownError = byRequest ? (groups.error ?? error) : error;
+  // An expanded group's first call is brought into view when its calls arrive (T2.9).
+  const firstExpanded = useRef<HTMLLIElement>(null);
+  const expandedShown = expandedCalls.length > 0 ? expandedText : '';
+  useEffect(() => {
+    if (expandedShown) {
+      firstExpanded.current?.scrollIntoView({ block: 'nearest' });
+    }
+  }, [expandedShown]);
   return (
     <section className="history">
       <div className="title-row">
         <h2>History</h2>
-        <span className="count">{calls.length} calls</span>
+        <span className="count" data-testid="history-count">
+          {count} {count === 1 ? 'call' : 'calls'}
+        </span>
       </div>
-      {error ? (
+      <div className="history-controls" data-testid="history-controls">
+        <div className="segment" role="group" aria-label="Group history by">
+          <button
+            type="button"
+            aria-pressed={byRequest}
+            onClick={() => onGrouping('request')}
+          >
+            By request
+          </button>
+          <button
+            type="button"
+            aria-pressed={!byRequest}
+            onClick={() => onGrouping('day')}
+          >
+            By day
+          </button>
+        </div>
+        {byRequest ? (
+          <button
+            type="button"
+            className="strip-toggle"
+            aria-pressed={splitByAuth}
+            onClick={() => onSplitByAuth(!splitByAuth)}
+          >
+            Split by auth
+          </button>
+        ) : null}
+      </div>
+      {shownError ? (
         <p data-testid="history-error" className="error">
-          History could not be loaded: {error}
+          History could not be loaded: {shownError}
         </p>
       ) : null}
-      <ol data-testid="history" className="history-list">
-        {[...groups].map(([day, dayCalls]) => [
-          <li key={`day-${day}`} className="day" aria-hidden="true">
-            {day}
-          </li>,
-          ...dayCalls.map((call) =>
-            call.state === 'unreadable' ? (
-              <li key={call.id} data-state="unreadable">
-                Unreadable record {call.id}: {call.error}
-              </li>
-            ) : (
-              <li key={call.send._id} data-state={call.state}>
+      {byRequest ? (
+        <ol data-testid="history-groups" className="history-list">
+          {(groups.groups ?? []).map((g) => {
+            const text = groupText(g, splitByAuth);
+            const expanded = text === expandedText;
+            const callCount = `${g.count} ${g.count === 1 ? 'call' : 'calls'}`;
+            const auth = splitByAuth ? ` · ${authLabel(g.auth)}` : '';
+            return (
+              <li key={text} className="request-group">
                 <button
                   type="button"
                   className="history-row"
-                  aria-label={`${call.send.request.method} ${call.send.request.url} — ${outcome(call)} · ${call.send.sentAt.toLocaleString()}`}
-                  onClick={() => onOpen(call.send._id)}
+                  aria-expanded={expanded}
+                  aria-label={`${g.method} ${g.path}${auth} — ${callCount}`}
+                  onClick={() => onExpand(g)}
                 >
-                  <MethodBadge method={call.send.request.method} />
+                  <MethodBadge method={g.method} />
                   <span className="row-info">
-                    <span className="path">
-                      {pathOf(call.send.request.url)}
-                    </span>
+                    <span className="path">{g.path}</span>
                     <span className="meta">
-                      {hostOf(call.send.request.url)} ·{' '}
-                      {call.send.sentAt.toLocaleTimeString()}
+                      {callCount} · {g.latest.send.sentAt.toLocaleTimeString()}
+                      {auth}
                     </span>
                   </span>
                   <span className="result">
-                    <span className={`code ${outcomeClass(call)}`}>
-                      {codeText(call)}
+                    <span className={`code ${outcomeClass(g.latest)}`}>
+                      {codeText(g.latest)}
                     </span>
-                    <span className="duration">{durationText(call)}</span>
+                    <span className="duration" aria-hidden="true">
+                      {expanded ? '▾' : '▸'}
+                    </span>
                   </span>
                 </button>
+                {expanded && expandedError ? (
+                  <p data-testid="group-error" className="error">
+                    Calls of this request could not be loaded: {expandedError}
+                  </p>
+                ) : null}
+                {expanded && !expandedError ? (
+                  <ol className="group-calls">
+                    {expandedCalls.map((call, i) => (
+                      <HistoryRow
+                        key={call.send._id}
+                        call={call}
+                        itemRef={i === 0 ? firstExpanded : undefined}
+                        onOpen={onOpen}
+                        onDelete={onDelete}
+                      />
+                    ))}
+                  </ol>
+                ) : null}
               </li>
+            );
+          })}
+        </ol>
+      ) : (
+        <ol data-testid="history" className="history-list">
+          {[...days].map(([day, dayCalls]) => [
+            <li key={`day-${day}`} className="day" aria-hidden="true">
+              {day}
+            </li>,
+            ...dayCalls.map((call) =>
+              call.state === 'unreadable' ? (
+                <li key={call.id} data-state="unreadable">
+                  Unreadable record {call.id}: {call.error}
+                </li>
+              ) : (
+                <HistoryRow
+                  key={call.send._id}
+                  call={call}
+                  onOpen={onOpen}
+                  onDelete={onDelete}
+                />
+              ),
             ),
-          ),
-        ])}
-      </ol>
+          ])}
+        </ol>
+      )}
     </section>
+  );
+}
+
+// One call in History, by day or inside an expanded request group.
+function HistoryRow({
+  call,
+  itemRef,
+  onOpen,
+  onDelete,
+}: {
+  call: ReadableCall;
+  itemRef?: Ref<HTMLLIElement>;
+  onOpen: (sendId: string) => void;
+  onDelete: (call: ReadableCall) => void;
+}) {
+  return (
+    <li ref={itemRef} data-state={call.state}>
+      <button
+        type="button"
+        className="history-row"
+        aria-label={`${call.send.request.method} ${call.send.request.url} — ${outcome(call)} · ${call.send.sentAt.toLocaleString()}`}
+        onClick={() => onOpen(call.send._id)}
+      >
+        <MethodBadge method={call.send.request.method} />
+        <span className="row-info">
+          <span className="path">{pathOf(call.send.request.url)}</span>
+          <span className="meta">
+            {hostOf(call.send.request.url)} ·{' '}
+            {call.send.sentAt.toLocaleTimeString()}
+          </span>
+        </span>
+        <span className="result">
+          <span className={`code ${outcomeClass(call)}`}>{codeText(call)}</span>
+          <span className="duration">{durationText(call)}</span>
+        </span>
+      </button>
+      <button
+        type="button"
+        className="row-delete"
+        aria-label={`Delete ${call.send.request.method} ${call.send.request.url}`}
+        disabled={call.state === 'in-flight'}
+        onClick={() => onDelete(call)}
+      >
+        ×
+      </button>
+    </li>
   );
 }
 
@@ -2463,4 +3567,832 @@ function outcome(call: Exclude<CallView, { state: 'unreadable' }>): string {
   return 'error' in call.completion
     ? call.completion.error.code
     : String(call.completion.response.status);
+}
+
+// Slice 9: the History search's filters. `""` in a list means "none".
+interface Filters {
+  methods: string[];
+  environmentIds: string[];
+  auths: string[];
+  savedRequestIds: string[];
+  /** yyyy-mm-dd from the date inputs, or ''. */
+  from: string;
+  to: string;
+}
+
+const NO_FILTERS: Filters = {
+  methods: [],
+  environmentIds: [],
+  auths: [],
+  savedRequestIds: [],
+  from: '',
+  to: '',
+};
+
+const hasFilters = (f: Filters) =>
+  f.methods.length > 0 ||
+  f.environmentIds.length > 0 ||
+  f.auths.length > 0 ||
+  f.savedRequestIds.length > 0 ||
+  f.from !== '' ||
+  f.to !== '';
+
+function queryOf(text: string, f: Filters): SearchQuery {
+  return {
+    ...(text.trim() === '' ? {} : { text: text.trim() }),
+    ...(f.methods.length ? { methods: f.methods as Method[] } : {}),
+    ...(f.environmentIds.length ? { environmentIds: f.environmentIds } : {}),
+    ...(f.auths.length ? { auths: f.auths } : {}),
+    ...(f.savedRequestIds.length ? { savedRequestIds: f.savedRequestIds } : {}),
+    // Whole local days, inclusive.
+    // A date the input holds but Date cannot represent is left out (code review of history-search, 7).
+    ...isoOrNothing('from', `${f.from}T00:00:00`, f.from),
+    ...isoOrNothing('to', `${f.to}T23:59:59.999`, f.to),
+  };
+}
+
+function isoOrNothing(
+  key: 'from' | 'to',
+  local: string,
+  raw: string,
+): Partial<Record<'from' | 'to', string>> {
+  if (!raw) return {};
+  const date = new Date(local);
+  return Number.isNaN(date.getTime()) ? {} : { [key]: date.toISOString() };
+}
+
+type FacetKey = 'methods' | 'environmentIds' | 'auths' | 'savedRequestIds';
+
+// A long header value shown as its start and end.
+const shortAuth = (value: string) =>
+  value.length > 22 ? `${value.slice(0, 10)}…${value.slice(-4)}` : value;
+
+function SearchFilters({
+  filters,
+  facets,
+  savedRequests,
+  showResults,
+  onChange,
+  onShowResults,
+  onClear,
+}: {
+  filters: Filters;
+  facets: Extract<SearchResult, { ok: true }>['facets'] | null;
+  savedRequests: SavedRequestListing[];
+  showResults: boolean;
+  onChange: (filters: Filters) => void;
+  onShowResults: () => void;
+  onClear: () => void;
+}) {
+  const toggle = (key: FacetKey, value: string, on: boolean) =>
+    onChange({
+      ...filters,
+      [key]: on
+        ? [...filters[key], value]
+        : filters[key].filter((v) => v !== value),
+    });
+  const savedName = (id: string) =>
+    savedRequests.find((s) => s.id === id)?.name ?? 'Deleted saved request';
+  const section = (
+    title: string,
+    key: FacetKey,
+    options: FacetOption[] | undefined,
+    label: (o: FacetOption) => ReactNode,
+  ) => (
+    <fieldset className="facet">
+      <legend>{title}</legend>
+      <div role="group" aria-label={title}>
+        {(options ?? [])
+          .filter((o) => o.count > 0 || filters[key].includes(o.value))
+          .map((o) => (
+            <label key={o.value} className="facet-option">
+              <input
+                type="checkbox"
+                checked={filters[key].includes(o.value)}
+                onChange={(e) => toggle(key, o.value, e.target.checked)}
+              />
+              <span className="facet-label">{label(o)}</span>
+              <span className="count">{o.count}</span>
+            </label>
+          ))}
+      </div>
+    </fieldset>
+  );
+  const chips: { key: FacetKey; value: string; text: string }[] = [
+    ...filters.methods.map((v) => ({
+      key: 'methods' as const,
+      value: v,
+      text: `Method ${v}`,
+    })),
+    ...filters.environmentIds.map((v) => ({
+      key: 'environmentIds' as const,
+      value: v,
+      text: `Env ${facets?.environment.find((o) => o.value === v)?.label ?? v}`,
+    })),
+    ...filters.auths.map((v) => ({
+      key: 'auths' as const,
+      value: v,
+      text: `Auth ${v === '' ? 'none' : shortAuth(v)}`,
+    })),
+    ...filters.savedRequestIds.map((v) => ({
+      key: 'savedRequestIds' as const,
+      value: v,
+      text: `Saved ${v === '' ? 'none' : savedName(v)}`,
+    })),
+  ];
+  return (
+    <section className="search-filters">
+      <div className="filter-chips">
+        {chips.map((c) => (
+          <span key={`${c.key}:${c.value}`} className="filter-chip">
+            {c.text}
+            <button
+              type="button"
+              aria-label={`Remove ${c.text}`}
+              onClick={() => toggle(c.key, c.value, false)}
+            >
+              ×
+            </button>
+          </span>
+        ))}
+        <span className="spacer" />
+        <button type="button" className="link" onClick={onClear}>
+          Clear all
+        </button>
+      </div>
+      {showResults ? (
+        <button type="button" onClick={onShowResults}>
+          Show results
+        </button>
+      ) : null}
+      {section('Method', 'methods', facets?.method, (o) => (
+        <MethodBadge method={o.value} />
+      ))}
+      {section(
+        'Environment',
+        'environmentIds',
+        facets?.environment,
+        (o) => o.label,
+      )}
+      {section('Auth header', 'auths', facets?.auth, (o) => (
+        <span className={o.value === '' ? undefined : 'mono'} title={o.value}>
+          {o.value === ''
+            ? 'No auth header'
+            : `${o.detail ? `${o.detail}: ` : ''}${shortAuth(o.value)}`}
+        </span>
+      ))}
+      {section('Saved request', 'savedRequestIds', facets?.savedRequest, (o) =>
+        o.value === '' ? 'No saved request' : savedName(o.value),
+      )}
+      <fieldset className="facet">
+        <legend>Sent</legend>
+        <div className="date-range">
+          <label>
+            From
+            <input
+              type="date"
+              value={filters.from}
+              onChange={(e) => onChange({ ...filters, from: e.target.value })}
+            />
+          </label>
+          <label>
+            To
+            <input
+              type="date"
+              value={filters.to}
+              onChange={(e) => onChange({ ...filters, to: e.target.value })}
+            />
+          </label>
+        </div>
+      </fieldset>
+    </section>
+  );
+}
+
+// Screen 04: the calls that match, as a table; resend or delete one or a selection.
+function SearchResults({
+  result,
+  filters,
+  text,
+  hidden,
+  selected,
+  onSelect,
+  onOpen,
+  onResend,
+  resendBusy,
+  resendError,
+  onEdit,
+  onDelete,
+  onClear,
+}: {
+  result: SearchResult | null;
+  filters: Filters;
+  text: string;
+  hidden: ReadonlySet<string>;
+  selected: ReadonlySet<string>;
+  onSelect: (ids: ReadonlySet<string>) => void;
+  onOpen: (sendId: string) => void;
+  onResend: (sendIds: string[]) => void;
+  resendBusy: boolean;
+  resendError: string | null;
+  onEdit: (sendId: string) => void;
+  onDelete: (calls: ReadableCall[]) => void;
+  onClear: () => void;
+}) {
+  const calls = (result?.ok ? result.calls : []).filter(
+    (c): c is ReadableCall =>
+      c.state !== 'unreadable' && !hidden.has(c.send._id),
+  );
+  // In-flight calls cannot be resent or deleted, as their row buttons say (code review of history-search, 4).
+  const chosen = calls.filter(
+    (c) => selected.has(c.send._id) && c.state !== 'in-flight',
+  );
+  const facetLabel = (
+    key: 'environment' | 'auth' | 'savedRequest',
+    value: string,
+  ) =>
+    (result?.ok
+      ? result.facets[key].find((o) => o.value === value)?.label
+      : undefined) ?? value;
+  const summary = [
+    filters.methods.join(' or '),
+    filters.environmentIds
+      .map((v) => facetLabel('environment', v))
+      .join(' or '),
+    filters.auths
+      .map((v) => {
+        if (v === '') return 'no auth header';
+        const header = result?.ok
+          ? result.facets.auth.find((o) => o.value === v)?.detail
+          : undefined;
+        return `${header ?? 'auth'}: ${shortAuth(v)}`;
+      })
+      .join(' or '),
+    filters.savedRequestIds.length
+      ? `${filters.savedRequestIds.length} saved request(s)`
+      : '',
+    filters.from || filters.to
+      ? `sent ${filters.from || '…'} – ${filters.to || '…'}`
+      : '',
+    text.trim() ? `contains “${text.trim()}”` : '',
+  ]
+    .filter(Boolean)
+    .join(' · ');
+  const toggle = (id: string, on: boolean) => {
+    const next = new Set(selected);
+    if (on) next.add(id);
+    else next.delete(id);
+    onSelect(next);
+  };
+  const heldCount = result?.ok
+    ? result.calls.filter(
+        (c) => c.state !== 'unreadable' && hidden.has(c.send._id),
+      ).length
+    : 0;
+  return (
+    <section data-testid="search-results" className="search-results">
+      <div className="results-head">
+        <div>
+          <h2>
+            {!result
+              ? 'Searching…'
+              : !result.ok
+                ? 'The search failed'
+                : calls.length === 0
+                  ? 'No calls match'
+                  : `${result.total - heldCount} ${result.total - heldCount === 1 ? 'call matches' : 'calls match'}`}
+          </h2>
+          <p className="summary">
+            {result && !result.ok ? (
+              <span className="error">{result.message}</span>
+            ) : (
+              summary
+            )}
+            {resendError ? (
+              <span className="error" role="alert">
+                {' '}
+                {resendError}
+              </span>
+            ) : null}
+          </p>
+        </div>
+        <span className="spacer" />
+        {chosen.length > 0 ? (
+          <>
+            <span className="muted">{chosen.length} selected</span>
+            <button
+              type="button"
+              className="secondary"
+              disabled={resendBusy}
+              onClick={() => onResend(chosen.map((c) => c.send._id))}
+            >
+              Resend {chosen.length}
+            </button>
+            <button
+              type="button"
+              className="secondary danger"
+              onClick={() => onDelete(chosen)}
+            >
+              Delete {chosen.length}
+            </button>
+          </>
+        ) : null}
+      </div>
+      {result?.ok && calls.length === 0 ? (
+        <div className="empty">
+          <p>Nothing in History matches these filters.</p>
+          <button type="button" onClick={onClear}>
+            Clear filters
+          </button>
+        </div>
+      ) : (
+        <div className="results-scroll">
+          <table className="results-table">
+            <thead>
+              <tr>
+                <th aria-label="Selected" />
+                <th>Method</th>
+                <th>URL</th>
+                <th>Environment</th>
+                <th>Auth header</th>
+                <th>Status</th>
+                <th>Duration</th>
+                <th>Sent</th>
+                <th aria-label="Actions" />
+              </tr>
+            </thead>
+            <tbody>
+              {calls.map((call) => {
+                const { method, url, headers } = call.send.request;
+                const auth = authOf(headers);
+                const id = call.send._id;
+                return (
+                  <tr
+                    key={id}
+                    className={selected.has(id) ? 'selected' : undefined}
+                  >
+                    <td>
+                      <input
+                        type="checkbox"
+                        aria-label={`Select ${method} ${url}`}
+                        checked={selected.has(id)}
+                        onChange={(e) => toggle(id, e.target.checked)}
+                      />
+                    </td>
+                    <td>
+                      <MethodBadge method={method} />
+                    </td>
+                    <td className="url-cell">
+                      <button
+                        type="button"
+                        className="link"
+                        onClick={() => onOpen(id)}
+                      >
+                        <span className="faint">{hostOf(url)}</span>
+                        {pathOf(url)}
+                      </button>
+                    </td>
+                    <td>{call.send.environment?.name ?? '—'}</td>
+                    <td className="mono">
+                      {auth && auth.value !== ''
+                        ? `${auth.header}: ${shortAuth(auth.value)}`
+                        : '—'}
+                    </td>
+                    <td className={`mono ${outcomeClass(call)}`}>
+                      {codeText(call)}
+                    </td>
+                    <td className="mono faint">{durationText(call)}</td>
+                    <td>{call.send.sentAt.toLocaleString()}</td>
+                    <td className="row-actions">
+                      <button
+                        type="button"
+                        onClick={() => onResend([id])}
+                        disabled={call.state === 'in-flight'}
+                      >
+                        Resend
+                      </button>
+                      <button type="button" onClick={() => onEdit(id)}>
+                        Edit
+                      </button>
+                      <button
+                        type="button"
+                        className="danger"
+                        aria-label={`Delete ${method} ${url}`}
+                        disabled={call.state === 'in-flight'}
+                        onClick={() => onDelete([call])}
+                      >
+                        ×
+                      </button>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+      <p className="note">
+        Resend creates a new call; the original stays untouched. Bodies stored
+        as files (over 1 MiB) are not searched.
+      </p>
+    </section>
+  );
+}
+
+// Slice 10: the Templates tab: source → directory → template, as screen 05's tree.
+function TemplatesTree({
+  sources,
+  error,
+  outcome,
+  onImport,
+  onOpen,
+}: {
+  sources: TemplateSource[];
+  error: string | null;
+  outcome: string | null;
+  onImport: () => void;
+  onOpen: (id: string) => void;
+}) {
+  const total = sources.reduce((n, s) => n + s.templates.length, 0);
+  return (
+    <section className="templates" data-testid="templates-tree">
+      <div className="title-row">
+        <h2>Templates</h2>
+        <span className="count">
+          {total} in {sources.length}{' '}
+          {sources.length === 1 ? 'source' : 'sources'}
+        </span>
+      </div>
+      <div className="templates-actions">
+        <button type="button" onClick={onImport}>
+          Import OpenAPI / WSDL
+        </button>
+      </div>
+      {error ? (
+        <p className="error" role="alert">
+          {error}
+        </p>
+      ) : null}
+      {outcome ? (
+        <p className="muted import-outcome" data-testid="import-outcome">
+          {outcome}
+        </p>
+      ) : null}
+      {sources.length === 0 ? (
+        <p className="empty">
+          No templates yet. Import an OpenAPI JSON file to make one per
+          operation.
+        </p>
+      ) : null}
+      <ul className="tree">
+        {sources.map((source) => {
+          const directories = new Map<string, typeof source.templates>();
+          for (const t of source.templates) {
+            const group = directories.get(t.directory);
+            if (group) group.push(t);
+            else directories.set(t.directory, [t]);
+          }
+          return (
+            <li key={source.id}>
+              <details open>
+                <summary>
+                  <span className="source-name">{source.name}</span>
+                  <span className="count">{source.templates.length}</span>
+                </summary>
+                <ul>
+                  {[...directories].map(([directory, templates]) => (
+                    <li key={directory}>
+                      <details open>
+                        <summary>
+                          <span>{directory}</span>
+                          <span className="count">{templates.length}</span>
+                        </summary>
+                        <ul>
+                          {templates.map((t) => (
+                            <li key={t.id}>
+                              <button
+                                type="button"
+                                className="template-row"
+                                aria-label={`${t.badge} ${t.path} — ${t.name}`}
+                                onClick={() => onOpen(t.id)}
+                              >
+                                <MethodBadge method={t.badge} />
+                                <span className="path">{t.path}</span>
+                              </button>
+                            </li>
+                          ))}
+                        </ul>
+                      </details>
+                    </li>
+                  ))}
+                </ul>
+              </details>
+            </li>
+          );
+        })}
+      </ul>
+    </section>
+  );
+}
+
+// Screen 05: choose a spec, preview its directories, and generate one template per operation.
+function ImportDialog({
+  existingNames,
+  onCancel,
+  onImported,
+  onRefresh,
+}: {
+  /** Sources already imported: the same title re-imports in place (slice 11). */
+  existingNames: string[];
+  onCancel: () => void;
+  onImported: (outcome: string) => Promise<void>;
+  onRefresh: () => Promise<void>;
+}) {
+  // Slice 12: the dialog reads OpenAPI JSON or WSDL.
+  const [kind, setKind] = useState<'openapi' | 'wsdl'>('openapi');
+  const [file, setFile] = useState<{
+    name: string;
+    text: string;
+    spec: ParsedSpec | null;
+    wsdl: ParsedWsdl | null;
+    error: string | null;
+  } | null>(null);
+  const [grouping, setGrouping] = useState<'tag' | 'path'>('tag');
+  const [useEnvironment, setUseEnvironment] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [importError, setImportError] = useState<string | null>(null);
+  const groups: Map<string, { method: string }[]> | null = file?.spec
+    ? groupOperations(file.spec.operations, grouping)
+    : file?.wsdl
+      ? wsdlGroups(file.wsdl)
+      : null;
+  const count = groups
+    ? [...groups.values()].reduce((n, ops) => n + ops.length, 0)
+    : 0;
+  const parsedTitle = file?.spec?.titled
+    ? file.spec.title
+    : file?.wsdl?.titled
+      ? file.wsdl.title
+      : null;
+  const reimport =
+    parsedTitle !== null && existingNames.includes(`${kind}:${parsedTitle}`);
+
+  // The latest file picked wins, whichever read finishes last (code review of openapi-import, 6).
+  const latestPick = useRef(0);
+  const choose = async (picked: File | undefined) => {
+    if (!picked) return;
+    const thisPick = ++latestPick.current;
+    setImportError(null);
+    const text = await picked.text().catch(() => null);
+    if (thisPick !== latestPick.current) return;
+    if (text === null) {
+      setFile({
+        name: picked.name,
+        text: '',
+        spec: null,
+        wsdl: null,
+        error: 'The file could not be read',
+      });
+      return;
+    }
+    try {
+      setFile(
+        kind === 'wsdl'
+          ? {
+              name: picked.name,
+              text,
+              spec: null,
+              wsdl: parseWsdl(text),
+              error: null,
+            }
+          : {
+              name: picked.name,
+              text,
+              spec: parseOpenApi(text),
+              wsdl: null,
+              error: null,
+            },
+      );
+    } catch (error) {
+      setFile({
+        name: picked.name,
+        text,
+        spec: null,
+        wsdl: null,
+        error: errorText(error),
+      });
+    }
+  };
+
+  const generate = async () => {
+    if ((!file?.spec && !file?.wsdl) || busy) return;
+    setBusy(true);
+    const mode = reimport ? ('reimport' as const) : ('new' as const);
+    const done = await (
+      file.wsdl
+        ? pigeon.importWsdl({ text: file.text, filename: file.name, mode })
+        : pigeon.importOpenApi({
+            text: file.text,
+            filename: file.name,
+            grouping,
+            useEnvironment,
+            mode,
+          })
+    ).catch((error: unknown) => ({
+      ok: false as const,
+      message: errorText(error),
+    }));
+    setBusy(false);
+    if (!done.ok) {
+      setImportError(done.message);
+      // The list was stale: another source has this title. Refresh it, so the dialog offers the re-import.
+      if (/already imported/.test(done.message)) await onRefresh();
+      return;
+    }
+    await onImported(
+      done.reimported
+        ? `${done.added} added · ${done.updated} updated · ${done.removed} removed`
+        : `${done.added} ${done.added === 1 ? 'template' : 'templates'} added`,
+    );
+  };
+
+  return (
+    <div className="dialog-backdrop">
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label="Import templates"
+        className="dialog"
+      >
+        <h2>Import templates</h2>
+        <p className="muted">
+          One template per operation, filed into directories. A template is
+          never sent by itself — every send of it is kept in History.
+        </p>
+        <p className="label">Source</p>
+        <div className="segment" role="group" aria-label="Source">
+          {(
+            [
+              ['openapi', 'OpenAPI JSON'],
+              ['wsdl', 'WSDL'],
+            ] as const
+          ).map(([value, label]) => (
+            <button
+              key={value}
+              type="button"
+              aria-pressed={kind === value}
+              onClick={() => {
+                if (kind === value) return;
+                // A read still in flight belongs to the other kind (code review of wsdl-import, 6).
+                latestPick.current += 1;
+                setKind(value);
+                setFile(null);
+                setImportError(null);
+              }}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+        <p className="label">File</p>
+        <div className={`file-box${file?.spec || file?.wsdl ? ' chosen' : ''}`}>
+          <div className="file-info">
+            <span className="mono">{file?.name ?? 'No file chosen'}</span>
+            {file?.spec ? (
+              <span className="muted">
+                OpenAPI {file.spec.openapi} · {file.spec.title}
+                {file.spec.version ? ` v${file.spec.version}` : ''} · {count}{' '}
+                operations
+                {file.spec.servers[0]
+                  ? ` · servers: ${file.spec.servers[0]}`
+                  : ''}
+              </span>
+            ) : null}
+            {file?.wsdl ? (
+              <span className="muted">
+                WSDL · {file.wsdl.title} · {file.wsdl.ports.length} ports ·{' '}
+                {count} operations
+              </span>
+            ) : null}
+            {file?.error ? (
+              <span className="error" role="alert">
+                {file.error}
+              </span>
+            ) : null}
+          </div>
+          <label className="file-button">
+            Choose file…
+            <input
+              type="file"
+              aria-label="Spec file"
+              accept={
+                kind === 'wsdl'
+                  ? '.wsdl,.xml,text/xml,application/xml'
+                  : '.json,application/json'
+              }
+              onChange={(e) => void choose(e.target.files?.[0])}
+            />
+          </label>
+        </div>
+        {kind === 'openapi' ? (
+          <>
+            <p className="label">Group into directories by</p>
+            <div
+              className="segment"
+              role="group"
+              aria-label="Group into directories by"
+            >
+              <button
+                type="button"
+                aria-pressed={grouping === 'tag'}
+                onClick={() => setGrouping('tag')}
+              >
+                Tag
+              </button>
+              <button
+                type="button"
+                aria-pressed={grouping === 'path'}
+                onClick={() => setGrouping('path')}
+              >
+                Path segment
+              </button>
+            </div>
+            <label className="checkbox-row">
+              <input
+                type="checkbox"
+                checked={useEnvironment}
+                onChange={(e) => setUseEnvironment(e.target.checked)}
+              />
+              Use the active environment's baseUrl instead of the spec's server
+              URL
+            </label>
+          </>
+        ) : (
+          <p className="muted">
+            Filed by port. Each template is a POST to its port's address, with
+            the SOAP headers and an envelope.
+          </p>
+        )}
+        {groups ? (
+          <>
+            <p className="label">
+              Preview — {count} templates in {groups.size} directories
+            </p>
+            <div className="import-preview" data-testid="import-preview">
+              {[...groups].map(([directory, ops]) => (
+                <div key={directory} className="preview-dir">
+                  <span className="mono">
+                    {directory}/ <span className="count">{ops.length}</span>
+                  </span>
+                  <span className="badges">
+                    {ops.map((op, i) => (
+                      <MethodBadge key={i} method={op.method} />
+                    ))}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </>
+        ) : null}
+        {reimport ? (
+          <p className="reimport-note">
+            Re-imports “{parsedTitle}”: its templates are updated in place, new
+            operations are added and gone ones removed. History is not touched.
+          </p>
+        ) : null}
+        {importError ? (
+          <p className="error" role="alert">
+            {importError}
+          </p>
+        ) : null}
+        <div className="dialog-footer">
+          <span className="muted">
+            Re-importing updates templates in place; History is never touched.
+          </span>
+          <span className="spacer" />
+          <button type="button" onClick={onCancel}>
+            Cancel
+          </button>
+          <button
+            type="button"
+            className="primary"
+            disabled={(!file?.spec && !file?.wsdl) || count === 0 || busy}
+            onClick={() => void generate()}
+          >
+            {reimport ? 'Update' : 'Generate'} {count} templates
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// WSDL operations by port, by the store's rule (groupPorts in src/core/wsdl.ts).
+function wsdlGroups(wsdl: ParsedWsdl): Map<string, { method: string }[]> {
+  return new Map(
+    [...groupPorts(wsdl)].map(([directory, port]) => [
+      directory,
+      port.operations.map(() => ({ method: 'SOAP' })),
+    ]),
+  );
 }

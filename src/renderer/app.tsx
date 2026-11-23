@@ -14,6 +14,7 @@ import {
   Component,
   type ErrorInfo,
   type ReactNode,
+  type Ref,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -41,7 +42,7 @@ import {
   createPartScanner,
   multipartBoundary,
 } from '../core/multipart';
-import { authOf } from '../core/headers';
+import { type Auth, authOf } from '../core/headers';
 import { requestKeyOf } from '../core/request-key';
 import {
   type ParsedSpec,
@@ -66,6 +67,7 @@ import {
   type CallDetail,
   type CallView,
   type DbStatusView,
+  type RequestGroup,
   METHODS,
   type SendInput,
   type SendResult,
@@ -619,11 +621,24 @@ export function App() {
 
   // The strips refresh when History changes: a send, a replay or a completion lands there first (slice 7).
   const historyMark = `${dataVersion}:${history.length}:${history[0]?.state === 'unreadable' ? history[0].id : (history[0]?.send._id ?? '')}:${history.filter((c) => c.state === 'in-flight').length}`;
+  // "Split by auth" narrows both strips to the calls sent with the same auth (history-grouping).
+  const [splitPreference, setSplitPreference] = usePreference(
+    'dp.splitByAuth',
+    ['false', 'true'],
+    'false',
+  );
+  const splitByAuth = splitPreference === 'true';
+  const resultAuth = result?.ok
+    ? (authOf(result.send.request.headers) ?? null)
+    : null;
   const resultKey = result?.ok
-    ? requestKeyOf(
-        result.send.request.method as Method,
-        result.send.request.url,
-      )
+    ? {
+        ...requestKeyOf(
+          result.send.request.method as Method,
+          result.send.request.url,
+        ),
+        ...(splitByAuth ? { auth: resultAuth?.value ?? '' } : {}),
+      }
     : null;
   const responsesList = useResponses(resultKey, historyMark);
   const responses = responsesList.calls.filter(notHeld);
@@ -632,11 +647,45 @@ export function App() {
   useEffect(() => {
     if (result) resultRegion.current?.scrollIntoView({ block: 'nearest' });
   }, [result, hasResponses]);
+  // History grouped by request, the default, or by day; kept in this browser (history-grouping).
+  const [grouping, setGrouping] = usePreference(
+    'dp.history.grouping',
+    ['request', 'day'],
+    'request',
+  );
+  const groupsList = useRequestGroups(
+    grouping === 'request',
+    splitByAuth,
+    historyMark,
+  );
+  // One group is expanded at a time; its calls are listed as a strip's are, tagged with its key (T2.10).
+  const [expandedGroup, setExpandedGroup] = useState<{
+    method: Method;
+    path: string;
+    auth?: string;
+  } | null>(null);
+  const expandedText = expandedGroup ? groupKeyText(expandedGroup) : '';
+  const expandedOpen =
+    expandedGroup !== null &&
+    grouping === 'request' &&
+    (groupsList.groups ?? []).some(
+      (g) => groupText(g, splitByAuth) === expandedText,
+    );
+  const expandedList = useResponses(
+    expandedOpen ? expandedGroup : null,
+    historyMark,
+  );
+  const openedAuth = opened
+    ? (authOf(opened.send.request.headers) ?? null)
+    : null;
   const openedKey = opened
-    ? requestKeyOf(
-        opened.send.request.method as Method,
-        opened.send.request.url,
-      )
+    ? {
+        ...requestKeyOf(
+          opened.send.request.method as Method,
+          opened.send.request.url,
+        ),
+        ...(splitByAuth ? { auth: openedAuth?.value ?? '' } : {}),
+      }
     : null;
   const otherList = useResponses(openedKey, historyMark);
   const picked =
@@ -994,6 +1043,32 @@ export function App() {
                 error={historyError}
                 onOpen={(sendId) => void openCall(sendId)}
                 onDelete={deleteLater}
+                grouping={grouping}
+                onGrouping={setGrouping}
+                splitByAuth={splitByAuth}
+                onSplitByAuth={(on) =>
+                  setSplitPreference(on ? 'true' : 'false')
+                }
+                groups={groupsList}
+                expandedText={expandedOpen ? expandedText : ''}
+                expandedCalls={expandedList.calls.filter(
+                  (c): c is ReadableCall =>
+                    c.state !== 'unreadable' && notHeld(c),
+                )}
+                expandedError={expandedList.error}
+                onExpand={(g) =>
+                  setExpandedGroup((current) => {
+                    const next = {
+                      method: g.method as Method,
+                      path: g.path,
+                      ...(splitByAuth ? { auth: g.auth?.value ?? '' } : {}),
+                    };
+                    return current &&
+                      groupKeyText(current) === groupKeyText(next)
+                      ? null
+                      : next;
+                  })
+                }
               />
             )}
           </div>
@@ -1067,6 +1142,11 @@ export function App() {
                       selectedId={picked?.sendId ?? result.send._id}
                       onPick={(id) => void pickResponse(id)}
                       onDelete={deleteLater}
+                      splitByAuth={splitByAuth}
+                      auth={resultAuth}
+                      onSplitByAuth={(on) =>
+                        setSplitPreference(on ? 'true' : 'false')
+                      }
                     />
                   ) : null
                 }
@@ -1125,6 +1205,7 @@ export function App() {
                       c.send._id !== opened.send._id &&
                       !held.has(c.send._id),
                   )}
+                  otherAuth={splitByAuth ? openedAuth : undefined}
                   onDelete={() => deleteLater(opened)}
                   onOpenResponse={(id) => void openCall(id)}
                   onReplay={() => {
@@ -2012,6 +2093,7 @@ function CallPanel({
   savedRequests,
   savedListLoaded,
   otherResponses,
+  otherAuth,
   onOpenResponse,
   onDelete,
   onReplay,
@@ -2026,6 +2108,8 @@ function CallPanel({
   savedRequests: SavedRequestListing[];
   savedListLoaded: boolean;
   otherResponses: ReadableCall[];
+  /** Set when the other responses are split by auth: the auth they share, `null` for none. */
+  otherAuth?: Auth | null;
   onOpenResponse: (sendId: string) => void;
   onDelete: () => void;
   onReplay: () => void;
@@ -2131,6 +2215,7 @@ function CallPanel({
         <div data-testid="other-responses" className="other-responses">
           <span className="label">
             Other responses to {method} {requestKeyOf(method, url).path}
+            {otherAuth === undefined ? null : ` · ${authLabel(otherAuth)}`}
           </span>
           {otherResponses.map((other) => (
             <ResponseChip
@@ -2295,10 +2380,12 @@ function pickedText(picked: Picked): string {
 // The responses to one request, tagged with it: a list for another request, or for an earlier failure, is never
 // returned for this one (code review of responses-strip, 2 and 7).
 function useResponses(
-  key: { method: Method; path: string } | null,
+  key: { method: Method; path: string; auth?: string } | null,
   refresh: string,
 ): { calls: CallView[]; error: string | null } {
-  const text = key ? `${key.method} ${key.path}` : '';
+  const text = key
+    ? `${key.method} ${key.path}${key.auth === undefined ? '' : `\n${key.auth}`}`
+    : '';
   const [state, setState] = useState<{
     key: string;
     calls: CallView[];
@@ -2330,17 +2417,112 @@ function useResponses(
     : { calls: [], error: null };
 }
 
-// "Responses to this request" (screen 01): one chip per response, newest first, the one shown pressed.
+// History grouped by request (history-grouping), tagged with the split it was asked for: a list fetched with the other
+// split is never shown. Refetched when History changes, as the strips are.
+type RequestGroupsState = {
+  groups: RequestGroup[] | null;
+  error: string | null;
+};
+function useRequestGroups(
+  enabled: boolean,
+  splitByAuth: boolean,
+  refresh: string,
+): RequestGroupsState {
+  const text = enabled ? String(splitByAuth) : '';
+  const [state, setState] = useState<{
+    key: string;
+    groups: RequestGroup[] | null;
+    error: string | null;
+  }>({ key: '', groups: null, error: null });
+  useEffect(() => {
+    if (!enabled) return;
+    let active = true;
+    pigeon
+      .listRequestGroups({ splitByAuth })
+      .then((listed) => {
+        if (!active) return;
+        setState(
+          listed.ok
+            ? { key: text, groups: listed.groups, error: null }
+            : { key: text, groups: null, error: listed.message },
+        );
+      })
+      .catch((error: unknown) => {
+        if (active) {
+          setState({ key: text, groups: null, error: errorText(error) });
+        }
+      });
+    return () => {
+      active = false;
+    };
+    // `text` stands for `enabled` and `splitByAuth`.
+  }, [text, refresh]);
+  return state.key === text && enabled
+    ? { groups: state.groups, error: state.error }
+    : { groups: null, error: null };
+}
+
+// The text that names a group's key: method, path and, when split, the auth value.
+const groupKeyText = (key: { method: string; path: string; auth?: string }) =>
+  `${key.method} ${key.path}${key.auth === undefined ? '' : `\n${key.auth}`}`;
+const groupText = (g: RequestGroup, splitByAuth: boolean) =>
+  groupKeyText({
+    method: g.method,
+    path: g.path,
+    ...(splitByAuth ? { auth: g.auth?.value ?? '' } : {}),
+  });
+
+// A view preference kept in this browser (history-grouping). localStorage can be blocked or empty: every read and write
+// is guarded, and a stored value that is not one of `allowed` reads as the default.
+function usePreference<T extends string>(
+  key: string,
+  allowed: readonly T[],
+  fallback: T,
+): [T, (next: T) => void] {
+  const [value, setValue] = useState<T>(() => {
+    try {
+      const stored = localStorage.getItem(key);
+      return allowed.find((a) => a === stored) ?? fallback;
+    } catch {
+      return fallback;
+    }
+  });
+  const set = useCallback(
+    (next: T) => {
+      setValue(next);
+      try {
+        localStorage.setItem(key, next);
+      } catch {
+        // Kept for this page only.
+      }
+    },
+    [key],
+  );
+  return [value, set];
+}
+
+// How a split by auth is named: the header and the start and end of its value, or "no auth".
+const authLabel = (auth: Auth | null) =>
+  auth ? `${auth.header}: ${abbreviate(auth.value)}` : 'no auth';
+
+// "Responses to this request" (screen 01): one chip per response, newest first, the one shown pressed. "Split by auth"
+// keeps the responses sent with this call's auth (history-grouping).
 function ResponsesStrip({
   calls,
   selectedId,
   onPick,
   onDelete,
+  splitByAuth,
+  auth,
+  onSplitByAuth,
 }: {
   calls: CallView[];
   selectedId: string;
   onPick: (sendId: string) => void;
   onDelete: (call: ReadableCall) => void;
+  splitByAuth: boolean;
+  auth: Auth | null;
+  onSplitByAuth: (on: boolean) => void;
 }) {
   const readable = calls.filter(
     (c): c is ReadableCall => c.state !== 'unreadable',
@@ -2349,8 +2531,19 @@ function ResponsesStrip({
     <div data-testid="responses-strip" className="responses-strip">
       <span className="strip-label">
         <strong>Responses to this request</strong>
-        <span>{readable.length} kept</span>
+        <span>
+          {readable.length} kept
+          {splitByAuth ? ` · ${authLabel(auth)}` : ''}
+        </span>
       </span>
+      <button
+        type="button"
+        className="strip-toggle"
+        aria-pressed={splitByAuth}
+        onClick={() => onSplitByAuth(!splitByAuth)}
+      >
+        Split by auth
+      </button>
       {readable.map((call) => (
         <span key={call.send._id} className="chip-group">
           <ResponseChip
@@ -2989,84 +3182,222 @@ function HistoryList({
   error,
   onOpen,
   onDelete,
+  grouping,
+  onGrouping,
+  splitByAuth,
+  onSplitByAuth,
+  groups,
+  expandedText,
+  expandedCalls,
+  expandedError,
+  onExpand,
 }: {
   calls: CallView[];
   error: string | null;
   onOpen: (sendId: string) => void;
   onDelete: (call: ReadableCall) => void;
+  grouping: 'request' | 'day';
+  onGrouping: (grouping: 'request' | 'day') => void;
+  splitByAuth: boolean;
+  onSplitByAuth: (on: boolean) => void;
+  groups: RequestGroupsState;
+  /** The expanded group's key text; `''` when none is expanded. */
+  expandedText: string;
+  expandedCalls: ReadableCall[];
+  expandedError: string | null;
+  onExpand: (group: RequestGroup) => void;
 }) {
+  const byRequest = grouping === 'request';
   // One group per day, in the order days first appear; today is computed once per render (code review of
   // workspace-shell, 5 and 9).
   const today = startOfDay(new Date());
-  const groups = new Map<string, CallView[]>();
+  const days = new Map<string, CallView[]>();
   for (const call of calls) {
     const day =
       call.state === 'unreadable'
         ? 'Unreadable'
         : dayLabel(call.send.sentAt, today);
-    groups.set(day, [...(groups.get(day) ?? []), call]);
+    days.set(day, [...(days.get(day) ?? []), call]);
   }
+  // By request, the count is all of history; by day, the calls loaded (history-grouping).
+  const count = byRequest
+    ? (groups.groups ?? []).reduce((sum, g) => sum + g.count, 0)
+    : calls.length;
+  const shownError = byRequest ? (groups.error ?? error) : error;
+  // An expanded group's first call is brought into view when its calls arrive (T2.9).
+  const firstExpanded = useRef<HTMLLIElement>(null);
+  const expandedShown = expandedCalls.length > 0 ? expandedText : '';
+  useEffect(() => {
+    if (expandedShown) {
+      firstExpanded.current?.scrollIntoView({ block: 'nearest' });
+    }
+  }, [expandedShown]);
   return (
     <section className="history">
       <div className="title-row">
         <h2>History</h2>
-        <span className="count">{calls.length} calls</span>
+        <span className="count" data-testid="history-count">
+          {count} {count === 1 ? 'call' : 'calls'}
+        </span>
       </div>
-      {error ? (
+      <div className="history-controls" data-testid="history-controls">
+        <div className="segment" role="group" aria-label="Group history by">
+          <button
+            type="button"
+            aria-pressed={byRequest}
+            onClick={() => onGrouping('request')}
+          >
+            By request
+          </button>
+          <button
+            type="button"
+            aria-pressed={!byRequest}
+            onClick={() => onGrouping('day')}
+          >
+            By day
+          </button>
+        </div>
+        {byRequest ? (
+          <button
+            type="button"
+            className="strip-toggle"
+            aria-pressed={splitByAuth}
+            onClick={() => onSplitByAuth(!splitByAuth)}
+          >
+            Split by auth
+          </button>
+        ) : null}
+      </div>
+      {shownError ? (
         <p data-testid="history-error" className="error">
-          History could not be loaded: {error}
+          History could not be loaded: {shownError}
         </p>
       ) : null}
-      <ol data-testid="history" className="history-list">
-        {[...groups].map(([day, dayCalls]) => [
-          <li key={`day-${day}`} className="day" aria-hidden="true">
-            {day}
-          </li>,
-          ...dayCalls.map((call) =>
-            call.state === 'unreadable' ? (
-              <li key={call.id} data-state="unreadable">
-                Unreadable record {call.id}: {call.error}
-              </li>
-            ) : (
-              <li key={call.send._id} data-state={call.state}>
+      {byRequest ? (
+        <ol data-testid="history-groups" className="history-list">
+          {(groups.groups ?? []).map((g) => {
+            const text = groupText(g, splitByAuth);
+            const expanded = text === expandedText;
+            const callCount = `${g.count} ${g.count === 1 ? 'call' : 'calls'}`;
+            const auth = splitByAuth ? ` · ${authLabel(g.auth)}` : '';
+            return (
+              <li key={text} className="request-group">
                 <button
                   type="button"
                   className="history-row"
-                  aria-label={`${call.send.request.method} ${call.send.request.url} — ${outcome(call)} · ${call.send.sentAt.toLocaleString()}`}
-                  onClick={() => onOpen(call.send._id)}
+                  aria-expanded={expanded}
+                  aria-label={`${g.method} ${g.path}${auth} — ${callCount}`}
+                  onClick={() => onExpand(g)}
                 >
-                  <MethodBadge method={call.send.request.method} />
+                  <MethodBadge method={g.method} />
                   <span className="row-info">
-                    <span className="path">
-                      {pathOf(call.send.request.url)}
-                    </span>
+                    <span className="path">{g.path}</span>
                     <span className="meta">
-                      {hostOf(call.send.request.url)} ·{' '}
-                      {call.send.sentAt.toLocaleTimeString()}
+                      {callCount} · {g.latest.send.sentAt.toLocaleTimeString()}
+                      {auth}
                     </span>
                   </span>
                   <span className="result">
-                    <span className={`code ${outcomeClass(call)}`}>
-                      {codeText(call)}
+                    <span className={`code ${outcomeClass(g.latest)}`}>
+                      {codeText(g.latest)}
                     </span>
-                    <span className="duration">{durationText(call)}</span>
+                    <span className="duration" aria-hidden="true">
+                      {expanded ? '▾' : '▸'}
+                    </span>
                   </span>
                 </button>
-                <button
-                  type="button"
-                  className="row-delete"
-                  aria-label={`Delete ${call.send.request.method} ${call.send.request.url}`}
-                  disabled={call.state === 'in-flight'}
-                  onClick={() => onDelete(call)}
-                >
-                  ×
-                </button>
+                {expanded && expandedError ? (
+                  <p data-testid="group-error" className="error">
+                    Calls of this request could not be loaded: {expandedError}
+                  </p>
+                ) : null}
+                {expanded && !expandedError ? (
+                  <ol className="group-calls">
+                    {expandedCalls.map((call, i) => (
+                      <HistoryRow
+                        key={call.send._id}
+                        call={call}
+                        itemRef={i === 0 ? firstExpanded : undefined}
+                        onOpen={onOpen}
+                        onDelete={onDelete}
+                      />
+                    ))}
+                  </ol>
+                ) : null}
               </li>
+            );
+          })}
+        </ol>
+      ) : (
+        <ol data-testid="history" className="history-list">
+          {[...days].map(([day, dayCalls]) => [
+            <li key={`day-${day}`} className="day" aria-hidden="true">
+              {day}
+            </li>,
+            ...dayCalls.map((call) =>
+              call.state === 'unreadable' ? (
+                <li key={call.id} data-state="unreadable">
+                  Unreadable record {call.id}: {call.error}
+                </li>
+              ) : (
+                <HistoryRow
+                  key={call.send._id}
+                  call={call}
+                  onOpen={onOpen}
+                  onDelete={onDelete}
+                />
+              ),
             ),
-          ),
-        ])}
-      </ol>
+          ])}
+        </ol>
+      )}
     </section>
+  );
+}
+
+// One call in History, by day or inside an expanded request group.
+function HistoryRow({
+  call,
+  itemRef,
+  onOpen,
+  onDelete,
+}: {
+  call: ReadableCall;
+  itemRef?: Ref<HTMLLIElement>;
+  onOpen: (sendId: string) => void;
+  onDelete: (call: ReadableCall) => void;
+}) {
+  return (
+    <li ref={itemRef} data-state={call.state}>
+      <button
+        type="button"
+        className="history-row"
+        aria-label={`${call.send.request.method} ${call.send.request.url} — ${outcome(call)} · ${call.send.sentAt.toLocaleString()}`}
+        onClick={() => onOpen(call.send._id)}
+      >
+        <MethodBadge method={call.send.request.method} />
+        <span className="row-info">
+          <span className="path">{pathOf(call.send.request.url)}</span>
+          <span className="meta">
+            {hostOf(call.send.request.url)} ·{' '}
+            {call.send.sentAt.toLocaleTimeString()}
+          </span>
+        </span>
+        <span className="result">
+          <span className={`code ${outcomeClass(call)}`}>{codeText(call)}</span>
+          <span className="duration">{durationText(call)}</span>
+        </span>
+      </button>
+      <button
+        type="button"
+        className="row-delete"
+        aria-label={`Delete ${call.send.request.method} ${call.send.request.url}`}
+        disabled={call.state === 'in-flight'}
+        onClick={() => onDelete(call)}
+      >
+        ×
+      </button>
+    </li>
   );
 }
 

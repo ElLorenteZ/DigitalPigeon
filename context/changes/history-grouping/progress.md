@@ -1,6 +1,6 @@
 ---
 change_id: history-grouping
-produced-by: lz-tdd
+produced-by: lz-e2e
 plan: plan.md
 updated: 2026-11-22
 ---
@@ -162,3 +162,117 @@ PASS — groups cover every call (256 > 200), split by the author's auth rule, a
 **Routed:** the plan assigns this phase to lz-e2e; its risks (the default after a fresh launch, a setting kept across a
 reload, one group's rows under another, expanded rows out of view) are observable only in the browser (T2.9, T2.10).
 Its server half, `listRequestGroups`, is Phase 4 (done). Run `/lz-e2e history-grouping` after Phase 3.
+
+## Phase 3 — "Split by auth" in the workspace strip and on the call record, remembered on reload
+
+- **Executor:** lz-e2e
+- **Status:** done
+- **Started:** 2026-11-22
+- **Finished:** 2026-11-22
+
+**Risk:** a user who turns on Split by auth sees responses sent with another Authorization or Cookie in the strip or
+on the call record, or finds the split off again after a reload. Rendered state plus browser storage: e2e (T2.10).
+The rule that picks the auth and the store's narrowing are Phases 1–2 (unit, integration); not re-tested here.
+
+**Changed**
+- `src/renderer/app.tsx` — `usePreference(key, allowed, fallback)`: `localStorage` read and write in `try/catch`, unknown value → default; `dp.splitByAuth` (`'true' | 'false'`, default `'false'`). The workspace strip's and the call record's response keys carry `auth` (`authOf` value, `''` for none) when split; `useResponses` tags its list with the auth too. `ResponsesStrip` has a "Split by auth" toggle (`aria-pressed`) and, when split, "N kept · <Header>: <value>" or "· no auth". "Other responses to METHOD path" adds "· <Header>: <value>" when split. `authLabel` shared.
+- `src/index.css` — `.strip-toggle`, pressed state as the segmented buttons.
+- `e2e/responses.spec.ts` — scenario on `/split-by-auth` (Bearer A ×2, Bearer B, Cookie): toggle off by default; on → 1 chip, "1 kept", "Cookie: session=x", strip in view; the first Bearer A call lists the other Bearer A call only; after reload Bearer B has no other responses and Bearer A lists one; `dp.splitByAuth` removed and the page reloaded in `finally`. The `chips()` helper now leaves out the toggle (`/^(?!Delete |Split by auth$)/`): the strip holds one more button; no assertion changed.
+
+**Verification**
+
+```
+# red, before the behaviour existed
+$ npm run build && npx playwright test e2e/responses.spec.ts
+  ✘  6 … Split by auth keeps only the responses sent with the same auth, …
+    Error: expect(locator).toHaveAttribute(expected) failed
+    Locator: getByTestId('responses-strip').getByRole('button', { name: 'Split by auth' })
+    Error: element(s) not found
+  1 failed · 5 passed
+
+# deliberate breaks of the later assertions, each reverted
+(setItem removed — the split is not kept)          Expected: 1  Received: 3   1 failed
+(call record key without auth — record not split)  Expected: 1  Received: 3   1 failed
+
+# green, three runs
+$ npm run build && npx playwright test e2e/responses.spec.ts   (×3)
+  6 passed (2.8s)
+  6 passed (2.7s)
+  6 passed (2.7s)
+
+$ npm run test:e2e
+  87 passed (1.3m)
+$ npm run typecheck && npm run lint
+(no errors) · All matched files use the correct format.
+```
+
+PASS — the strip and the call record keep only same-auth responses when split, the choice survives a reload, and the
+whole e2e suite is green under the production CSP.
+
+**Drift:** decision — the toggle lives in the workspace strip only; the call record follows it and names the auth
+(plan: "follows the same setting"). The stored values are the strings `'true'`/`'false'`.
+
+## Phase 5 — History opens grouped by request; By day / By request and Split by auth toggle it and are remembered
+
+- **Executor:** lz-e2e
+- **Status:** in-progress — every automated check passes; the plan's done-when also needs the author's look at
+  request mode against screen 01 (T3.2, manual). Screenshots for that look are listed below.
+- **Started:** 2026-11-22
+- **Finished:** —
+
+**Risks:** a user opening History gets the wrong grouping (a fresh browser not grouped by request, or a choice lost on
+reload); a group shows another group's calls while answers race; a failure to load groups or one group's calls is
+silent; an expanded group's calls open below the fold; a call deleted inside a group stays visible. All rendered state:
+e2e (T2.9, T2.10). Group counts and keys are Phase 4 (integration), not re-tested here.
+
+**Changed**
+- `e2e/support.ts` — `launchWithTestDatabase({ historyGrouping = 'day' })` (`'day' | 'request' | 'unset'`): an init script sets `dp.history.grouping` only when absent, so existing specs run by day and a reload keeps a test's choice.
+- `src/renderer/app.tsx` — `dp.history.grouping` preference (`'request'` default); `useRequestGroups(enabled, splitByAuth, refresh)` tagged by split and refetched on `historyMark`; one expanded group at a time, its calls from `useResponses` (tagged by key); `HistoryList` has a "Group history by" segment (By request / By day), the shared Split by auth toggle in request mode, group rows (`aria-expanded`, name `METHOD path[ · auth] — N call(s)`), `history-error` for a failed group list, `group-error` for a failed expansion, the first expanded call scrolled into view, title count = sum of group counts in request mode; `HistoryRow` extracted and used by both modes (markup unchanged).
+- `src/index.css` — `.history-controls`, `.group-calls`, expanded group background; the row delete button shows on hover of its own row only (`li:hover > .row-delete`), after the screenshot showed every × of an expanded group on hover of the group.
+- `e2e/history-grouping.spec.ts` (new) — 8 scenarios: fresh browser (own launch, `'unset'`) opens by request; one group per method + path with counts, expansion lists 3 calls newest first in view, opening one shows its record in view; Split by auth (two Authorization groups, a "no auth" group); By day and reload keep both choices; delete inside a group and Undo; held `listResponses` answer for one group never shown under another; failed expansion → `group-error`, failed `listRequestGroups` → `history-error`; last group of a 24-group list clicked at the bottom edge brings its first call into view.
+
+**Verification**
+
+```
+# red, before the UI existed
+$ npm run build && npx playwright test e2e/history-grouping.spec.ts
+  7 failed   (controls and group rows not found)
+
+# two locator defects in the spec, found while going green, fixed:
+#  - `filter({ has })` given a locator rooted at the page's group list matched nothing inside an item
+#  - the call-row pattern /^GET \S+ — / also matched the group's own button; now /^GET https?:\/\/\S+ — /
+
+# deliberate breaks, each reverted, each against its scenario
+default 'day' instead of 'request'          1 failed (toHaveAttribute)
+response list returned without its key tag  1 failed
+group-error not rendered                    1 failed
+held calls not filtered in a group          1 failed (toHaveCount)
+grouping choice not stored                  1 failed (toContainText)
+no scroll into view                         first version: 1 passed — could not fail (short list, Playwright's
+                                            click centres the target); rewritten to click at the bottom edge:
+                                            1 failed (toBeInViewport); restored: 1 passed
+
+# green, three runs
+$ npm run build && npx playwright test e2e/history-grouping.spec.ts   (×3)
+  8 passed (5.0s)
+  8 passed (5.2s)
+  8 passed (5.2s)
+
+$ npm run test:e2e
+  95 passed (1.4m)
+$ npx playwright test e2e/delete.spec.ts e2e/history-grouping.spec.ts   (after the hover fix)
+  13 passed (16.7s)
+$ npm run test:unit
+      Tests  410 passed (410)
+$ npm run typecheck && npm run lint
+(no errors) · All matched files use the correct format.
+```
+
+PASS for every automated criterion. Manual T3.2 look outstanding. Screenshots (throwaway spec, deleted after):
+`/private/tmp/claude-501/-Users-lorentez-Developer-DigitalPigeon/4732e474-11c5-41c5-a080-962fe00a65a7/scratchpad/request-mode.png`,
+`/private/tmp/claude-501/-Users-lorentez-Developer-DigitalPigeon/4732e474-11c5-41c5-a080-962fe00a65a7/scratchpad/request-mode-split.png`.
+
+**Drift:** decision — A4 was not run as a separate step before the UI existed; the seed went in first and the whole
+suite was run once request mode was the default (95 passed), which checks the same assumption under the real
+default. Decision — the T2.9 scenario dispatches its click at the bottom edge instead of using Playwright's click,
+because that click scrolls the target towards the middle and the scenario could not fail.

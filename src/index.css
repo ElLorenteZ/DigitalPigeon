@@ -1072,8 +1072,26 @@ textarea {
 
 .response-chip,
 .strip-label,
+.strip-toggle,
 .other-responses .label {
   flex-shrink: 0;
+}
+
+/* Split by auth (history-grouping): a pressed toggle, as the segmented buttons. */
+.strip-toggle {
+  min-height: 24px;
+  padding: 0 10px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.strip-toggle[aria-pressed='true'] {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--text);
 }
 
 /* Delete with Undo (slice 8; screen 02 Delete, screen 03 row 3 toast). */
@@ -1094,7 +1112,7 @@ textarea {
   opacity: 0;
 }
 
-.history-list li:hover .row-delete,
+.history-list li:hover > .row-delete,
 .row-delete:focus-visible {
   opacity: 1;
 }
@@ -1549,4 +1567,28 @@ button.link {
 .method-soap {
   color: var(--accent);
   background: var(--accent-soft);
+}
+
+/* History grouped by request (history-grouping): By request / By day and Split by auth under the title; a group's
+   calls indented under it. */
+.history-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 6px 6px;
+}
+
+.history-controls .segment {
+  margin-bottom: 0;
+}
+
+.group-calls {
+  list-style: none;
+  margin: 0 0 6px 14px;
+  padding: 0 0 0 8px;
+  border-left: 1px solid var(--border);
+}
+
+.request-group .history-row[aria-expanded='true'] {
+  background: var(--raised);
 }

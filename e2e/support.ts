@@ -80,7 +80,16 @@ export const showBodyView = (
     .getByRole('button', { name: view, exact: true })
     .click();
 
-export async function launchWithTestDatabase(): Promise<TestApp> {
+/**
+ * How History is grouped when the browser has no stored choice (history-grouping). The app opens grouped by request;
+ * specs written before that run with 'day' unless they ask otherwise. The choice is seeded only when none is stored,
+ * so a reload keeps what a test chose. 'unset' seeds nothing: the app's own default applies.
+ */
+export type HistoryGroupingSeed = 'day' | 'request' | 'unset';
+
+export async function launchWithTestDatabase({
+  historyGrouping = 'day',
+}: { historyGrouping?: HistoryGroupingSeed } = {}): Promise<TestApp> {
   const db = createE2eDatabase();
   const server = spawn('node', ['dist/server/main.mjs'], {
     env: { ...process.env, ...db.env, DP_PORT: '0', DP_OPEN_BROWSER: '0' },
@@ -95,6 +104,17 @@ export async function launchWithTestDatabase(): Promise<TestApp> {
       viewport: { width: 1100, height: 800 },
     });
     await app.addInitScript(recordCspViolations);
+    if (historyGrouping !== 'unset') {
+      await app.addInitScript((seed) => {
+        try {
+          if (localStorage.getItem('dp.history.grouping') === null) {
+            localStorage.setItem('dp.history.grouping', seed);
+          }
+        } catch {
+          // A page with no storage keeps the app's default.
+        }
+      }, historyGrouping);
+    }
     const window = await app.newPage();
     await window.goto(url);
     const opened = browser;

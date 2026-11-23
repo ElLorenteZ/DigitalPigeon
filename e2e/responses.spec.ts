@@ -14,6 +14,7 @@ import {
   launchWithTestDatabase,
   settle,
   showRequest,
+  showRequestTab,
   showSidebarTab,
   stubOperation,
 } from './support';
@@ -43,8 +44,10 @@ test.beforeEach(async () => {
 const button = (name: string) =>
   testApp.window.getByRole('button', { name, exact: true });
 const strip = () => testApp.window.getByTestId('responses-strip');
-// The chips that pick a response; each sits beside its delete button (slice 8).
-const chips = () => strip().getByRole('button', { name: /^(?!Delete )/ });
+// The chips that pick a response; each sits beside its delete button (slice 8). The strip also holds the Split by auth
+// toggle (history-grouping).
+const chips = () =>
+  strip().getByRole('button', { name: /^(?!Delete |Split by auth$)/ });
 
 async function sendWith(url: string, status: number, body: string) {
   capture.respondWith({ status, body: Buffer.from(body) });
@@ -150,4 +153,67 @@ test('responses that cannot be listed say so', async () => {
     'listing failed',
   );
   await stub.restore();
+});
+
+// history-grouping, phase 3: "Split by auth" narrows the strip and the call record's other responses to the calls sent
+// with the same Authorization, otherwise Cookie, value, and the choice survives a reload. This file shares one browser
+// and one database, so the scenario uses its own path and clears the stored choice when it ends.
+test('Split by auth keeps only the responses sent with the same auth, here and on the call record, after a reload too', async () => {
+  const { window } = testApp;
+  const url = `${capture.url}/split-by-auth`;
+  const history = window.getByTestId('history');
+  const row = (status: number) =>
+    history.getByRole('button', {
+      name: new RegExp(`^GET .*/split-by-auth — ${status}`),
+    });
+  try {
+    await showRequestTab(window, 'Headers');
+    await button('Add header').click();
+    await window.getByLabel('Header name 1').fill('Authorization');
+    await window.getByLabel('Header value 1').fill('Bearer A');
+    await sendWith(url, 200, 'a1');
+    await sendWith(url, 201, 'a2');
+    await window.getByLabel('Header value 1').fill('Bearer B');
+    await sendWith(url, 202, 'b');
+    await window.getByLabel('Header name 1').fill('Cookie');
+    await window.getByLabel('Header value 1').fill('session=x');
+    await sendWith(url, 203, 'cookie');
+    await expect(strip()).toContainText('4 kept');
+
+    const split = strip().getByRole('button', { name: 'Split by auth' });
+    await expect(split).toHaveAttribute('aria-pressed', 'false');
+    await split.click();
+    await expect(split).toHaveAttribute('aria-pressed', 'true');
+    await expect(chips()).toHaveCount(1);
+    await expect(strip()).toContainText('1 kept');
+    await expect(strip()).toContainText('Cookie: session=x');
+    await expect(strip()).toBeInViewport();
+
+    await row(200).click();
+    const others = window
+      .getByTestId('call-panel')
+      .getByTestId('other-responses');
+    await expect(others).toContainText('Authorization: Bearer A');
+    await expect(others.getByRole('button')).toHaveCount(1);
+    await expect(others.getByRole('button', { name: /201/ })).toBeVisible();
+
+    await window.reload();
+    await expect(window.getByTestId('db-status')).toContainText('up');
+    await showSidebarTab(window, 'History');
+    await row(202).click();
+    // Bearer B was sent once: with the split kept, it has no other responses.
+    await expect(
+      window.getByTestId('call-panel').getByTestId('call-request-line'),
+    ).toContainText('/split-by-auth');
+    await expect(
+      window.getByTestId('call-panel').getByTestId('other-responses'),
+    ).toHaveCount(0);
+    await row(201).click();
+    await expect(others.getByRole('button')).toHaveCount(1);
+    await expect(others.getByRole('button', { name: /200/ })).toBeVisible();
+  } finally {
+    await window.evaluate(() => localStorage.removeItem('dp.splitByAuth'));
+    await window.reload();
+    await expect(window.getByTestId('db-status')).toContainText('up');
+  }
 });

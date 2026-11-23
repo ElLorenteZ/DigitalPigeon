@@ -287,7 +287,9 @@ test('one saved request goes to whichever environment is chosen, and calls keep 
   expect(capture.requests.map((q) => q.url)).toEqual(['/v1/orders']);
   expect(other.requests.map((q) => q.url)).toEqual(['/v2/orders']);
 
-  // Each call names the environment it went to and links to the saved request.
+  // Each call names the environment it went to and links to the saved request. History lists the chosen
+  // environment's calls only (environment-aware-history): All lists both.
+  await select.selectOption({ label: 'All' });
   await history().nth(1).getByRole('button').first().click();
   await expect(panel.getByTestId('call-environment')).toHaveText(
     `Environment: first — ${capture.url}/v1`,
@@ -324,7 +326,12 @@ test('one saved request goes to whichever environment is chosen, and calls keep 
   await expect(window.getByTestId('saved-request-link')).toHaveText(
     'Editing saved request: Orders edited',
   );
+  // The edited path goes to the chosen environment: choose second again.
+  await select.selectOption({ label: `second — ${other.url}/v2` });
+  // second's one earlier call has the same name as the new one: wait for the new row.
+  await expect(history()).toHaveCount(1);
   await button('Send').click();
+  await expect(history()).toHaveCount(2);
   await expect(rowName(history().first())).toHaveAccessibleName(
     containing(`GET ${other.url}/v2/orders — 200`),
   );
@@ -335,6 +342,8 @@ test('one saved request goes to whichever environment is chosen, and calls keep 
   await orders().click();
   await expect(window.getByLabel('URL')).toHaveValue('/orders');
   await expect(window.getByLabel('Header name 1')).toHaveCount(0);
+  // Later tests in this file read History with no environment chosen (environment-aware-history).
+  await select.selectOption({ label: 'All' });
   expect(errors).toEqual([]);
 });
 

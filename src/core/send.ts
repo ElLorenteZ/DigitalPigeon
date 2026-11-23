@@ -18,7 +18,7 @@ import type {
   StoredBody,
 } from './call-schema';
 import type { createCallStore } from './call-store';
-import { composeUrl, isPath } from './url';
+import { composeUrl } from './url';
 import { type WireInput, type WireRequest, buildWireRequest } from './wire';
 
 type CallStore = Pick<
@@ -72,7 +72,10 @@ export interface SendOptions {
   onSent?: (send: SendDoc) => void;
   headersTimeoutMs?: number;
   bodyTimeoutMs?: number;
-  /** The environment the caller loaded for this send; used and recorded only when the URL is a path (slice 5). */
+  /**
+   * The environment the caller resolved for this send, recorded as given: joined for a path (slice 5), matched for a
+   * full URL, which is sent as typed (environment-aware-history).
+   */
   environment?: EnvironmentSnapshot;
   /** The saved request the form came from (slice 5). */
   savedRequestId?: string;
@@ -95,7 +98,7 @@ export async function sendAndRecord(
   // Composed before anything is recorded: a path with no environment is refused here.
   const url = composeUrl(input.url, environment);
   const links: Links = {
-    ...(isPath(input.url) && environment ? { environment } : {}),
+    ...(environment ? { environment } : {}),
     ...(savedRequestId ? { savedRequestId } : {}),
   };
   return sendWireAndRecord(

@@ -621,6 +621,101 @@ describe('listRequestGroups', () => {
 });
 
 // Slice 8 (delete-with-undo), T1.7: a delete removes exactly one call, its completion and its body files.
+// environment-aware-history, phase 4: History, request groups and responses for one environment, by the environment
+// recorded on the call. The filter applies before History's limit.
+describe('environment filter', () => {
+  let envDb: TestDb;
+  let store: ReturnType<typeof createCallStore>;
+  const at = (n: number) =>
+    new Date(Date.UTC(2026, 10, 23, 8, 0, 0) + n * 1000);
+  const snapshot = (id: string) => ({
+    id,
+    name: id,
+    baseUrl: `http://${id}.test/`,
+  });
+  const doc = (
+    id: string,
+    url: string,
+    n: number,
+    environmentId?: string,
+  ): SendDoc => ({
+    _id: id,
+    schemaVersion: 1,
+    sentAt: at(n),
+    request: { ...request, url },
+    ...(environmentId ? { environment: snapshot(environmentId) } : {}),
+  });
+  const ids = (calls: Call[]) => readable(calls).map((c) => c.send._id);
+
+  beforeAll(async () => {
+    envDb = await openTestDb();
+    store = createCallStore(envDb.db);
+    // B's five calls are the oldest: beyond the newest 200, which are A's and the calls with no environment.
+    for (let n = 0; n < 5; n += 1) {
+      await store.insertSend(
+        doc(`b-${n}`, `http://b.test/${n < 3 ? 'a' : 'b'}`, n, 'B'),
+      );
+    }
+    for (let n = 0; n < 250; n += 1) {
+      await store.insertSend(doc(`a-${n}`, 'http://a.test/a', 10 + n, 'A'));
+    }
+    for (let n = 0; n < 5; n += 1) {
+      await store.insertSend(doc(`n-${n}`, 'http://x.test/a', 300 + n));
+    }
+  });
+
+  afterAll(async () => {
+    await envDb?.drop();
+  });
+
+  test('listCalls with an environment returns its calls only, even beyond the newest 200; without one, every call', async () => {
+    expect(
+      ids(await store.listCalls(200, new Set(), { environmentId: 'B' })),
+    ).toEqual(['b-4', 'b-3', 'b-2', 'b-1', 'b-0']);
+    const all = ids(await store.listCalls(200, new Set()));
+    expect(all).toHaveLength(200);
+    expect(all.slice(0, 6)).toEqual([
+      'n-4',
+      'n-3',
+      'n-2',
+      'n-1',
+      'n-0',
+      'a-249',
+    ]);
+    expect(
+      await store.listCalls(200, new Set(), { environmentId: 'gone' }),
+    ).toEqual([]);
+  });
+
+  test('listResponses with an environment keeps the calls recorded under it', async () => {
+    expect(
+      ids(await store.listResponses('GET', '/a', new Set(), undefined, 'B')),
+    ).toEqual(['b-2', 'b-1', 'b-0']);
+    expect(
+      await store.listResponses('GET', '/a', new Set(), undefined, 'A'),
+    ).toHaveLength(250);
+    expect(await store.listResponses('GET', '/a', new Set())).toHaveLength(258);
+  });
+
+  test('listRequestGroups with an environment counts its calls only', async () => {
+    const groups = await store.listRequestGroups(new Set(), {
+      splitByAuth: false,
+      environmentId: 'B',
+    });
+    expect(groups.map((g) => [g.path, g.count, g.latest.send._id])).toEqual([
+      ['/b', 2, 'b-4'],
+      ['/a', 3, 'b-2'],
+    ]);
+    const all = await store.listRequestGroups(new Set(), {
+      splitByAuth: false,
+    });
+    expect(all.map((g) => [g.path, g.count])).toEqual([
+      ['/a', 258],
+      ['/b', 2],
+    ]);
+  });
+});
+
 describe('deleteCall', () => {
   const files = () => testDb.db.collection('bodies.files');
   const chunks = () => testDb.db.collection('bodies.chunks');

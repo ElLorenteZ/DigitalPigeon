@@ -81,12 +81,19 @@ export function createCallStore(db: Db) {
       );
     },
 
-    /** Newest first. Sends whose ids are in `inFlight` are still running in this process. */
+    /**
+     * Newest first. Sends whose ids are in `inFlight` are still running in this process. With `environmentId`, only the
+     * calls recorded under that environment, filtered before the limit (environment-aware-history).
+     */
     listCalls: (
       limit: number,
       inFlight: ReadonlySet<string>,
-      { includeBodies = false }: { includeBodies?: boolean } = {},
-    ): Promise<Call[]> => list({}, limit, inFlight, includeBodies),
+      {
+        includeBodies = false,
+        environmentId,
+      }: { includeBodies?: boolean; environmentId?: string } = {},
+    ): Promise<Call[]> =>
+      list(inEnvironment(environmentId), limit, inFlight, includeBodies),
 
     /**
      * The responses to one request: every call with this method and URL path, newest first, without bodies (slice 7).
@@ -99,11 +106,12 @@ export function createCallStore(db: Db) {
       path: string,
       inFlight: ReadonlySet<string>,
       auth?: string,
+      environmentId?: string,
     ): Promise<Call[]> => {
       const ids: string[] = [];
       for await (const raw of sends
         .find(
-          { 'request.method': method },
+          { 'request.method': method, ...inEnvironment(environmentId) },
           { projection: { 'request.url': 1, 'request.headers': 1, sentAt: 1 } },
         )
         .sort({ sentAt: -1 })) {
@@ -135,10 +143,18 @@ export function createCallStore(db: Db) {
      */
     listRequestGroups: async (
       inFlight: ReadonlySet<string>,
-      { splitByAuth }: { splitByAuth: boolean },
+      {
+        splitByAuth,
+        environmentId,
+      }: { splitByAuth: boolean; environmentId?: string },
     ): Promise<RequestGroup[]> => {
       const groups = new Map<string, RequestGroup>();
-      for (const call of await list({}, 0, inFlight, false)) {
+      for (const call of await list(
+        inEnvironment(environmentId),
+        0,
+        inFlight,
+        false,
+      )) {
         if (call.state === 'unreadable') continue;
         const { method, url, headers } = call.send.request;
         const { path } = requestKeyOf(method, url);
@@ -342,6 +358,13 @@ export function createCallStore(db: Db) {
       return { files: orphans.length, chunks: deletedCount };
     },
   };
+
+  // The calls recorded under one environment, by the snapshot's id; every call when none is given.
+  function inEnvironment(environmentId: string | undefined): Filter<SendDoc> {
+    return environmentId === undefined
+      ? {}
+      : { 'environment.id': environmentId };
+  }
 
   async function list(
     filter: Filter<SendDoc>,

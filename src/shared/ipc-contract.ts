@@ -120,10 +120,18 @@ export const GetCallInputSchema = z.string().min(1);
  * `auth` narrows them to the calls sent with that Authorization, otherwise Cookie, value; `''` means none; absent means
  * every auth (history-grouping). Bounded like a search's auth values.
  */
+/** History for one environment, or every call with no input (environment-aware-history). */
+export const ListCallsInputSchema = z
+  .strictObject({ environmentId: z.string().min(1).optional() })
+  .optional();
+export type ListCallsInput = z.infer<typeof ListCallsInputSchema>;
+
 export const ListResponsesInputSchema = z.strictObject({
   method: z.enum(METHODS),
   path: z.string().startsWith('/').max(8192),
   auth: z.string().max(65536).optional(),
+  /** Only calls recorded under this environment; absent for every call (environment-aware-history). */
+  environmentId: z.string().min(1).optional(),
 });
 export type ListResponsesInput = z.infer<typeof ListResponsesInputSchema>;
 
@@ -282,6 +290,7 @@ export type ListCallsResult = z.infer<typeof ListCallsResultSchema>;
  */
 export const ListRequestGroupsInputSchema = z.strictObject({
   splitByAuth: z.boolean(),
+  environmentId: z.string().min(1).optional(),
 });
 export type ListRequestGroupsInput = z.infer<
   typeof ListRequestGroupsInputSchema
@@ -491,7 +500,7 @@ export type DbStatusView = z.infer<typeof DbStatusViewSchema>;
 export interface PigeonApi {
   send: (input: SendInput) => Promise<SendResult>;
   cancel: (clientRequestId: string) => Promise<void>;
-  listCalls: () => Promise<ListCallsResult>;
+  listCalls: (input?: ListCallsInput) => Promise<ListCallsResult>;
   dbStatus: () => Promise<DbStatusView>;
   getCall: (sendId: string) => Promise<GetCallResult>;
   listResponses: (input: ListResponsesInput) => Promise<ListCallsResult>;

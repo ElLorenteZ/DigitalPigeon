@@ -50,7 +50,7 @@ import {
   parseOpenApi,
 } from '../core/openapi';
 import { type ParsedWsdl, groupPorts, parseWsdl } from '../core/wsdl';
-import { composeUrl } from '../core/url';
+import { composeUrl, isPath } from '../core/url';
 import { type BodyInput, buildWireRequest } from '../core/wire';
 import {
   BODY_PAGE_BYTES,
@@ -168,7 +168,12 @@ const textDecoder = () => new TextDecoder('utf-8', { ignoreBOM: true });
 
 export function App() {
   const [status, setStatus] = useState<StatusView | null>(null);
-  const [history, setHistory] = useState<CallView[]>([]);
+  // History for the environment it was fetched for ('' = All), so a list for one environment is never shown under
+  // another (environment-aware-history; T2.10).
+  const [historyList, setHistoryList] = useState<{
+    environmentId: string;
+    calls: CallView[];
+  }>({ environmentId: '', calls: [] });
   const [result, setResult] = useState<SendResult | null>(null);
   // Slice 7: the responses to the request of the result shown, and the one picked from them (null: the latest).
   // A response picked from the strip, tagged with the result it was picked under: a pick never outlives its result
@@ -200,6 +205,13 @@ export function App() {
     null,
   );
   const environment = environments.find((e) => e.id === environmentId);
+  // The select's value now, for code that runs after an await (environment-aware-history).
+  const currentEnvironment = useRef(environmentId);
+  currentEnvironment.current = environmentId;
+  const history =
+    historyList.environmentId === (environmentId ?? '')
+      ? historyList.calls
+      : [];
   // The shell (slice 6): which list the sidebar shows, whether the main area shows the request or an opened call, and
   // whether the environments editor is open under the title bar.
   const [sidebarTab, setSidebarTab] = useState<
@@ -220,6 +232,9 @@ export function App() {
   // Slice 9: History search. Active while the filters are open or any text or filter is set.
   const [searchText, setSearchText] = useState('');
   const [filters, setFilters] = useState<Filters>(NO_FILTERS);
+  // Search's environment follows the select until the user chooses in the environment facet or removes its chip; any
+  // select change and Clear return to following (environment-aware-history). Kept out of `filters`, which turn search on.
+  const [searchFollowsSelect, setSearchFollowsSelect] = useState(true);
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [searchResult, setSearchResult] = useState<SearchResult | null>(null);
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
@@ -295,9 +310,14 @@ export function App() {
   // Never rejects: a failure is shown above the list (review #3).
   const refreshHistory = useCallback(async () => {
     try {
-      const listed = await pigeon.listCalls();
+      const asked = currentEnvironment.current;
+      const listed = await pigeon.listCalls(
+        asked === null ? undefined : { environmentId: asked },
+      );
+      // A list for an environment no longer selected is dropped; the switch fetches its own.
+      if (currentEnvironment.current !== asked) return;
       if (listed.ok) {
-        setHistory(listed.calls);
+        setHistoryList({ environmentId: asked ?? '', calls: listed.calls });
         setHistoryError(null);
       } else {
         setHistoryError(listed.message);
@@ -326,9 +346,10 @@ export function App() {
     };
   }, []);
 
+  // Again whenever the select changes: History shows the selected environment's calls, or every call for All.
   useEffect(() => {
     if (status?.status === 'up') void refreshHistory();
-  }, [status?.status, refreshHistory]);
+  }, [status?.status, refreshHistory, environmentId]);
 
   useEffect(() => {
     if (status?.status === 'up') void refreshEnvironments(false);
@@ -382,6 +403,9 @@ export function App() {
     } finally {
       setInFlightId(null);
       await refreshHistory();
+      // A send changes what the filtered views list even when the History list it filters does not (environment-aware-
+      // history, A3): every view keyed on historyMark refetches.
+      setDataVersion((v) => v + 1);
     }
   };
 
@@ -640,7 +664,18 @@ export function App() {
         ...(splitByAuth ? { auth: resultAuth?.value ?? '' } : {}),
       }
     : null;
-  const responsesList = useResponses(resultKey, historyMark);
+  // The strips and groups follow the select: only calls recorded under the selected environment (environment-aware-
+  // history). Absent for All.
+  const inSelected = environmentId === null ? {} : { environmentId };
+  const responsesList = useResponses(
+    resultKey && { ...resultKey, ...inSelected },
+    historyMark,
+  );
+  // The call on screen when it is not recorded under the selected environment: the strip leaves it out and says so.
+  const resultOutside =
+    result?.ok && environment && result.send.environment?.id !== environment.id
+      ? environment.name
+      : undefined;
   const responses = responsesList.calls.filter(notHeld);
   // Again when the responses strip first appears: it loads after the result and pushes the body down (slice 7).
   const hasResponses = responses.length > 0;
@@ -656,6 +691,7 @@ export function App() {
   const groupsList = useRequestGroups(
     grouping === 'request',
     splitByAuth,
+    environmentId,
     historyMark,
   );
   // One group is expanded at a time; its calls are listed as a strip's are, tagged with its key (T2.10).
@@ -672,7 +708,7 @@ export function App() {
       (g) => groupText(g, splitByAuth) === expandedText,
     );
   const expandedList = useResponses(
-    expandedOpen ? expandedGroup : null,
+    expandedOpen ? { ...expandedGroup, ...inSelected } : null,
     historyMark,
   );
   const openedAuth = opened
@@ -687,7 +723,10 @@ export function App() {
         ...(splitByAuth ? { auth: openedAuth?.value ?? '' } : {}),
       }
     : null;
-  const otherList = useResponses(openedKey, historyMark);
+  const otherList = useResponses(
+    openedKey && { ...openedKey, ...inSelected },
+    historyMark,
+  );
   const picked =
     result?.ok && pickedFor?.resultId === result.send._id ? pickedFor : null;
 
@@ -751,8 +790,33 @@ export function App() {
     dropToast(sendId);
   };
 
+  const searchFilters: Filters = searchFollowsSelect
+    ? {
+        ...filters,
+        environmentIds: environmentId === null ? [] : [environmentId],
+      }
+    : filters;
+  const changeSearchFilters = (next: Filters) => {
+    const sameEnvironment =
+      next.environmentIds.join('\n') ===
+      searchFilters.environmentIds.join('\n');
+    if (searchFollowsSelect && sameEnvironment) {
+      setFilters({ ...next, environmentIds: [] });
+    } else {
+      setSearchFollowsSelect(false);
+      setFilters(next);
+    }
+  };
+  useEffect(() => {
+    setSearchFollowsSelect(true);
+    setFilters((current) =>
+      current.environmentIds.length === 0
+        ? current
+        : { ...current, environmentIds: [] },
+    );
+  }, [environmentId]);
   // Slice 9: the search runs 250 ms after the last change, and again whenever History changes.
-  const searchKey = JSON.stringify([searchText.trim(), filters]);
+  const searchKey = JSON.stringify([searchText.trim(), searchFilters]);
   useEffect(() => {
     if (!searchActive) {
       setSearchResult(null);
@@ -762,7 +826,7 @@ export function App() {
     let active = true;
     const timer = window.setTimeout(() => {
       pigeon
-        .searchCalls(queryOf(searchText, filters))
+        .searchCalls(queryOf(searchText, searchFilters))
         .then((found) => {
           if (active) setSearchResult(found);
         })
@@ -787,6 +851,7 @@ export function App() {
   const clearSearch = () => {
     setSearchText('');
     setFilters(NO_FILTERS);
+    setSearchFollowsSelect(true);
     setFiltersOpen(false);
     setSelected(new Set());
   };
@@ -873,6 +938,26 @@ export function App() {
 
   const inFlight = inFlightId !== null;
 
+  // environment-aware-history: a full URL recorded under an environment moves the select to it, as a choice would, unless
+  // the select was changed while the send was in flight (the user's choice wins; state after an await, slice 5).
+  const followDetected = (
+    sent: SendResult,
+    url: string,
+    sentWith: string | null,
+  ) => {
+    if (!sent.ok || isPath(url)) return;
+    const detected = sent.send.environment?.id;
+    if (
+      detected === undefined ||
+      detected === sentWith ||
+      currentEnvironment.current !== sentWith ||
+      !environments.some((e) => e.id === detected)
+    ) {
+      return;
+    }
+    chooseEnvironment(detected);
+  };
+
   const chooseEnvironment = (id: string | null) => {
     setEnvironmentId(id);
     // Only what the select shows at the next start; a send names its environment itself (B1). Saved one after
@@ -902,7 +987,7 @@ export function App() {
           value={environmentId ?? ''}
           onChange={(e) => chooseEnvironment(e.target.value || null)}
         >
-          <option value="">None</option>
+          <option value="">All</option>
           {environments.map((e) => (
             <option key={e.id} value={e.id}>
               {e.name} — {e.baseUrl}
@@ -1029,11 +1114,11 @@ export function App() {
             </div>
             {searchActive ? (
               <SearchFilters
-                filters={filters}
+                filters={searchFilters}
                 facets={searchResult?.ok ? searchResult.facets : null}
                 savedRequests={savedRequests}
                 showResults={view !== 'results'}
-                onChange={setFilters}
+                onChange={changeSearchFilters}
                 onShowResults={() => setView('results')}
                 onClear={clearSearch}
               />
@@ -1101,14 +1186,18 @@ export function App() {
                 canSend={canSend}
                 inFlight={inFlight}
                 onSend={() =>
-                  run((clientRequestId) =>
-                    pigeon.send({
+                  run(async (clientRequestId) => {
+                    const request = requestOf(form);
+                    const sentWith = environmentId;
+                    const sent = await pigeon.send({
                       clientRequestId,
-                      ...requestOf(form),
+                      ...request,
                       environmentId,
                       ...(formLink ? { savedRequestId: formLink.id } : {}),
-                    }),
-                  )
+                    });
+                    followDetected(sent, request.url, sentWith);
+                    return sent;
+                  })
                 }
                 onCancel={() => inFlightId && pigeon.cancel(inFlightId)}
                 onCopyCurl={async () =>
@@ -1136,7 +1225,8 @@ export function App() {
                       Responses to this request could not be loaded:{' '}
                       {responsesList.error}
                     </p>
-                  ) : result?.ok && responses.length > 0 ? (
+                  ) : result?.ok &&
+                    (responses.length > 0 || resultOutside !== undefined) ? (
                     <ResponsesStrip
                       calls={responses}
                       selectedId={picked?.sendId ?? result.send._id}
@@ -1144,6 +1234,7 @@ export function App() {
                       onDelete={deleteLater}
                       splitByAuth={splitByAuth}
                       auth={resultAuth}
+                      outside={resultOutside}
                       onSplitByAuth={(on) =>
                         setSplitPreference(on ? 'true' : 'false')
                       }
@@ -1156,7 +1247,7 @@ export function App() {
           {view === 'results' && searchActive ? (
             <SearchResults
               result={searchResult}
-              filters={filters}
+              filters={searchFilters}
               text={searchText}
               hidden={held}
               selected={selected}
@@ -2380,11 +2471,16 @@ function pickedText(picked: Picked): string {
 // The responses to one request, tagged with it: a list for another request, or for an earlier failure, is never
 // returned for this one (code review of responses-strip, 2 and 7).
 function useResponses(
-  key: { method: Method; path: string; auth?: string } | null,
+  key: {
+    method: Method;
+    path: string;
+    auth?: string;
+    environmentId?: string;
+  } | null,
   refresh: string,
 ): { calls: CallView[]; error: string | null } {
   const text = key
-    ? `${key.method} ${key.path}${key.auth === undefined ? '' : `\n${key.auth}`}`
+    ? `${key.method} ${key.path}${key.auth === undefined ? '' : `\n${key.auth}`}\n@${key.environmentId ?? ''}`
     : '';
   const [state, setState] = useState<{
     key: string;
@@ -2426,9 +2522,10 @@ type RequestGroupsState = {
 function useRequestGroups(
   enabled: boolean,
   splitByAuth: boolean,
+  environmentId: string | null,
   refresh: string,
 ): RequestGroupsState {
-  const text = enabled ? String(splitByAuth) : '';
+  const text = enabled ? `${splitByAuth}\n@${environmentId ?? ''}` : '';
   const [state, setState] = useState<{
     key: string;
     groups: RequestGroup[] | null;
@@ -2438,7 +2535,10 @@ function useRequestGroups(
     if (!enabled) return;
     let active = true;
     pigeon
-      .listRequestGroups({ splitByAuth })
+      .listRequestGroups({
+        splitByAuth,
+        ...(environmentId === null ? {} : { environmentId }),
+      })
       .then((listed) => {
         if (!active) return;
         setState(
@@ -2455,7 +2555,7 @@ function useRequestGroups(
     return () => {
       active = false;
     };
-    // `text` stands for `enabled` and `splitByAuth`.
+    // `text` stands for `enabled`, `splitByAuth` and `environmentId`.
   }, [text, refresh]);
   return state.key === text && enabled
     ? { groups: state.groups, error: state.error }
@@ -2514,6 +2614,7 @@ function ResponsesStrip({
   onDelete,
   splitByAuth,
   auth,
+  outside,
   onSplitByAuth,
 }: {
   calls: CallView[];
@@ -2522,6 +2623,8 @@ function ResponsesStrip({
   onDelete: (call: ReadableCall) => void;
   splitByAuth: boolean;
   auth: Auth | null;
+  /** The selected environment's name when the call on screen is not recorded under it (environment-aware-history). */
+  outside?: string | undefined;
   onSplitByAuth: (on: boolean) => void;
 }) {
   const readable = calls.filter(
@@ -2534,6 +2637,9 @@ function ResponsesStrip({
         <span>
           {readable.length} kept
           {splitByAuth ? ` · ${authLabel(auth)}` : ''}
+          {outside === undefined
+            ? ''
+            : ` · ${outside} — this call is not in ${outside}`}
         </span>
       </span>
       <button

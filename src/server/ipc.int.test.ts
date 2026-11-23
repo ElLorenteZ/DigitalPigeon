@@ -288,3 +288,21 @@ test('request groups: empty while the database is down, a message when the query
     await call(channels.listRequestGroups, { splitByAuth: false }),
   ).toMatchObject({ ok: true });
 });
+
+// environment-aware-history, phase 4: the environment is an id string, or absent for every call.
+test('list operations refuse an environment that is not an id string', async () => {
+  for (const [channel, input] of [
+    [channels.listCalls, { environmentId: 5 }],
+    [channels.listCalls, { environmentId: '' }],
+    [channels.listResponses, { method: 'GET', path: '/', environmentId: 5 }],
+    [channels.listRequestGroups, { splitByAuth: false, environmentId: null }],
+  ] as const) {
+    expect(await call(channel, input)).toMatchObject({ ok: false });
+  }
+  expect(await call(channels.listCalls, undefined)).toMatchObject({
+    ok: true,
+  });
+  expect(
+    await call(channels.listCalls, { environmentId: 'env-1' }),
+  ).toMatchObject({ ok: true });
+});

@@ -323,14 +323,29 @@ describe('T1.2, T1.3 — a path sent against an environment', () => {
     },
   );
 
-  test('a full URL records no environment, even with one given (review R1)', async () => {
+  // environment-aware-history, phase 2: the environment matched for a full URL is recorded (supersedes review R1).
+  test('a full URL records the environment it was matched to, and is sent as typed', async () => {
     const store = createCallStore(testDb.db);
     const call = await sendAndRecord(store, input('GET'), {
       environment: environment(),
     });
+    expect(call.send.environment).toEqual(environment());
+    // Not joined to the environment's `/api/` base path.
+    expect(capture.requests.at(-1)?.url).toBe('/orders?x=1&q=two%20words');
+    expect(call.send.request.url).toBe(
+      `${capture.url}/orders?x=1&q=two%20words`,
+    );
+    const read = await store.getCall(call.send._id, new Set());
+    expect(
+      read && read.state !== 'unreadable' && read.send.environment,
+    ).toEqual(environment());
+  });
+
+  test('a full URL matched to no environment records none', async () => {
+    const store = createCallStore(testDb.db);
+    const call = await sendAndRecord(store, input('GET'));
     expect(call.send).not.toHaveProperty('environment');
     expect(call.send).not.toHaveProperty('savedRequestId');
-    expect(capture.requests.at(-1)?.url).toBe('/orders?x=1&q=two%20words');
   });
 
   test('a path with no environment is refused: no send document, nothing sent', async () => {

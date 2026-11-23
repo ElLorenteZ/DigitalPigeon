@@ -341,6 +341,31 @@ describe('operations over HTTP', () => {
       ).calls.map((c) => c.send._id);
     expect(await responseIds('')).toContain(replayId);
     expect(await responseIds('Bearer nobody')).toEqual([]);
+    // environment-aware-history, phase 4: an environment narrows History, responses and groups; with no input,
+    // listCalls answers with every call, as above.
+    const listedIds = (answer: unknown) =>
+      (answer as { calls: { send: { _id: string } }[] }).calls.map(
+        (c) => c.send._id,
+      );
+    expect(listedIds(await call(channels.listCalls))).toContain(replayId);
+    expect(
+      listedIds(await call(channels.listCalls, { environmentId: 'none-such' })),
+    ).toEqual([]);
+    expect(
+      listedIds(
+        await call(channels.listResponses, {
+          method: 'POST',
+          path: '/',
+          environmentId: 'none-such',
+        }),
+      ),
+    ).toEqual([]);
+    expect(
+      await call(channels.listRequestGroups, {
+        splitByAuth: false,
+        environmentId: 'none-such',
+      }),
+    ).toEqual({ ok: true, groups: [] });
     // history-grouping: the send above went to POST <capture>/ with no auth header, so it is in the POST / group.
     expect(
       (

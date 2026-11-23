@@ -35,6 +35,7 @@ import {
   GetCallInputSchema,
   GetCallResultSchema,
   type ListCallsResult,
+  ListCallsInputSchema,
   ListCallsResultSchema,
   ListRequestGroupsInputSchema,
   type ListRequestGroupsResult,
@@ -526,22 +527,32 @@ export function registerIpc({ ipcMain, db, dbStatus }: IpcDeps): void {
 
   // A database that drops between heartbeats makes the query fail; that becomes a message, not a
   // rejected invoke (review #3).
-  ipcMain.handle(channels.listCalls, async (): Promise<ListCallsResult> => {
-    const database = db();
-    if (!database || dbStatus().status !== 'up') return { ok: true, calls: [] };
-    try {
-      const calls = await storeFor(database).listCalls(
-        HISTORY_LIMIT,
-        inFlightSendIds,
-      );
-      return ListCallsResultSchema.parse({
-        ok: true,
-        calls: calls.map(toView),
-      });
-    } catch (error) {
-      return { ok: false, message: message(error) };
-    }
-  });
+  ipcMain.handle(
+    channels.listCalls,
+    async (_event, raw: unknown): Promise<ListCallsResult> => {
+      const input = ListCallsInputSchema.safeParse(raw);
+      if (!input.success) {
+        return { ok: false, message: z.prettifyError(input.error) };
+      }
+      const database = db();
+      if (!database || dbStatus().status !== 'up')
+        return { ok: true, calls: [] };
+      try {
+        const environmentId = input.data?.environmentId;
+        const calls = await storeFor(database).listCalls(
+          HISTORY_LIMIT,
+          inFlightSendIds,
+          environmentId === undefined ? {} : { environmentId },
+        );
+        return ListCallsResultSchema.parse({
+          ok: true,
+          calls: calls.map(toView),
+        });
+      } catch (error) {
+        return { ok: false, message: message(error) };
+      }
+    },
+  );
 
   // History grouped by request (history-grouping): every call, grouped in the store; the same database-down and
   // failure handling as listCalls.
@@ -734,6 +745,7 @@ export function registerIpc({ ipcMain, db, dbStatus }: IpcDeps): void {
           input.data.path,
           inFlightSendIds,
           input.data.auth,
+          input.data.environmentId,
         );
         return ListCallsResultSchema.parse({
           ok: true,

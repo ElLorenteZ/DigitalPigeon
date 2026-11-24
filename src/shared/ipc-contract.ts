@@ -16,6 +16,7 @@ export const channels = {
   listCalls: 'pigeon:list-calls',
   listResponses: 'pigeon:list-responses',
   listRequestGroups: 'pigeon:list-request-groups',
+  listStatusCodes: 'pigeon:list-status-codes',
   deleteCall: 'pigeon:delete-call',
   searchCalls: 'pigeon:search-calls',
   importOpenApi: 'pigeon:import-openapi',
@@ -120,9 +121,24 @@ export const GetCallInputSchema = z.string().min(1);
  * `auth` narrows them to the calls sent with that Authorization, otherwise Cookie, value; `''` means none; absent means
  * every auth (history-grouping). Bounded like a search's auth values.
  */
-/** History for one environment, or every call with no input (environment-aware-history). */
+/**
+ * A status selection (history-status-filter): three-digit codes, and `''` for calls with no response. Empty or absent
+ * selects every call.
+ */
+const StatusList = z
+  .array(z.string().regex(/^(\d{3})?$/))
+  .max(100)
+  .optional();
+
+/**
+ * History for one environment, or every call with no input (environment-aware-history); with `statuses`, only the calls
+ * answered with one of them (history-status-filter).
+ */
 export const ListCallsInputSchema = z
-  .strictObject({ environmentId: z.string().min(1).optional() })
+  .strictObject({
+    environmentId: z.string().min(1).optional(),
+    statuses: StatusList,
+  })
   .optional();
 export type ListCallsInput = z.infer<typeof ListCallsInputSchema>;
 
@@ -132,6 +148,9 @@ export const ListResponsesInputSchema = z.strictObject({
   auth: z.string().max(65536).optional(),
   /** Only calls recorded under this environment; absent for every call (environment-aware-history). */
   environmentId: z.string().min(1).optional(),
+  /** Only calls answered with one of these; an expanded History group passes the History status filter. The strips
+   * never do (history-status-filter, code review 3). */
+  statuses: StatusList,
 });
 export type ListResponsesInput = z.infer<typeof ListResponsesInputSchema>;
 
@@ -285,12 +304,46 @@ export const ListCallsResultSchema = z.discriminatedUnion('ok', [
 export type ListCallsResult = z.infer<typeof ListCallsResultSchema>;
 
 /**
+ * History's list, and a mark that changes whenever the environment's calls change, whatever statuses are selected: the
+ * views keyed on History refetch on it (history-status-filter).
+ */
+export const ListHistoryResultSchema = z.discriminatedUnion('ok', [
+  z.strictObject({
+    ok: z.literal(true),
+    calls: z.array(CallViewSchema),
+    mark: z.string(),
+  }),
+  z.strictObject({ ok: z.literal(false), message: z.string() }),
+]);
+export type ListHistoryResult = z.infer<typeof ListHistoryResultSchema>;
+
+/** The statuses the environment's calls were answered with, for the History status filter (history-status-filter). */
+export const ListStatusCodesInputSchema = z
+  .strictObject({ environmentId: z.string().min(1).optional() })
+  .optional();
+export type ListStatusCodesInput = z.infer<typeof ListStatusCodesInputSchema>;
+
+const StatusOptionSchema = z.strictObject({
+  value: z.string(),
+  label: z.string(),
+  count: z.number().int().nonnegative(),
+});
+export type StatusOption = z.infer<typeof StatusOptionSchema>;
+
+export const ListStatusCodesResultSchema = z.discriminatedUnion('ok', [
+  z.strictObject({ ok: z.literal(true), options: z.array(StatusOptionSchema) }),
+  z.strictObject({ ok: z.literal(false), message: z.string() }),
+]);
+export type ListStatusCodesResult = z.infer<typeof ListStatusCodesResultSchema>;
+
+/**
  * History grouped by request (history-grouping): one group per method and URL path, and per Authorization, otherwise
  * Cookie, value when `splitByAuth`; over every call. `auth` is null when not split, and for calls with no auth header.
  */
 export const ListRequestGroupsInputSchema = z.strictObject({
   splitByAuth: z.boolean(),
   environmentId: z.string().min(1).optional(),
+  statuses: StatusList,
 });
 export type ListRequestGroupsInput = z.infer<
   typeof ListRequestGroupsInputSchema
@@ -333,6 +386,8 @@ export const SearchQuerySchema = z.strictObject({
   environmentIds: IdList,
   auths: AuthList,
   savedRequestIds: IdList,
+  /** history-status-filter: three-digit codes, `''` for no response. */
+  statuses: StatusList,
   from: z.iso.datetime().optional(),
   to: z.iso.datetime().optional(),
 });
@@ -357,6 +412,7 @@ export const SearchResultSchema = z.discriminatedUnion('ok', [
       environment: z.array(FacetOptionSchema),
       auth: z.array(FacetOptionSchema),
       savedRequest: z.array(FacetOptionSchema),
+      status: z.array(FacetOptionSchema),
     }),
   }),
   z.strictObject({ ok: z.literal(false), message: z.string() }),
@@ -500,13 +556,16 @@ export type DbStatusView = z.infer<typeof DbStatusViewSchema>;
 export interface PigeonApi {
   send: (input: SendInput) => Promise<SendResult>;
   cancel: (clientRequestId: string) => Promise<void>;
-  listCalls: (input?: ListCallsInput) => Promise<ListCallsResult>;
+  listCalls: (input?: ListCallsInput) => Promise<ListHistoryResult>;
   dbStatus: () => Promise<DbStatusView>;
   getCall: (sendId: string) => Promise<GetCallResult>;
   listResponses: (input: ListResponsesInput) => Promise<ListCallsResult>;
   listRequestGroups: (
     input: ListRequestGroupsInput,
   ) => Promise<ListRequestGroupsResult>;
+  listStatusCodes: (
+    input?: ListStatusCodesInput,
+  ) => Promise<ListStatusCodesResult>;
   /** Deletes one call for good, with its body files (slice 8). The UI holds it for Undo before calling this. */
   deleteCall: (sendId: string) => Promise<MutationResult>;
   searchCalls: (query: SearchQuery) => Promise<SearchResult>;

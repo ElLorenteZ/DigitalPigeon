@@ -7,6 +7,7 @@ import { z } from 'zod';
 import { createBodyStore } from './body-store';
 import { type Auth, authOf } from './headers';
 import { requestKeyOf } from './request-key';
+import { byStatus, statusOf } from './status';
 import {
   type CompletionDoc,
   CompletionDocSchema,
@@ -83,23 +84,89 @@ export function createCallStore(db: Db) {
 
     /**
      * Newest first. Sends whose ids are in `inFlight` are still running in this process. With `environmentId`, only the
-     * calls recorded under that environment, filtered before the limit (environment-aware-history).
+     * calls recorded under that environment, filtered before the limit (environment-aware-history). With `statuses`, only
+     * the calls answered with one of them, `''` meaning no response, also before the limit (history-status-filter). An
+     * unreadable record has no known status, so a selection never lists it (code review 2).
      */
-    listCalls: (
+    listCalls: async (
       limit: number,
       inFlight: ReadonlySet<string>,
       {
         includeBodies = false,
         environmentId,
-      }: { includeBodies?: boolean; environmentId?: string } = {},
-    ): Promise<Call[]> =>
-      list(inEnvironment(environmentId), limit, inFlight, includeBodies),
+        statuses,
+      }: {
+        includeBodies?: boolean;
+        environmentId?: string;
+        statuses?: readonly string[];
+      } = {},
+    ): Promise<Call[]> => {
+      const calls = await list(
+        {
+          ...inEnvironment(environmentId),
+          ...(await statusCondition(statuses)),
+        },
+        limit,
+        inFlight,
+        includeBodies,
+      );
+      return statuses && statuses.length > 0
+        ? calls.filter((c) => c.state !== 'unreadable')
+        : calls;
+    },
+
+    /**
+     * What changes whenever History gains, loses or completes a call, whatever status is selected: the count of the
+     * environment's calls, the newest one's id and how many are in flight (history-status-filter). The renderer's
+     * views refetch when it changes.
+     */
+    historyMark: async (
+      inFlight: ReadonlySet<string>,
+      { environmentId }: { environmentId?: string } = {},
+    ): Promise<string> => {
+      const filter = inEnvironment(environmentId);
+      const [count, newest] = await Promise.all([
+        sends.countDocuments(filter),
+        sends.findOne(filter, { sort: { sentAt: -1 }, projection: { _id: 1 } }),
+      ]);
+      return `${count}:${newest ? String(newest._id) : ''}:${inFlight.size}`;
+    },
+
+    /**
+     * The statuses History's calls were answered with, each with its count: codes ascending, then `''` (No response)
+     * for calls with an error, in flight or interrupted (history-status-filter). Unreadable calls are not counted.
+     */
+    listStatusCodes: async (
+      inFlight: ReadonlySet<string>,
+      { environmentId }: { environmentId?: string } = {},
+    ): Promise<StatusOption[]> => {
+      const counts = new Map<string, number>();
+      for (const call of await list(
+        inEnvironment(environmentId),
+        0,
+        inFlight,
+        false,
+      )) {
+        if (call.state === 'unreadable') continue;
+        const value = statusOf(call.completion);
+        counts.set(value, (counts.get(value) ?? 0) + 1);
+      }
+      return [...counts.entries()]
+        .sort(([a], [b]) => byStatus(a, b))
+        .map(([value, count]) => ({
+          value,
+          label: value === '' ? 'No response' : value,
+          count,
+        }));
+    },
 
     /**
      * The responses to one request: every call with this method and URL path, newest first, without bodies (slice 7).
      * The query string, fragment and host are not part of the key; the path is compared as `requestKeyOf` writes it,
      * the function the renderer names requests with. With `auth`, only calls sent with that auth (`authOf`'s value;
-     * `''` for none) are kept (history-grouping). At most RESPONSES_LIMIT calls.
+     * `''` for none) are kept (history-grouping). With `statuses`, only the calls answered with one of them, filtered
+     * before the limit: an expanded History group lists what its count counts (history-status-filter, code review 3).
+     * At most RESPONSES_LIMIT calls.
      */
     listResponses: async (
       method: string,
@@ -107,11 +174,16 @@ export function createCallStore(db: Db) {
       inFlight: ReadonlySet<string>,
       auth?: string,
       environmentId?: string,
+      statuses?: readonly string[],
     ): Promise<Call[]> => {
       const ids: string[] = [];
       for await (const raw of sends
         .find(
-          { 'request.method': method, ...inEnvironment(environmentId) },
+          {
+            'request.method': method,
+            ...inEnvironment(environmentId),
+            ...(await statusCondition(statuses)),
+          },
           { projection: { 'request.url': 1, 'request.headers': 1, sentAt: 1 } },
         )
         .sort({ sentAt: -1 })) {
@@ -132,25 +204,36 @@ export function createCallStore(db: Db) {
         }
         ids.push(String(raw._id));
       }
-      return list({ _id: { $in: ids } }, 0, inFlight, false);
+      const calls = await list({ _id: { $in: ids } }, 0, inFlight, false);
+      return statuses && statuses.length > 0
+        ? calls.filter((c) => c.state !== 'unreadable')
+        : calls;
     },
 
     /**
      * History grouped by request (history-grouping): one group per method and URL path (`requestKeyOf`), and per auth
      * value (`authOf`) when `splitByAuth`, over every call, not only the newest 200. Each group has its count and its
      * newest call, without bodies; groups are ordered by that call, newest first. Unreadable calls have no key and are
-     * in no group.
+     * in no group. With `statuses`, groups count only the calls answered with one of them (history-status-filter).
      */
     listRequestGroups: async (
       inFlight: ReadonlySet<string>,
       {
         splitByAuth,
         environmentId,
-      }: { splitByAuth: boolean; environmentId?: string },
+        statuses,
+      }: {
+        splitByAuth: boolean;
+        environmentId?: string;
+        statuses?: readonly string[];
+      },
     ): Promise<RequestGroup[]> => {
       const groups = new Map<string, RequestGroup>();
       for (const call of await list(
-        inEnvironment(environmentId),
+        {
+          ...inEnvironment(environmentId),
+          ...(await statusCondition(statuses)),
+        },
         0,
         inFlight,
         false,
@@ -235,6 +318,7 @@ export function createCallStore(db: Db) {
         (except === 'auth' || within(query.auths, f.auth)) &&
         (except === 'savedRequest' ||
           within(query.savedRequestIds, f.savedRequestId)) &&
+        (except === 'status' || within(query.statuses, f.status)) &&
         (from === null || f.sentAt >= from) &&
         (to === null || f.sentAt <= to) &&
         (textHits === null || textHits.has(f.id));
@@ -295,6 +379,11 @@ export function createCallStore(db: Db) {
                 f.savedRequestId === '' ? 'No saved request' : f.savedRequestId,
             }),
           ),
+          status: facet(
+            'status',
+            (f) => f.status,
+            (f) => ({ label: f.status === '' ? 'No response' : f.status }),
+          ).sort((a, b) => byStatus(a.value, b.value)),
         },
       };
     },
@@ -366,6 +455,25 @@ export function createCallStore(db: Db) {
       : { 'environment.id': environmentId };
   }
 
+  /**
+   * The sends answered with one of `statuses` (history-status-filter). The status is on the completion, so the matching
+   * send ids are read first. With `''` (no response) selected, a send passes unless its completion holds a response
+   * with an unselected status: error completions, calls in flight and interrupted calls have no response.
+   */
+  async function statusCondition(
+    statuses: readonly string[] | undefined,
+  ): Promise<Filter<SendDoc>> {
+    if (!statuses || statuses.length === 0) return {};
+    const codes = statuses.filter((s) => s !== '').map(Number);
+    const noResponse = statuses.includes('');
+    const ids = await completions.distinct('sendId', {
+      'response.status': noResponse
+        ? { $exists: true, $nin: codes }
+        : { $in: codes },
+    });
+    return { _id: noResponse ? { $nin: ids } : { $in: ids } };
+  }
+
   async function list(
     filter: Filter<SendDoc>,
     limit: number,
@@ -409,6 +517,13 @@ export function createCallStore(db: Db) {
 const RESPONSES_LIMIT = 500;
 const SEARCH_LIMIT = 500;
 
+/** One status History's calls were answered with, and how many (history-status-filter). `''` is No response. */
+export interface StatusOption {
+  value: string;
+  label: string;
+  count: number;
+}
+
 /** One request in History grouped by request (history-grouping). `auth` is set only when grouped by auth too. */
 export interface RequestGroup {
   method: string;
@@ -425,12 +540,14 @@ export interface SearchQuery {
   environmentIds?: string[];
   auths?: string[];
   savedRequestIds?: string[];
+  /** Three-digit codes, `''` for no response (history-status-filter). */
+  statuses?: string[];
   /** ISO date-times, inclusive. */
   from?: string;
   to?: string;
 }
 
-type FacetName = 'method' | 'environment' | 'auth' | 'savedRequest';
+type FacetName = 'method' | 'environment' | 'auth' | 'savedRequest' | 'status';
 
 export interface FacetOption {
   value: string;
@@ -458,6 +575,8 @@ interface CallFacts {
   /** The header `auth` came from; `''` when there is none. */
   authHeader: '' | 'Authorization' | 'Cookie';
   savedRequestId: string;
+  /** The code answered, or `''` for no response (history-status-filter). */
+  status: string;
   sentAt: number;
 }
 
@@ -475,6 +594,7 @@ function factsOf(call: Exclude<Call, { state: 'unreadable' }>): CallFacts {
     auth: auth?.value ?? '',
     authHeader: auth?.header ?? '',
     savedRequestId: send.savedRequestId ?? '',
+    status: statusOf(call.completion),
     sentAt: send.sentAt.getTime(),
   };
 }

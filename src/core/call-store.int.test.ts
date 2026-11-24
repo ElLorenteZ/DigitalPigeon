@@ -289,11 +289,13 @@ test('the store offers no way to update a call; deleting one is deleteCall (slic
     'bodies',
     'deleteCall',
     'getCall',
+    'historyMark',
     'insertCompletion',
     'insertSend',
     'listCalls',
     'listRequestGroups',
     'listResponses',
+    'listStatusCodes',
     'searchCalls',
     'sweepOrphanBodies',
   ]);
@@ -892,5 +894,278 @@ describe('sweepOrphanBodies', () => {
     expect(
       await chunks().countDocuments({ files_id: recent.fileId }),
     ).toBeGreaterThan(0);
+  });
+});
+
+// history-status-filter, phase 1: History, request groups and the status options filtered by the response status. ''
+// selects calls with no response: an error completion, a call in flight, a call interrupted. The filter applies
+// before History's limit.
+describe('status filter', () => {
+  let statusDb: TestDb;
+  let store: ReturnType<typeof createCallStore>;
+  const at = (n: number) =>
+    new Date(Date.UTC(2026, 10, 24, 8, 0, 0) + n * 1000);
+  const doc = (
+    id: string,
+    path: string,
+    n: number,
+    environmentId?: string,
+  ): SendDoc => ({
+    _id: id,
+    schemaVersion: 1,
+    sentAt: at(n),
+    request: { ...request, url: `http://s.test${path}` },
+    ...(environmentId
+      ? {
+          environment: {
+            id: environmentId,
+            name: environmentId,
+            baseUrl: `http://${environmentId}.test/`,
+          },
+        }
+      : {}),
+  });
+  const answered = (sendId: string, status: number): CompletionDoc => ({
+    ...completion(`c-${sendId}`, sendId, [1]),
+    response: {
+      status,
+      headers: [],
+      body: new Uint8Array([1]),
+    },
+  });
+  const failed = (sendId: string): CompletionDoc => ({
+    _id: `c-${sendId}`,
+    schemaVersion: 1,
+    sendId,
+    completedAt: at(1000),
+    durationMs: 3,
+    error: { code: 'network', message: 'connect ECONNREFUSED' },
+  });
+  const ids = (calls: Call[]) => readable(calls).map((c) => c.send._id);
+  // s-flight is in flight; s-gone has no completion and is not: interrupted.
+  const inFlight = new Set(['s-flight']);
+
+  beforeAll(async () => {
+    statusDb = await openTestDb();
+    store = createCallStore(statusDb.db);
+    const seed: [string, string, number, number | 'error' | null][] = [
+      ['s-200a', '/a', 1, 200],
+      ['s-404a', '/a', 2, 404],
+      ['s-500b', '/b', 3, 500],
+      ['s-err', '/b', 4, 'error'],
+      ['s-200b', '/a', 5, 200],
+      ['s-gone', '/a', 6, null],
+      ['s-flight', '/b', 7, null],
+      ['s-404b', '/a', 8, 404],
+    ];
+    for (const [id, path, n, outcome] of seed) {
+      await store.insertSend(doc(id, path, n));
+      if (outcome === 'error') await store.insertCompletion(failed(id));
+      else if (outcome !== null)
+        await store.insertCompletion(answered(id, outcome));
+    }
+    // An environment's own calls: one 404, one 201.
+    await store.insertSend(doc('e-404', '/a', 20, 'E'));
+    await store.insertCompletion(answered('e-404', 404));
+    await store.insertSend(doc('e-201', '/a', 21, 'E'));
+    await store.insertCompletion(answered('e-201', 201));
+  });
+
+  afterAll(async () => {
+    await statusDb?.drop();
+  });
+
+  test('listCalls keeps the calls answered with a selected status, newest first', async () => {
+    expect(
+      ids(await store.listCalls(200, inFlight, { statuses: ['404'] })),
+    ).toEqual(['e-404', 's-404b', 's-404a']);
+    expect(
+      ids(await store.listCalls(200, inFlight, { statuses: ['200', '500'] })),
+    ).toEqual(['s-200b', 's-500b', 's-200a']);
+  });
+
+  test("'' selects the calls with no response: an error, in flight and interrupted", async () => {
+    const calls = readable(
+      await store.listCalls(200, inFlight, { statuses: [''] }),
+    );
+    expect(calls.map((c) => [c.send._id, c.state])).toEqual([
+      ['s-flight', 'in-flight'],
+      ['s-gone', 'interrupted'],
+      ['s-err', 'completed'],
+    ]);
+  });
+
+  test('a code and No response together select both; an empty selection selects every call', async () => {
+    expect(
+      ids(
+        await store.listCalls(200, inFlight, {
+          statuses: ['404', ''],
+          environmentId: undefined,
+        }),
+      ),
+    ).toEqual(['e-404', 's-404b', 's-flight', 's-gone', 's-err', 's-404a']);
+    expect(await store.listCalls(200, inFlight, { statuses: [] })).toHaveLength(
+      10,
+    );
+    expect(await store.listCalls(200, inFlight)).toHaveLength(10);
+  });
+
+  test('the status filter applies before the limit', async () => {
+    expect(
+      ids(await store.listCalls(1, inFlight, { statuses: ['200'] })),
+    ).toEqual(['s-200b']);
+  });
+
+  test('the status filter combines with the environment', async () => {
+    expect(
+      ids(
+        await store.listCalls(200, inFlight, {
+          environmentId: 'E',
+          statuses: ['404', ''],
+        }),
+      ),
+    ).toEqual(['e-404']);
+  });
+
+  test('listRequestGroups counts only the calls with a selected status, and the newest of them is latest', async () => {
+    const groups = await store.listRequestGroups(inFlight, {
+      splitByAuth: false,
+      statuses: ['404'],
+    });
+    expect(groups.map((g) => [g.path, g.count, g.latest.send._id])).toEqual([
+      ['/a', 3, 'e-404'],
+    ]);
+    const noResponse = await store.listRequestGroups(inFlight, {
+      splitByAuth: false,
+      statuses: [''],
+    });
+    expect(noResponse.map((g) => [g.path, g.count, g.latest.send._id])).toEqual(
+      [
+        ['/b', 2, 's-flight'],
+        ['/a', 1, 's-gone'],
+      ],
+    );
+  });
+
+  test('listStatusCodes lists each status present with its count, codes ascending and No response last', async () => {
+    expect(await store.listStatusCodes(inFlight)).toEqual([
+      { value: '200', label: '200', count: 2 },
+      { value: '201', label: '201', count: 1 },
+      { value: '404', label: '404', count: 3 },
+      { value: '500', label: '500', count: 1 },
+      { value: '', label: 'No response', count: 3 },
+    ]);
+    expect(
+      await store.listStatusCodes(inFlight, { environmentId: 'E' }),
+    ).toEqual([
+      { value: '201', label: '201', count: 1 },
+      { value: '404', label: '404', count: 1 },
+    ]);
+  });
+
+  test('a status selection never lists an unreadable record, whose status is unknown (code review 2)', async () => {
+    const own = await openTestDb();
+    try {
+      const ownStore = createCallStore(own.db);
+      await ownStore.insertSend(doc('u-ok', '/a', 1));
+      await ownStore.insertCompletion(answered('u-ok', 404));
+      // A send no schema reads, with no completion; and a readable send whose completion no schema reads.
+      await own.db
+        .collection('sends')
+        .insertOne({ _id: 'u-bad' as never, schemaVersion: 99, sentAt: at(2) });
+      await ownStore.insertSend(doc('u-badc', '/a', 3));
+      await own.db.collection('completions').insertOne({
+        _id: 'c-u-badc' as never,
+        schemaVersion: 99,
+        sendId: 'u-badc',
+        response: { status: 404 },
+      });
+      const states = async (statuses: string[]) =>
+        (await ownStore.listCalls(200, new Set(), { statuses })).map((c) =>
+          c.state === 'unreadable' ? `unreadable ${c.id}` : c.send._id,
+        );
+      expect(await states([''])).toEqual([]);
+      expect(await states(['404'])).toEqual(['u-ok']);
+      // Without a selection, unreadable rows are listed as before.
+      expect(await states([])).toHaveLength(3);
+    } finally {
+      await own.drop();
+    }
+  });
+
+  test('listResponses with statuses filters before its 500-call limit (code review 3)', async () => {
+    const own = await openTestDb();
+    try {
+      const ownStore = createCallStore(own.db);
+      // 501 calls to GET /many: the oldest answered 500, the 500 newer ones 200.
+      await own.db.collection('sends').insertMany(
+        Array.from({ length: 501 }, (_, n) => ({
+          _id: `r-${n}` as never,
+          schemaVersion: 1,
+          sentAt: at(n),
+          request: { ...request, url: 'http://s.test/many' },
+        })),
+      );
+      await own.db.collection('completions').insertMany(
+        Array.from({ length: 501 }, (_, n) => ({
+          _id: `c-r-${n}` as never,
+          schemaVersion: 1,
+          sendId: `r-${n}`,
+          completedAt: at(n),
+          durationMs: 1,
+          response: {
+            status: n === 0 ? 500 : 200,
+            headers: [],
+            body: new Uint8Array([1]),
+          },
+        })),
+      );
+      expect(
+        ids(
+          await ownStore.listResponses(
+            'GET',
+            '/many',
+            new Set(),
+            undefined,
+            undefined,
+            ['500'],
+          ),
+        ),
+      ).toEqual(['r-0']);
+      expect(
+        await ownStore.listResponses('GET', '/many', new Set()),
+      ).toHaveLength(500);
+    } finally {
+      await own.drop();
+    }
+  });
+
+  test('historyMark changes with every new call, including one the status selection would hide', async () => {
+    const markDb = await openTestDb();
+    try {
+      const markStore = createCallStore(markDb.db);
+      const empty = await markStore.historyMark(new Set());
+      await markStore.insertSend(doc('m-1', '/a', 1));
+      await markStore.insertCompletion(answered('m-1', 404));
+      const one = await markStore.historyMark(new Set());
+      // A 200 call: a list filtered to 404 is unchanged by it, and the mark still moves.
+      await markStore.insertSend(doc('m-2', '/a', 2));
+      const before = ids(
+        await markStore.listCalls(200, new Set(), { statuses: ['404'] }),
+      );
+      const flying = await markStore.historyMark(new Set(['m-2']));
+      await markStore.insertCompletion(answered('m-2', 200));
+      const landed = await markStore.historyMark(new Set());
+      expect(
+        ids(await markStore.listCalls(200, new Set(), { statuses: ['404'] })),
+      ).toEqual(before);
+      expect(new Set([empty, one, flying, landed]).size).toBe(4);
+      // In an environment with no calls, the mark does not move.
+      expect(
+        await markStore.historyMark(new Set(), { environmentId: 'none' }),
+      ).toBe(await markStore.historyMark(new Set(), { environmentId: 'none' }));
+    } finally {
+      await markDb.drop();
+    }
   });
 });

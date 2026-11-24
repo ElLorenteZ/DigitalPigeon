@@ -1,7 +1,7 @@
 ---
 produced-by: lz-lessons
-updated: 2026-11-08
-standing-rules: 2
+updated: 2026-11-24
+standing-rules: 3
 ---
 
 # Lessons
@@ -51,6 +51,24 @@ demand and binds nothing.
   verified from a spike names the host the spike ran in (for example "a bare Vite build", "a standalone script") and
   the Not tried items it depends on; when it depends on any, it reads "partly verified" and names the phase that
   checks the rest.
+
+### Show each test red with the behaviour it protects removed
+
+- **Rule:** A test or scenario recorded as verifying a mechanism (a guard, a refresh, a rule a fix added) is run once
+  with that mechanism removed or reverted, and the ledger records the assertion that failed. A red run that fails
+  before reaching the assertion (an element not found, a missing function) does not count. A plan's verification
+  names, for each such mechanism, what a user or caller observes differently without it.
+- **Because:** A test can reach its assertion by a path the broken code also takes. It then passes with the behaviour
+  gone, reads as coverage, and the gap surfaces only when someone breaks the code on purpose.
+- **Incidents:** preview-replay-export (2026-11-06: `a replay sends the recorded list even when wire.ts would build
+  another` passed with replay rebuilt through `wire.ts`, because the rebuild kept the typed value; found by mutation),
+  history-status-filter (2026-11-24: the planned scenario "with 404 selected, a 200 send appears in the responses
+  strip" passed without the refresh fix, because every completed send already bumps `dataVersion`; found in plan
+  review, and the replacement scenario was confirmed red with the old refresh key)
+- **Promoted:** 2026-11-24
+- **Check:** For each mechanism `progress.md` claims a test covers, the entry holds a run with the mechanism removed
+  and the failing assertion's expected/received lines. A red run that stopped on a missing element or function is
+  not that run.
 
 ## Observation log
 
@@ -199,3 +217,46 @@ Same family as "Presence checks passed for an element the user could not see" (2
 mechanism: the check observed less than its claim. A second would justify a rule that a claim of a clean console records
 `console` errors and `pageerror` together, as `body-safety.spec.ts` now does.
 Source: `context/archive/editor-and-formatting/raw/review.md` F3; `raw/progress.md` phase 4.
+
+### 2026-11-23 — A plan's "no CSP violation" expectation was never asserted
+
+`history-grouping`'s plan listed "no CSP violation" in the expected output of Phases 3 and 5. Neither new scenario called
+`expectNoCspViolations`, and the ledger recorded the green suite under the production CSP as if it covered the
+expectation. Its review caught it (F1, merged open). Only `smoke.spec.ts` and `body-safety.spec.ts` assert on the violations
+`launchWithTestDatabase` records. One incident of a claim with no check behind it. `environment-aware-history`'s new spec also
+has no CSP assertion, but its plan claimed none, so it is not a second incident of this class. Same family as the
+2026-11-08 entry and "Presence checks passed for an element the user could not see" (2026-11-06), through a third
+mechanism: there, the check observed less than its claim; here, nothing observed it. A second plan whose CSP expectation
+goes unasserted would justify a rule that each "no CSP violation" in a plan's verification maps to an
+`expectNoCspViolations` call in the named spec.
+Source: `context/changes/history-grouping/review.md` F1; `context/archive/environment-aware-history/raw/review.md`,
+Lessons candidates.
+
+### 2026-11-23 — Counting History rows while History refetches after a select change
+
+After `environment-aware-history`, every change of the Environment select refetches History. Two existing scenarios
+read `history.count()` straight after a select change: `environments.spec.ts`, the deletion scenario and the B1
+scenario. They counted the old list or the new one depending on timing, and failed only in the full suite. They were
+fixed by waiting for the count the server lists (`callOperation(listCalls)`) or by counting the environment's own calls.
+One incident. Related to the 2026-11-03 entry (renderer re-fetch raced a write), through a different mechanism: a test
+read UI state mid-refetch, not app code reading before a write. It would recur wherever a spec counts rows after an
+action that refetches the list.
+Source: `context/archive/environment-aware-history/raw/progress.md`, Phase 5 drift (defect, A2).
+
+### 2026-11-24 — An empty-string option joined to the same key as an empty selection
+
+`history-status-filter` used `''` for "No response", following `history-search`'s convention that `''` in a list means
+"none". The selection's comparable key was `statuses.join(',')`, as the plan review suggested. `['']` and `[]` then gave
+the same key, so Clearing a No-response-only selection refetched nothing, and the No-response list stayed as current.
+The e2e Clear scenario caught it, and the key became JSON (`statusKeyOf`). One incident. It recurs wherever a list
+that can hold `''` is joined into a cache key, an effect dependency or an answer guard.
+Source: `context/archive/history-status-filter/raw/progress.md`, Phase 3 drift (defect).
+
+### 2026-11-24 — test-strategy rows left at "gap" after coverage was added
+
+T2.3 ("a history filter or search returns the wrong set of calls") still reads "gap". `history-search`,
+`environment-aware-history` and `history-status-filter` each added integration coverage for it, and none updated the row.
+No defect followed. Plans and reviews that read the row see coverage missing that exists. Not a rule: the remedy is a
+`/lz-test-strategy` revision naming all three, and a change that adds coverage for a tier can note it in its review.
+Source: `context/archive/history-status-filter/raw/review.md` F4.
+

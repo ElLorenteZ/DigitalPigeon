@@ -8,7 +8,7 @@ ticket: null
 verdict: merge-with-fixes
 outcome: shipped
 milestone: none (author request; builds on history-search, history-grouping, environment-aware-history)
-branch: history-status-filter @ d24eb71, PR #13 (open, unmerged, at archive time)
+branch: history-status-filter @ 3a72b27, merged into main as 1bf0b07 (PR #13)
 raw: raw/
 ---
 

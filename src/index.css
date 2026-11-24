@@ -1190,6 +1190,84 @@ button.danger {
   min-width: 0;
 }
 
+/* History status filter (history-status-filter): a combo box with chips; its list opens in the flow, below it. */
+.status-filter {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 0 6px 10px;
+}
+
+.status-field {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+}
+
+.status-field input {
+  flex: 1;
+  min-width: 90px;
+}
+
+.status-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px 2px 2px 8px;
+  border: 1px solid var(--accent);
+  border-radius: 13px;
+  background: var(--accent-soft);
+  font-family: var(--mono);
+  font-size: 11px;
+}
+
+.status-chip button,
+.status-clear {
+  background: transparent;
+  border: none;
+  min-height: 20px;
+  padding: 0 6px;
+}
+
+.status-options {
+  margin: 0;
+  padding: 4px;
+  list-style: none;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  background: var(--raised);
+}
+
+.status-options li[role='option'] {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-family: var(--mono);
+}
+
+.status-options li[role='option']:hover,
+.status-options li.active {
+  background: var(--hover);
+}
+
+.status-options .status-check {
+  width: 1em;
+  color: var(--accent);
+}
+
+.status-options .status-label {
+  flex: 1;
+}
+
+.status-options .status-count,
+.status-options .empty {
+  color: var(--muted);
+}
+
 .search-filters {
   display: flex;
   flex-direction: column;

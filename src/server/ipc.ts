@@ -37,6 +37,11 @@ import {
   type ListCallsResult,
   ListCallsInputSchema,
   ListCallsResultSchema,
+  type ListHistoryResult,
+  ListHistoryResultSchema,
+  type ListStatusCodesResult,
+  ListStatusCodesInputSchema,
+  ListStatusCodesResultSchema,
   ListRequestGroupsInputSchema,
   type ListRequestGroupsResult,
   ListRequestGroupsResultSchema,
@@ -529,24 +534,32 @@ export function registerIpc({ ipcMain, db, dbStatus }: IpcDeps): void {
   // rejected invoke (review #3).
   ipcMain.handle(
     channels.listCalls,
-    async (_event, raw: unknown): Promise<ListCallsResult> => {
+    async (_event, raw: unknown): Promise<ListHistoryResult> => {
       const input = ListCallsInputSchema.safeParse(raw);
       if (!input.success) {
         return { ok: false, message: z.prettifyError(input.error) };
       }
       const database = db();
       if (!database || dbStatus().status !== 'up')
-        return { ok: true, calls: [] };
+        return { ok: true, calls: [], mark: '' };
       try {
         const environmentId = input.data?.environmentId;
-        const calls = await storeFor(database).listCalls(
-          HISTORY_LIMIT,
-          inFlightSendIds,
-          environmentId === undefined ? {} : { environmentId },
-        );
-        return ListCallsResultSchema.parse({
+        const inEnvironment =
+          environmentId === undefined ? {} : { environmentId };
+        const store = storeFor(database);
+        // The mark ignores the status selection, so the views keyed on History refetch whatever is selected
+        // (history-status-filter).
+        const [calls, mark] = await Promise.all([
+          store.listCalls(HISTORY_LIMIT, inFlightSendIds, {
+            ...inEnvironment,
+            statuses: input.data?.statuses,
+          }),
+          store.historyMark(inFlightSendIds, inEnvironment),
+        ]);
+        return ListHistoryResultSchema.parse({
           ok: true,
           calls: calls.map(toView),
+          mark,
         });
       } catch (error) {
         return { ok: false, message: message(error) };
@@ -576,6 +589,30 @@ export function registerIpc({ ipcMain, db, dbStatus }: IpcDeps): void {
           ok: true,
           groups: groups.map((g) => ({ ...g, latest: toView(g.latest) })),
         });
+      } catch (error) {
+        return { ok: false, message: message(error) };
+      }
+    },
+  );
+
+  // The statuses the environment's calls were answered with, for the History status filter (history-status-filter).
+  ipcMain.handle(
+    channels.listStatusCodes,
+    async (_event, raw: unknown): Promise<ListStatusCodesResult> => {
+      const input = ListStatusCodesInputSchema.safeParse(raw);
+      if (!input.success) {
+        return { ok: false, message: z.prettifyError(input.error) };
+      }
+      const database = db();
+      if (!database || dbStatus().status !== 'up') {
+        return { ok: true, options: [] };
+      }
+      try {
+        const options = await storeFor(database).listStatusCodes(
+          inFlightSendIds,
+          input.data ?? {},
+        );
+        return ListStatusCodesResultSchema.parse({ ok: true, options });
       } catch (error) {
         return { ok: false, message: message(error) };
       }
@@ -746,6 +783,7 @@ export function registerIpc({ ipcMain, db, dbStatus }: IpcDeps): void {
           inFlightSendIds,
           input.data.auth,
           input.data.environmentId,
+          input.data.statuses,
         );
         return ListCallsResultSchema.parse({
           ok: true,

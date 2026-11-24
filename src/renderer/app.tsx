@@ -13,10 +13,12 @@ import 'monaco-editor/languages/definitions/xml/register.js';
 import {
   Component,
   type ErrorInfo,
+  type KeyboardEvent,
   type ReactNode,
   type Ref,
   useCallback,
   useEffect,
+  useId,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -44,6 +46,7 @@ import {
 } from '../core/multipart';
 import { type Auth, authOf } from '../core/headers';
 import { requestKeyOf } from '../core/request-key';
+import { byStatus } from '../core/status';
 import {
   type ParsedSpec,
   groupOperations,
@@ -58,6 +61,7 @@ import {
   type FacetOption,
   type SearchQuery,
   type SearchResult,
+  type StatusOption,
   type TemplateSource,
   type GetTemplateResult,
   type RequestForm,
@@ -166,14 +170,32 @@ const HISTORY_POLL_MS = 500;
 // ignoreBOM keeps a byte order mark on screen: dropping one would hide bytes the record holds.
 const textDecoder = () => new TextDecoder('utf-8', { ignoreBOM: true });
 
+/**
+ * A status selection as one comparable text. Not `join`: `['']` (No response only) would join to `''`, the same as no
+ * selection (history-status-filter).
+ */
+const statusKeyOf = (statuses: readonly string[]) => JSON.stringify(statuses);
+
 export function App() {
   const [status, setStatus] = useState<StatusView | null>(null);
-  // History for the environment it was fetched for ('' = All), so a list for one environment is never shown under
-  // another (environment-aware-history; T2.10).
+  // History for the environment and the statuses it was fetched for ('' = All), so a list for one environment or
+  // selection is never shown under another (environment-aware-history, history-status-filter; T2.10). `mark` moves
+  // whenever the environment's calls change, whatever statuses are selected.
   const [historyList, setHistoryList] = useState<{
     environmentId: string;
+    statuses: string;
     calls: CallView[];
-  }>({ environmentId: '', calls: [] });
+    mark: string;
+  }>({ environmentId: '', statuses: statusKeyOf([]), calls: [], mark: '' });
+  // The History status filter (history-status-filter): codes sorted, '' (No response) last; empty keeps every call.
+  const [statuses, setStatusSelection] = useState<string[]>([]);
+  const setStatuses = useCallback(
+    (next: string[]) => setStatusSelection([...new Set(next)].sort(byStatus)),
+    [],
+  );
+  const statusKey = statusKeyOf(statuses);
+  const currentStatuses = useRef(statuses);
+  currentStatuses.current = statuses;
   const [result, setResult] = useState<SendResult | null>(null);
   // Slice 7: the responses to the request of the result shown, and the one picked from them (null: the latest).
   // A response picked from the strip, tagged with the result it was picked under: a pick never outlives its result
@@ -208,10 +230,11 @@ export function App() {
   // The select's value now, for code that runs after an await (environment-aware-history).
   const currentEnvironment = useRef(environmentId);
   currentEnvironment.current = environmentId;
-  const history =
-    historyList.environmentId === (environmentId ?? '')
-      ? historyList.calls
-      : [];
+  // Loaded: the list on hand was fetched for the environment and statuses selected now.
+  const historyLoaded =
+    historyList.environmentId === (environmentId ?? '') &&
+    historyList.statuses === statusKey;
+  const history = historyLoaded ? historyList.calls : [];
   // The shell (slice 6): which list the sidebar shows, whether the main area shows the request or an opened call, and
   // whether the environments editor is open under the title bar.
   const [sidebarTab, setSidebarTab] = useState<
@@ -311,13 +334,25 @@ export function App() {
   const refreshHistory = useCallback(async () => {
     try {
       const asked = currentEnvironment.current;
-      const listed = await pigeon.listCalls(
-        asked === null ? undefined : { environmentId: asked },
-      );
-      // A list for an environment no longer selected is dropped; the switch fetches its own.
-      if (currentEnvironment.current !== asked) return;
+      const askedStatuses = currentStatuses.current;
+      const listed = await pigeon.listCalls({
+        ...(asked === null ? {} : { environmentId: asked }),
+        ...(askedStatuses.length === 0 ? {} : { statuses: askedStatuses }),
+      });
+      // A list for an environment or a selection no longer chosen is dropped; the change fetches its own.
+      if (
+        currentEnvironment.current !== asked ||
+        statusKeyOf(currentStatuses.current) !== statusKeyOf(askedStatuses)
+      ) {
+        return;
+      }
       if (listed.ok) {
-        setHistoryList({ environmentId: asked ?? '', calls: listed.calls });
+        setHistoryList({
+          environmentId: asked ?? '',
+          statuses: statusKeyOf(askedStatuses),
+          calls: listed.calls,
+          mark: listed.mark,
+        });
         setHistoryError(null);
       } else {
         setHistoryError(listed.message);
@@ -349,7 +384,7 @@ export function App() {
   // Again whenever the select changes: History shows the selected environment's calls, or every call for All.
   useEffect(() => {
     if (status?.status === 'up') void refreshHistory();
-  }, [status?.status, refreshHistory, environmentId]);
+  }, [status?.status, refreshHistory, environmentId, statusKey]);
 
   useEffect(() => {
     if (status?.status === 'up') void refreshEnvironments(false);
@@ -644,7 +679,9 @@ export function App() {
   const shownHistory = history.filter(notHeld);
 
   // The strips refresh when History changes: a send, a replay or a completion lands there first (slice 7).
-  const historyMark = `${dataVersion}:${history.length}:${history[0]?.state === 'unreadable' ? history[0].id : (history[0]?.send._id ?? '')}:${history.filter((c) => c.state === 'in-flight').length}`;
+  // The server's mark ignores the status selection, so the views below refetch whatever is selected
+  // (history-status-filter).
+  const historyMark = `${dataVersion}:${historyList.mark}`;
   // "Split by auth" narrows both strips to the calls sent with the same auth (history-grouping).
   const [splitPreference, setSplitPreference] = usePreference(
     'dp.splitByAuth',
@@ -692,8 +729,12 @@ export function App() {
     grouping === 'request',
     splitByAuth,
     environmentId,
+    statuses,
     historyMark,
   );
+  // The options of the History status filter: the statuses of the environment's calls, with counts.
+  // Not fetched while a search runs: the search's own status facet is shown then (code review 6).
+  const statusCodes = useStatusCodes(!searchActive, environmentId, historyMark);
   // One group is expanded at a time; its calls are listed as a strip's are, tagged with its key (T2.10).
   const [expandedGroup, setExpandedGroup] = useState<{
     method: Method;
@@ -707,8 +748,15 @@ export function App() {
     (groupsList.groups ?? []).some(
       (g) => groupText(g, splitByAuth) === expandedText,
     );
+  // Filtered on the server like the group's count, before the responses limit (code review 3).
   const expandedList = useResponses(
-    expandedOpen ? { ...expandedGroup, ...inSelected } : null,
+    expandedOpen
+      ? {
+          ...expandedGroup,
+          ...inSelected,
+          ...(statuses.length === 0 ? {} : { statuses }),
+        }
+      : null,
     historyMark,
   );
   const openedAuth = opened
@@ -816,7 +864,11 @@ export function App() {
     );
   }, [environmentId]);
   // Slice 9: the search runs 250 ms after the last change, and again whenever History changes.
-  const searchKey = JSON.stringify([searchText.trim(), searchFilters]);
+  const searchKey = JSON.stringify([
+    searchText.trim(),
+    searchFilters,
+    statuses,
+  ]);
   useEffect(() => {
     if (!searchActive) {
       setSearchResult(null);
@@ -826,7 +878,7 @@ export function App() {
     let active = true;
     const timer = window.setTimeout(() => {
       pigeon
-        .searchCalls(queryOf(searchText, searchFilters))
+        .searchCalls(queryOf(searchText, searchFilters, statuses))
         .then((found) => {
           if (active) setSearchResult(found);
         })
@@ -1112,6 +1164,25 @@ export function App() {
                 </button>
               )}
             </div>
+            {/* While a search runs, its status facet: counts under the text and the other filters. */}
+            <StatusFilter
+              options={
+                searchActive
+                  ? searchResult?.ok
+                    ? searchResult.facets.status
+                    : null
+                  : statusCodes.options
+              }
+              error={
+                searchActive
+                  ? searchResult && !searchResult.ok
+                    ? searchResult.message
+                    : null
+                  : statusCodes.error
+              }
+              selected={statuses}
+              onChange={setStatuses}
+            />
             {searchActive ? (
               <SearchFilters
                 filters={searchFilters}
@@ -1125,6 +1196,8 @@ export function App() {
             ) : (
               <HistoryList
                 calls={shownHistory}
+                loaded={historyLoaded}
+                statusFiltered={statuses.length > 0}
                 error={historyError}
                 onOpen={(sendId) => void openCall(sendId)}
                 onDelete={deleteLater}
@@ -2476,11 +2549,13 @@ function useResponses(
     path: string;
     auth?: string;
     environmentId?: string;
+    /** Only an expanded History group passes these; the strips never do (history-status-filter). */
+    statuses?: string[];
   } | null,
   refresh: string,
 ): { calls: CallView[]; error: string | null } {
   const text = key
-    ? `${key.method} ${key.path}${key.auth === undefined ? '' : `\n${key.auth}`}\n@${key.environmentId ?? ''}`
+    ? `${key.method} ${key.path}${key.auth === undefined ? '' : `\n${key.auth}`}\n@${key.environmentId ?? ''}\n#${statusKeyOf(key.statuses ?? [])}`
     : '';
   const [state, setState] = useState<{
     key: string;
@@ -2519,13 +2594,58 @@ type RequestGroupsState = {
   groups: RequestGroup[] | null;
   error: string | null;
 };
+// The statuses the selected environment's calls were answered with (history-status-filter), tagged with the
+// environment they were listed for, like the request groups.
+function useStatusCodes(
+  enabled: boolean,
+  environmentId: string | null,
+  refresh: string,
+): { options: StatusOption[] | null; error: string | null } {
+  const text = enabled ? `@${environmentId ?? ''}` : '';
+  const [state, setState] = useState<{
+    key: string | null;
+    options: StatusOption[] | null;
+    error: string | null;
+  }>({ key: null, options: null, error: null });
+  useEffect(() => {
+    if (!enabled) return;
+    let active = true;
+    pigeon
+      .listStatusCodes(environmentId === null ? undefined : { environmentId })
+      .then((listed) => {
+        if (!active) return;
+        setState(
+          listed.ok
+            ? { key: text, options: listed.options, error: null }
+            : { key: text, options: null, error: listed.message },
+        );
+      })
+      .catch((error: unknown) => {
+        if (active) {
+          setState({ key: text, options: null, error: errorText(error) });
+        }
+      });
+    return () => {
+      active = false;
+    };
+    // `text` stands for `enabled` and `environmentId`.
+  }, [text, refresh]);
+  return state.key === text && enabled
+    ? { options: state.options, error: state.error }
+    : { options: null, error: null };
+}
+
 function useRequestGroups(
   enabled: boolean,
   splitByAuth: boolean,
   environmentId: string | null,
+  statuses: string[],
   refresh: string,
 ): RequestGroupsState {
-  const text = enabled ? `${splitByAuth}\n@${environmentId ?? ''}` : '';
+  const statusKey = statusKeyOf(statuses);
+  const text = enabled
+    ? `${splitByAuth}\n@${environmentId ?? ''}\n#${statusKey}`
+    : '';
   const [state, setState] = useState<{
     key: string;
     groups: RequestGroup[] | null;
@@ -2538,6 +2658,7 @@ function useRequestGroups(
       .listRequestGroups({
         splitByAuth,
         ...(environmentId === null ? {} : { environmentId }),
+        ...(statuses.length === 0 ? {} : { statuses }),
       })
       .then((listed) => {
         if (!active) return;
@@ -2555,7 +2676,7 @@ function useRequestGroups(
     return () => {
       active = false;
     };
-    // `text` stands for `enabled`, `splitByAuth` and `environmentId`.
+    // `text` stands for `enabled`, `splitByAuth`, `environmentId` and `statuses`.
   }, [text, refresh]);
   return state.key === text && enabled
     ? { groups: state.groups, error: state.error }
@@ -3281,10 +3402,174 @@ function PagedBodyText({
   );
 }
 
+// The History status filter (history-status-filter): a combo box whose list holds the statuses present, with counts.
+// Several can be selected; none keeps every call. A selected status missing from the options stays listed with 0.
+function StatusFilter({
+  options,
+  error,
+  selected,
+  onChange,
+}: {
+  options: StatusOption[] | null;
+  error: string | null;
+  selected: string[];
+  onChange: (next: string[]) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [text, setText] = useState('');
+  const [active, setActive] = useState(0);
+  const listId = useId();
+  const labelOf = (value: string) => (value === '' ? 'No response' : value);
+  const all = [
+    ...(options ?? []),
+    ...selected
+      .filter((v) => !(options ?? []).some((o) => o.value === v))
+      .map((v) => ({ value: v, label: labelOf(v), count: 0 })),
+  ].sort((a, b) => byStatus(a.value, b.value));
+  const query = text.trim().toLowerCase();
+  const shown = all.filter((o) => o.label.toLowerCase().includes(query));
+  const activeIndex = Math.min(active, shown.length - 1);
+  const toggle = (value: string) =>
+    onChange(
+      selected.includes(value)
+        ? selected.filter((v) => v !== value)
+        : [...selected, value],
+    );
+  const onKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      if (!open) {
+        setOpen(true);
+        setActive(0);
+      } else {
+        const step = e.key === 'ArrowDown' ? 1 : -1;
+        setActive(Math.max(0, Math.min(shown.length - 1, activeIndex + step)));
+      }
+    } else if (open && (e.key === 'Enter' || (e.key === ' ' && text === ''))) {
+      // Space toggles only while nothing is typed, so "No response" can be typed (code review 4).
+      const option = shown[activeIndex];
+      if (option) {
+        e.preventDefault();
+        toggle(option.value);
+        setText('');
+      }
+    } else if (e.key === 'Escape' && open) {
+      e.preventDefault();
+      close();
+    }
+  };
+  // Text typed to narrow the list goes with it, so the next opening lists every status.
+  const close = () => {
+    setOpen(false);
+    setText('');
+  };
+  const optionId = (value: string) => `${listId}-${value || 'none'}`;
+  const activeOption = open ? shown[activeIndex] : undefined;
+  return (
+    <div
+      className="status-filter"
+      onBlur={(e) => {
+        if (!e.currentTarget.contains(e.relatedTarget as Node | null)) {
+          close();
+        }
+      }}
+    >
+      <div className="status-field">
+        {selected.map((value) => (
+          <span key={value || 'none'} className="status-chip">
+            {labelOf(value)}
+            <button
+              type="button"
+              aria-label={`Remove status ${labelOf(value)}`}
+              onClick={() => toggle(value)}
+            >
+              ×
+            </button>
+          </span>
+        ))}
+        <input
+          type="text"
+          role="combobox"
+          aria-label="Filter by status"
+          aria-expanded={open}
+          aria-controls={listId}
+          aria-autocomplete="list"
+          aria-activedescendant={
+            activeOption ? optionId(activeOption.value) : undefined
+          }
+          placeholder={selected.length === 0 ? 'All statuses' : 'Add status…'}
+          value={text}
+          onClick={() => setOpen(true)}
+          onChange={(e) => {
+            setText(e.target.value);
+            setOpen(true);
+            setActive(0);
+          }}
+          onKeyDown={onKeyDown}
+        />
+        {selected.length > 0 ? (
+          <button
+            type="button"
+            className="status-clear"
+            aria-label="Clear status filter"
+            onClick={() => onChange([])}
+          >
+            ×
+          </button>
+        ) : null}
+      </div>
+      {open ? (
+        <ul
+          id={listId}
+          role="listbox"
+          aria-label="Statuses"
+          aria-multiselectable="true"
+          className="status-options"
+        >
+          {shown.map((o, i) => (
+            <li
+              key={o.value || 'none'}
+              id={optionId(o.value)}
+              role="option"
+              aria-selected={selected.includes(o.value)}
+              aria-label={`${o.label} · ${o.count} ${o.count === 1 ? 'call' : 'calls'}`}
+              className={i === activeIndex ? 'active' : undefined}
+              // Keeps the focus in the field, so the list stays open for the next choice.
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => {
+                toggle(o.value);
+                setActive(i);
+              }}
+            >
+              <span className="status-check" aria-hidden="true">
+                {selected.includes(o.value) ? '✓' : ''}
+              </span>
+              <span className="status-label">{o.label}</span>
+              <span className="status-count">{o.count}</span>
+            </li>
+          ))}
+          {shown.length === 0 ? (
+            <li className="empty" aria-hidden="true">
+              {options === null && !error ? 'Loading…' : 'No matching status'}
+            </li>
+          ) : null}
+        </ul>
+      ) : null}
+      {error ? (
+        <p data-testid="status-filter-error" className="error">
+          Statuses could not be loaded: {error}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
 // A row per call, as the design's History Row: method badge, path with host and time, status with duration. Rows group
 // under the day they were sent. The visible text is split up, so the row's accessible name keeps the whole call.
 function HistoryList({
   calls,
+  loaded,
+  statusFiltered,
   error,
   onOpen,
   onDelete,
@@ -3299,6 +3584,10 @@ function HistoryList({
   onExpand,
 }: {
   calls: CallView[];
+  /** The day list was fetched for the environment and statuses selected now. */
+  loaded: boolean;
+  /** A status is selected in the History status filter. */
+  statusFiltered: boolean;
   error: string | null;
   onOpen: (sendId: string) => void;
   onDelete: (call: ReadableCall) => void;
@@ -3377,6 +3666,16 @@ function HistoryList({
       {shownError ? (
         <p data-testid="history-error" className="error">
           History could not be loaded: {shownError}
+        </p>
+      ) : null}
+      {/* Only once the list for this selection is on hand, so a refetch never shows it (history-status-filter). */}
+      {statusFiltered &&
+      !shownError &&
+      (byRequest
+        ? groups.groups !== null && groups.groups.length === 0
+        : loaded && calls.length === 0) ? (
+        <p data-testid="history-status-empty" className="empty">
+          No calls with the selected status
         </p>
       ) : null}
       {byRequest ? (
@@ -3597,13 +3896,19 @@ const hasFilters = (f: Filters) =>
   f.from !== '' ||
   f.to !== '';
 
-function queryOf(text: string, f: Filters): SearchQuery {
+function queryOf(
+  text: string,
+  f: Filters,
+  statuses: string[] = [],
+): SearchQuery {
   return {
     ...(text.trim() === '' ? {} : { text: text.trim() }),
     ...(f.methods.length ? { methods: f.methods as Method[] } : {}),
     ...(f.environmentIds.length ? { environmentIds: f.environmentIds } : {}),
     ...(f.auths.length ? { auths: f.auths } : {}),
     ...(f.savedRequestIds.length ? { savedRequestIds: f.savedRequestIds } : {}),
+    // history-status-filter: the History status filter, kept outside `f` so Clear all leaves it.
+    ...(statuses.length ? { statuses } : {}),
     // Whole local days, inclusive.
     // A date the input holds but Date cannot represent is left out (code review of history-search, 7).
     ...isoOrNothing('from', `${f.from}T00:00:00`, f.from),

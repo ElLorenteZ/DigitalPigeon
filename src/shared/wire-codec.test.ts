@@ -3,7 +3,10 @@
 import { describe, expect, it } from 'vitest';
 import {
   GetCallResultSchema,
+  ListHistoryResultSchema,
   ListRequestGroupsResultSchema,
+  ListStatusCodesResultSchema,
+  SearchResultSchema,
   ReadBodyResultSchema,
   SendInputSchema,
   SendResultSchema,
@@ -130,6 +133,63 @@ describe('wire codec: contract values survive the trip', () => {
     expect(back).toEqual(value);
     if (!back.ok) throw new Error('shape');
     expect(back.groups[0]?.latest.send.sentAt).toBeInstanceOf(Date);
+  });
+
+  it("History keeps its calls' timestamps as Date and carries its mark (history-status-filter)", () => {
+    const { body: _sendBody, ...summarySend } = send.request;
+    const { body: _responseBody, ...summaryResponse } = completion.response;
+    const value = {
+      ok: true as const,
+      calls: [
+        {
+          state: 'completed' as const,
+          send: { ...send, request: summarySend },
+          completion: { ...completion, response: summaryResponse },
+        },
+      ],
+      mark: '1:s1:0',
+    };
+    const parsed = ListHistoryResultSchema.safeParse(value);
+    expect(parsed.success, parsed.error?.message).toBe(true);
+    const back = ListHistoryResultSchema.parse(roundTrip(value));
+    expect(back).toEqual(value);
+    if (!back.ok) throw new Error('shape');
+    expect(
+      back.calls[0]?.state !== 'unreadable' && back.calls[0]?.send.sentAt,
+    ).toBeInstanceOf(Date);
+  });
+
+  it('status options survive the round trip, No response as the empty value (history-status-filter)', () => {
+    const value = {
+      ok: true as const,
+      options: [
+        { value: '404', label: '404', count: 2 },
+        { value: '', label: 'No response', count: 1 },
+      ],
+    };
+    expect(ListStatusCodesResultSchema.parse(roundTrip(value))).toEqual(value);
+  });
+
+  it('a search result carries its status facet (history-status-filter)', () => {
+    const value = {
+      ok: true as const,
+      calls: [],
+      total: 0,
+      of: 3,
+      facets: {
+        method: [],
+        environment: [],
+        auth: [],
+        savedRequest: [],
+        status: [
+          { value: '500', label: '500', count: 0 },
+          { value: '', label: 'No response', count: 2 },
+        ],
+      },
+    };
+    const parsed = SearchResultSchema.safeParse(value);
+    expect(parsed.success, parsed.error?.message).toBe(true);
+    expect(SearchResultSchema.parse(roundTrip(value))).toEqual(value);
   });
 
   it('an empty Uint8Array stays an empty Uint8Array', () => {

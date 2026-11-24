@@ -262,6 +262,7 @@ describe('operations over HTTP', () => {
       [channels.listRequestGroups]: await call(channels.listRequestGroups, {
         splitByAuth: true,
       }),
+      [channels.listStatusCodes]: await call(channels.listStatusCodes),
       [channels.listResponses]: await call(channels.listResponses, {
         method: 'POST',
         path: '/',
@@ -309,6 +310,17 @@ describe('operations over HTTP', () => {
       (answers[channels.searchCalls] as { ok: boolean; total: number }).total,
     ).toBeGreaterThanOrEqual(1);
     expect(answers[channels.importWsdl]).toMatchObject({ ok: true, count: 4 });
+    // history-status-filter: History carries its mark, and the send above, answered 200, is a status option.
+    expect(answers[channels.listCalls]).toMatchObject({
+      ok: true,
+      mark: expect.stringMatching(/^\d+:/),
+    });
+    expect(answers[channels.listStatusCodes]).toMatchObject({
+      ok: true,
+      options: expect.arrayContaining([
+        expect.objectContaining({ value: '200' }),
+      ]),
+    });
     // Slice 10: the imported template lists and opens.
     expect(answers[channels.getTemplate]).toMatchObject({
       ok: true,

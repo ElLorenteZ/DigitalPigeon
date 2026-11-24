@@ -277,3 +277,90 @@ describe('searchCalls auth facet with Cookie', () => {
     expect(ids(none.calls)).toEqual(['k3']);
   });
 });
+
+// history-status-filter, phase 2: search narrows by status like any facet, and the status facet's counts leave out the
+// status selection itself.
+describe('searchCalls by status', () => {
+  test('text and a status combine with AND', async () => {
+    const found = await store.searchCalls(
+      { text: 'staging', statuses: ['200'] },
+      new Set(),
+    );
+    expect(ids(found.calls)).toEqual(['s2']);
+    expect(found.total).toBe(1);
+  });
+
+  test('statuses combine with OR', async () => {
+    const found = await store.searchCalls(
+      { statuses: ['500', '409'] },
+      new Set(),
+    );
+    expect(ids(found.calls)).toEqual(['s4', 's5']);
+  });
+
+  test('the status facet counts under the other filters and ignores its own selection', async () => {
+    const found = await store.searchCalls(
+      { methods: ['POST', 'PUT'], statuses: ['201'] },
+      new Set(),
+    );
+    expect(ids(found.calls)).toEqual(['s1']);
+    expect(count(found.facets.status, '201')).toBe(1);
+    expect(count(found.facets.status, '200')).toBe(1);
+    expect(count(found.facets.status, '409')).toBe(1);
+    // s3 (200) and s4 (500) are GETs: outside the method filter.
+    expect(count(found.facets.status, '500')).toBe(0);
+    expect(found.facets.status.map((o) => o.label)).toContain('500');
+    // The method facet counts under the status selection.
+    expect(count(found.facets.method, 'POST')).toBe(1);
+    expect(count(found.facets.method, 'PUT')).toBe(0);
+  });
+
+  test("'' matches calls with no response: an error and a call in flight", async () => {
+    const own = await openTestDb();
+    try {
+      const ownStore = createCallStore(own.db);
+      const at = new Date(Date.UTC(2026, 10, 24, 9, 0, 0));
+      const send = (id: string, minutes: number): SendDoc => ({
+        _id: id,
+        schemaVersion: 1,
+        sentAt: new Date(at.getTime() + minutes * 60_000),
+        request: {
+          method: 'GET',
+          url: 'http://x.test/a',
+          headers: [['host', 'x.test']],
+          body: null,
+        },
+      });
+      await ownStore.insertSend(send('ok', 1));
+      await ownStore.insertCompletion({
+        _id: 'c-ok',
+        schemaVersion: 1,
+        sendId: 'ok',
+        completedAt: at,
+        durationMs: 1,
+        response: { status: 200, headers: [], body: bytes('') },
+      });
+      await ownStore.insertSend(send('err', 2));
+      await ownStore.insertCompletion({
+        _id: 'c-err',
+        schemaVersion: 1,
+        sendId: 'err',
+        completedAt: at,
+        durationMs: 1,
+        error: { code: 'timeout', message: 'timed out' },
+      });
+      await ownStore.insertSend(send('flying', 3));
+      const found = await ownStore.searchCalls(
+        { statuses: [''] },
+        new Set(['flying']),
+      );
+      expect(ids(found.calls)).toEqual(['flying', 'err']);
+      expect(found.facets.status).toEqual([
+        { value: '200', label: '200', count: 1 },
+        { value: '', label: 'No response', count: 2 },
+      ]);
+    } finally {
+      await own.drop();
+    }
+  });
+});

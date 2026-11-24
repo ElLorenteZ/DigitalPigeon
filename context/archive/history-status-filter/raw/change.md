@@ -1,11 +1,11 @@
 ---
 change_id: history-status-filter
 title: Filter History by HTTP status code with a multi-select combo box
-status: new
+status: closed
 ticket: null
 created: 2026-11-24
 updated: 2026-11-24
-closed: null
+closed: 2026-11-24
 produced-by: lz-change
 ---
 
@@ -34,3 +34,7 @@ add filtration in history by http codes. It should be a combi multiselect field 
   History holds only 200 calls.
 - Open for planning: how calls with no response (network error, timeout) appear in the code list, and whether the
   list holds codes present in the data or a fixed set.
+- Closed 2026-11-24: shipped. The History status filter covers the day list, request groups, an expanded group and
+  search, with server-side filtering before every limit. Review verdict merge-with-fixes, fixes applied; host code
+  review 7 fixed, 2 accepted, 1 disputed. PR #13 (https://github.com/ElLorenteZ/DigitalPigeon/pull/13) was open,
+  unmerged, at close.
